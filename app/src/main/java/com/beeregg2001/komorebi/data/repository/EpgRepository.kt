@@ -85,7 +85,7 @@ class EpgRepository @Inject constructor(
                 )
             )
         } catch (e: Exception) {
-            Log.e("EPG", "File Cache Save Error for $channelType", e)
+            Log.e("EPG", "File Cache Save Error for $cacheKey", e)
         }
     }
 
@@ -96,7 +96,7 @@ class EpgRepository @Inject constructor(
                 epgCacheDao.getCache(cacheKey)
             } catch (e: android.database.sqlite.SQLiteException) {
                 // 古い巨大なBLOBがDBに残っていてクラッシュした場合、握りつぶして新規取得させる
-                Log.w("EPG", "Huge legacy DB blob found for $channelType. Ignoring to force refresh.", e)
+                Log.w("EPG", "Huge legacy DB blob found for $cacheKey. Ignoring to force refresh.", e)
                 return@withContext null
             }
 
@@ -114,7 +114,7 @@ class EpgRepository @Inject constructor(
             return@withContext gson.fromJson(jsonString, listType)
 
         } catch (e: Exception) {
-            Log.e("EPG", "File Cache Read Error for $channelType", e)
+            Log.e("EPG", "File Cache Read Error for $cacheKey", e)
             return@withContext null
         }
     }
