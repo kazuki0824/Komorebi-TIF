@@ -1,5 +1,6 @@
 package com.beeregg2001.komorebi.ui.live
 
+import android.media.tv.TvContentRating
 import android.media.tv.TvInputManager
 import android.media.tv.TvView
 import androidx.activity.compose.BackHandler
@@ -16,6 +17,9 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.tv.material3.Text
@@ -36,6 +40,21 @@ fun TifLivePlayerScreen(
     onChannelSelect: (Channel) -> Unit
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val activeTvView = remember { mutableStateOf<TvView?>(null) }
+    DisposableEffect(lifecycleOwner) {
+        // バックグラウンドでTuner資源を保持し続けない。
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                activeTvView.value?.reset()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            activeTvView.value?.reset()
+        }
+    }
     val input = remember(context) { TifInput.findInput(context) }
     val uri = remember(channel.id) { TifInput.channelUri(channel.id) }
     var videoStatus by remember(channel.id) { mutableStateOf("映像の受信を開始しています…") }
@@ -103,6 +122,13 @@ fun TifLivePlayerScreen(
                                     videoStatus = ""
                                     setCaptionEnabled(captions)
                                 }
+                                override fun onContentBlocked(inputId: String, rating: TvContentRating) {
+                                    videoStatus = "視聴年齢制限により、この番組はブロックされています"
+                                }
+                                override fun onContentAllowed(inputId: String) {
+                                    // 保護解除は映像の初回出力を意味しない。
+                                    videoStatus = "映像の受信を開始しています…"
+                                }
                                 override fun onVideoUnavailable(inputId: String, reason: Int) {
                                     videoStatus = if (reason == TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY) {
                                         "音声のみの放送です"
@@ -118,12 +144,14 @@ fun TifLivePlayerScreen(
                                 }
                             })
                             tune(input.id, uri)
+                            activeTvView.value = this
                         }
                     },
                     update = { view -> view.setCaptionEnabled(captions) },
                     onRelease = { view ->
                         view.setCallback(null)
                         view.reset()
+                        if (activeTvView.value === view) activeTvView.value = null
                     },
                     modifier = Modifier.fillMaxSize()
                 )
