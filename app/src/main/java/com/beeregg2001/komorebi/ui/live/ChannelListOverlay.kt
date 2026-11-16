@@ -53,7 +53,7 @@ fun ChannelListOverlay(
     val focusManager = LocalFocusManager.current
     val colors = KomorebiTheme.colors
 
-    val allTabs = listOf("GR", "BS", "CS", "BS4K", "SKY")
+    val allTabs = listOf("GR", "BS", "CS", "BS4K", "SKY", "TV", "INPUT")
     val availableTabKeys = remember(groupedChannels) {
         allTabs.filter { groupedChannels.containsKey(it) }
     }

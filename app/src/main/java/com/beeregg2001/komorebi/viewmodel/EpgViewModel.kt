@@ -60,6 +60,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
     private var mirakurunPort = ""
 
     private var hasInitialFetched = false
+    private var observedBackend: String? = null
     private var epgJob: Job? = null
 
     // ★ 追加: DB検索待ちをゼロにするためのメモリキャッシュ群
@@ -289,10 +290,21 @@ class EpgViewModel @OptIn(UnstableApi::class)
         viewModelScope.launch {
             combine(
                 settingsRepository.isInitialized,
+                settingsRepository.backendType,
                 settingsRepository.mirakurunIp,
                 settingsRepository.mirakurunPort,
                 _selectedBroadcastingType
-            ) { isInit, mIp, mPort, type ->
+            ) { isInit, backend, mIp, mPort, type ->
+                if (observedBackend != backend) {
+                    epgJob?.cancel()
+                    epgMemoryCache.clear()
+                    logoMemoryCache.clear()
+                    fullEpgData = emptyList()
+                    fullLogoUrls = emptyList()
+                    uiState = EpgUiState.Loading
+                    hasInitialFetched = false
+                    observedBackend = backend
+                }
                 mirakurunIp = mIp
                 mirakurunPort = mPort
 
@@ -302,7 +314,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
 
                     viewModelScope.launch {
                         delay(10000)
-                        preloadEpgDataForSearch(listOf("GR", "BS", "CS", "SKY", "BS4K"))
+                        preloadEpgDataForSearch(listOf("GR", "BS", "CS", "SKY", "BS4K", "TV"))
                     }
 
                 } else if (isInit && hasInitialFetched) {

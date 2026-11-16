@@ -86,6 +86,18 @@ fun SettingsScreen(
     val flatChannels = remember(groupedChannels) { groupedChannels.values.flatten() }
 
     var toastMessage by remember { mutableStateOf<String?>(null) }
+    val startTifSetup: (String) -> Unit = { selectedId ->
+        val setupIntent = TifInput.inputs(context).firstOrNull { it.id == selectedId }?.createSetupIntent()
+        if (setupIntent == null) {
+            toastMessage = "このTV入力にはセットアップ画面がありません"
+        } else {
+            try {
+                context.startActivity(setupIntent)
+            } catch (error: Exception) {
+                toastMessage = "TV入力のセットアップを起動できません: " + error.message
+            }
+        }
+    }
     LaunchedEffect(toastMessage) {
         if (toastMessage != null) {
             delay(3500)
@@ -534,7 +546,7 @@ fun SettingsScreen(
                                         "KonomiTV" to "KONOMITV",
                                         "EDCB (EpgTimerSrv)" to "EDCB",
                                         "EPGStation" to "EPGSTATION",
-                                        "TV Input Framework (Maleicacid)" to "TIF"
+                                        "TV Input Framework" to "TIF"
                                     ),
                                     if (listOf(
                                             "KONOMITV",
@@ -585,15 +597,19 @@ fun SettingsScreen(
                             itemFocusRequesters[1][9],
                             categoryFocusRequesters[1],
                             {
-                                val setup = TifInput.findInput(context)?.createSetupIntent()
-                                if (setup == null) {
-                                    toastMessage = "Maleicacid TV入力がありません。tv#116をOSへ組み込んでください。"
-                                } else {
-                                    try {
-                                        context.startActivity(setup)
-                                    } catch (error: android.content.ActivityNotFoundException) {
-                                        toastMessage = "TV入力の設定を起動できません: " + error.message
-                                    }
+                                val options = TifInput.inputs(context).filter { it.createSetupIntent() != null }
+                                when (options.size) {
+                                    0 -> toastMessage = "セットアップ可能なTV入力がありません"
+                                    1 -> startTifSetup(options.single().id)
+                                    else -> uiState.activeDialog = SettingDialogState.Selection(
+                                        "セットアップするTV入力",
+                                        options.map { info ->
+                                            val title = info.loadCustomLabel(context)?.toString()
+                                                ?: info.loadLabel(context)?.toString() ?: info.id
+                                            (title + " (" + info.id + ")") to info.id
+                                        },
+                                        options.first().id
+                                    ) { selectedId -> startTifSetup(selectedId) }
                                 }
                             }
                         ) { uiState.restoreFocusRequester = it; uiState.restoreCategoryIndex = 1 }

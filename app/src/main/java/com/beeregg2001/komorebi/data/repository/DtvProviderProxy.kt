@@ -130,6 +130,7 @@ class DtvProviderProxy @Inject constructor(
             val provider = when (backend) {
                 "EDCB" -> edcbLiveRepository
                 "EPGSTATION" -> epgStationLiveRepository
+                TifInput.BACKEND_TYPE -> tifRepository
                 else -> konomiRepository
             }
             provider.getChannelLogoUrl(channelId).also {

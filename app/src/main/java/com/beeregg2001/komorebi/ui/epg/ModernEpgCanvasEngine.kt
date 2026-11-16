@@ -109,7 +109,7 @@ fun ModernEpgCanvasEngine_Smooth(
 
     val visibleTabs = remember(availableTypes) {
         val all =
-            listOf("地デジ" to "GR", "BS" to "BS", "CS" to "CS", "BS4K" to "BS4K", "SKY" to "SKY")
+            listOf("地デジ" to "GR", "BS" to "BS", "CS" to "CS", "BS4K" to "BS4K", "SKY" to "SKY", "その他" to "TV")
         if (availableTypes.isEmpty()) all else all.filter { it.second in availableTypes }
     }
     val subTabFocusRequesters =

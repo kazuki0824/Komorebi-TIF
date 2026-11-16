@@ -633,7 +633,7 @@ class SettingsViewModel @Inject constructor(
             context.imageLoader.diskCache?.clear()
         } catch (e: Exception) {
         }
-        // tv#116は録画に非対応。サーバー向けの録画同期や画質取得は起動しない。
+        // TIF視聴アダプターは録画・予約を実装しないため、サーバー向け同期を起動しない。
         if (newType != "TIF") {
             syncEngine.launchSyncAllRecords(forceFullSync = true)
             forceSyncStreamQualities()

@@ -158,7 +158,7 @@ class ChannelViewModel @Inject constructor(
     private suspend fun transformToUiState(grouped: Map<String, List<Channel>>): List<LiveRowState> =
         withContext(Dispatchers.Default) {
             val now = System.currentTimeMillis()
-            val orderedTypes = listOf("GR", "BS", "CS", "BS4K", "SKY")
+            val orderedTypes = listOf("GR", "BS", "CS", "BS4K", "SKY", "TV", "INPUT")
 
             val sortedKeys = grouped.keys.sortedBy { key ->
                 val index = orderedTypes.indexOf(key)
@@ -170,7 +170,7 @@ class ChannelViewModel @Inject constructor(
                 LiveRowState(
                     genreId = type,
                     genreLabel = when (type) {
-                        "GR" -> "地デジ"; "BS" -> "BS"; "CS" -> "CS"; "BS4K" -> "BS4K"; "SKY" -> "スカパー"; else -> type
+                        "GR" -> "地デジ"; "BS" -> "BS"; "CS" -> "CS"; "BS4K" -> "BS4K"; "SKY" -> "スカパー"; "TV" -> "その他のTV"; "INPUT" -> "外部入力"; else -> type
                     },
                     channels = channels.map { ch ->
                         val start = ch.programPresent?.startTime?.let {
@@ -208,7 +208,8 @@ class ChannelViewModel @Inject constructor(
 
             val processed = withContext(Dispatchers.Default) {
                 val rawChannels = listOfNotNull(
-                    response.terrestrial, response.bs, response.cs, response.sky, response.bs4k
+                    response.terrestrial, response.bs, response.cs, response.sky, response.bs4k,
+                    response.others, response.inputs
                 ).flatten()
 
                 val allChannels = rawChannels.map { apiChannel ->
@@ -219,6 +220,7 @@ class ChannelViewModel @Inject constructor(
                         channelNumber = apiChannel.channelNumber,
                         networkId = apiChannel.networkId,
                         serviceId = apiChannel.serviceId,
+                        transportStreamId = apiChannel.transportStreamId,
                         displayChannelId = apiChannel.displayChannelId ?: apiChannel.id,
                         isWatchable = apiChannel.isWatchable,
                         isDisplay = apiChannel.isDisplay,

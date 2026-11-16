@@ -25,7 +25,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.tv.material3.Text
 import com.beeregg2001.komorebi.data.model.Channel
 import com.beeregg2001.komorebi.data.repository.tif.TifInput
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 /**
  * URL/ExoPlayerを迂回してTIFのTvViewへ選局する。
@@ -41,22 +43,38 @@ fun TifLivePlayerScreen(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val activeTvView = remember { mutableStateOf<TvView?>(null) }
+    // STOP時にAndroidViewをcompositionから除去してsessionを解放する。
+    // START時はViewを再生成し、reset済みsessionを再利用せず再tuneする。
+    var isStarted by remember(lifecycleOwner) {
+        mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+    }
     DisposableEffect(lifecycleOwner) {
-        // バックグラウンドでTuner資源を保持し続けない。
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) {
-                activeTvView.value?.reset()
-            }
+            if (event == Lifecycle.Event.ON_STOP) isStarted = false
+            if (event == Lifecycle.Event.ON_START) isStarted = true
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-            activeTvView.value?.reset()
-        }
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    val input = remember(context) { TifInput.findInput(context) }
-    val uri = remember(channel.id) { TifInput.channelUri(channel.id) }
+    var target by remember(channel.id, isStarted) { mutableStateOf<TifInput.TuneTarget?>(null) }
+    var resolutionComplete by remember(channel.id, isStarted) { mutableStateOf(false) }
+    var resolveError by remember(channel.id, isStarted) { mutableStateOf<String?>(null) }
+    LaunchedEffect(context, channel.id, isStarted) {
+        target = null
+        resolutionComplete = false
+        resolveError = null
+        if (isStarted) {
+            try {
+                // TvProviderの所有行照合はI/O。Compose main threadでqueryしない。
+                target = withContext(Dispatchers.IO) { TifInput.resolveTarget(context, channel.id) }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                resolveError = "TV入力を確認できません: " + e.message
+            }
+        }
+        resolutionComplete = true
+    }
     var videoStatus by remember(channel.id) { mutableStateOf("映像の受信を開始しています…") }
     var captions by rememberSaveable { mutableStateOf(true) }
     val rootFocus = remember { FocusRequester() }
@@ -103,14 +121,21 @@ fun TifLivePlayerScreen(
             .focusRequester(rootFocus)
             .focusable()
     ) {
-        if (input == null || uri == null) {
+        if (target == null) {
             Text(
-                text = "Maleicacid TV入力またはチャンネルが見つかりません。設定でTV入力のチャンネルスキャンを実施してください。",
+                text = when {
+                    !isStarted -> "バックグラウンドのためTV入力を停止しています"
+                    !resolutionComplete -> "TV入力を確認しています…"
+                    resolveError != null -> resolveError.orEmpty()
+                    else -> "TV入力またはチャンネルが見つかりません。TV入力の設定とチャンネル一覧を確認してください。"
+                },
                 color = Color.White,
                 modifier = Modifier.align(Alignment.Center).padding(28.dp)
             )
         } else {
-            key(input.id, channel.id) {
+            // null分岐を通過した瞬間のtargetをView世代で固定する。
+            val tuneTarget = requireNotNull(target)
+            key(tuneTarget.inputId, channel.id) {
                 AndroidView(
                     factory = { viewContext ->
                         TvView(viewContext).apply {
@@ -143,15 +168,13 @@ fun TifLivePlayerScreen(
                                     videoStatus = "TV入力との接続が切れました"
                                 }
                             })
-                            tune(input.id, uri)
-                            activeTvView.value = this
+                            tune(tuneTarget.inputId, tuneTarget.channelUri)
                         }
                     },
                     update = { view -> view.setCaptionEnabled(captions) },
                     onRelease = { view ->
                         view.setCallback(null)
                         view.reset()
-                        if (activeTvView.value === view) activeTvView.value = null
                     },
                     modifier = Modifier.fillMaxSize()
                 )

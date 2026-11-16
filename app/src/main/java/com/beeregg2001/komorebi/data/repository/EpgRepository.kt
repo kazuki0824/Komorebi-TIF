@@ -6,6 +6,7 @@ import androidx.annotation.OptIn
 import androidx.annotation.RequiresApi
 import androidx.media3.common.util.Log
 import androidx.media3.common.util.UnstableApi
+import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.local.dao.EpgCacheDao
 import com.beeregg2001.komorebi.data.local.entity.EpgCacheEntity
 import com.beeregg2001.komorebi.data.model.EpgChannel
@@ -19,6 +20,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.Normalizer
@@ -50,18 +52,22 @@ class EpgRepository @Inject constructor(
     @ApplicationContext private val context: Context, // ★ 追加: キャッシュディレクトリを使用するためContextを注入
     private val epgProvider: EpgProvider,
     private val epgCacheDao: EpgCacheDao,
-    private val gson: Gson
+    private val gson: Gson,
+    private val settingsRepository: SettingsRepository
 ) {
     private val memoryCache = ConcurrentHashMap<String, List<EpgChannelWrapper>>()
+
+    // backend間でEPGファイル/Room/メモリキャッシュを共用しない。
+    private suspend fun scopedCacheKey(type: String) = settingsRepository.backendType.first() + "_" + type
 
     // ==========================================
     // ★ 高速ファイルキャッシュ処理
     // ==========================================
 
     @OptIn(UnstableApi::class)
-    private suspend fun saveToFileCache(channelType: String, channels: List<EpgChannelWrapper>) = withContext(Dispatchers.IO) {
+    private suspend fun saveToFileCache(cacheKey: String, channels: List<EpgChannelWrapper>) = withContext(Dispatchers.IO) {
         try {
-            val cacheFile = java.io.File(context.cacheDir, "epg_cache_${channelType}.json.gz")
+            val cacheFile = java.io.File(context.cacheDir, "epg_cache_${cacheKey}.json.gz")
             // 直接GZIP圧縮しながらファイルへ書き込む（Base64のオーバーヘッドを削減）
             java.io.FileOutputStream(cacheFile).use { fos ->
                 GZIPOutputStream(fos).use { gzip ->
@@ -73,7 +79,7 @@ class EpgRepository @Inject constructor(
             // DBにはメタデータと「FILE_BASED」という文字列だけを保存して2MB制限を回避
             epgCacheDao.insertOrUpdate(
                 EpgCacheEntity(
-                    channelType = channelType,
+                    channelType = cacheKey,
                     dataJson = "FILE_BASED",
                     updatedAt = System.currentTimeMillis()
                 )
@@ -84,10 +90,10 @@ class EpgRepository @Inject constructor(
     }
 
     @OptIn(UnstableApi::class)
-    private suspend fun readFromFileCache(channelType: String): List<EpgChannelWrapper>? = withContext(Dispatchers.IO) {
+    private suspend fun readFromFileCache(cacheKey: String): List<EpgChannelWrapper>? = withContext(Dispatchers.IO) {
         try {
             val entity = try {
-                epgCacheDao.getCache(channelType)
+                epgCacheDao.getCache(cacheKey)
             } catch (e: android.database.sqlite.SQLiteException) {
                 // 古い巨大なBLOBがDBに残っていてクラッシュした場合、握りつぶして新規取得させる
                 Log.w("EPG", "Huge legacy DB blob found for $channelType. Ignoring to force refresh.", e)
@@ -96,7 +102,7 @@ class EpgRepository @Inject constructor(
 
             if (entity == null) return@withContext null
 
-            val cacheFile = java.io.File(context.cacheDir, "epg_cache_${channelType}.json.gz")
+            val cacheFile = java.io.File(context.cacheDir, "epg_cache_${cacheKey}.json.gz")
             if (!cacheFile.exists()) return@withContext null
 
             // ファイルから解凍しながら直接文字列として読み込む
@@ -227,8 +233,8 @@ class EpgRepository @Inject constructor(
         }
     }
 
-    fun hasCacheForType(channelType: String): Boolean {
-        return memoryCache.containsKey(channelType)
+    suspend fun hasCacheForType(channelType: String): Boolean {
+        return memoryCache.containsKey(scopedCacheKey(channelType))
     }
 
     @OptIn(UnstableApi::class)
@@ -238,14 +244,15 @@ class EpgRepository @Inject constructor(
         endTime: OffsetDateTime,
         channelType: String
     ) {
-        if (hasCacheForType(channelType)) return
+        val cacheKey = scopedCacheKey(channelType)
+        if (memoryCache.containsKey(cacheKey)) return
 
         var isFreshCacheAvailable = false
 
         // ★修正: DBではなくファイルから読み込む
-        val cachedData = readFromFileCache(channelType)
+        val cachedData = readFromFileCache(cacheKey)
         if (cachedData != null) {
-            memoryCache[channelType] = cachedData
+            memoryCache[cacheKey] = cachedData
 
             val oneDayLater = System.currentTimeMillis() + (24 * 60 * 60 * 1000)
             val isFresh = cachedData.flatMap { it.programs }.any {
@@ -273,10 +280,11 @@ class EpgRepository @Inject constructor(
                 endTime = endStr,
                 channelType = channelType
             )
-            memoryCache[channelType] = channels
+            if (cacheKey != scopedCacheKey(channelType)) return
+            memoryCache[cacheKey] = channels
 
             // ★修正: ファイルへ保存する
-            saveToFileCache(channelType, channels)
+            saveToFileCache(cacheKey, channels)
 
         } catch (e: Exception) {
             if (e is CancellationException) throw e
@@ -291,14 +299,14 @@ class EpgRepository @Inject constructor(
         endTime: OffsetDateTime,
         channelType: String
     ): Flow<Result<List<EpgChannelWrapper>>> = flow {
+        val cacheKey = scopedCacheKey(channelType)
+        memoryCache[cacheKey]?.let { emit(Result.success(it)) }
 
-        memoryCache[channelType]?.let { emit(Result.success(it)) }
-
-        if (memoryCache[channelType] == null) {
+        if (memoryCache[cacheKey] == null) {
             // ★修正: DBではなくファイルから読み込む
-            val cachedData = readFromFileCache(channelType)
+            val cachedData = readFromFileCache(cacheKey)
             if (cachedData != null) {
-                memoryCache[channelType] = cachedData
+                memoryCache[cacheKey] = cachedData
                 emit(Result.success(cachedData))
             }
         }
@@ -314,17 +322,18 @@ class EpgRepository @Inject constructor(
                 channelType = channelType
             )
 
-            memoryCache[channelType] = channels
+            if (cacheKey != scopedCacheKey(channelType)) return@flow
+            memoryCache[cacheKey] = channels
             emit(Result.success(channels))
 
             CoroutineScope(Dispatchers.IO).launch {
                 // ★修正: ファイルへ保存する
-                saveToFileCache(channelType, channels)
+                saveToFileCache(cacheKey, channels)
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             Log.e("EPG", "Fetch Error: $startTime to $endTime", e)
-            if (memoryCache[channelType] == null) emit(Result.failure(e))
+            if (memoryCache[cacheKey] == null) emit(Result.failure(e))
         }
     }
 

@@ -1,5 +1,6 @@
 package com.beeregg2001.komorebi.viewmodel
 
+import android.content.Context
 import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresApi
@@ -13,6 +14,7 @@ import com.beeregg2001.komorebi.data.model.*
 import com.beeregg2001.komorebi.data.repository.KonomiRepository
 import com.beeregg2001.komorebi.data.repository.EpgRepository
 import com.beeregg2001.komorebi.data.repository.LastChannelRepository
+import com.beeregg2001.komorebi.data.repository.tif.TifInput
 import com.beeregg2001.komorebi.data.repository.LiveProvider
 import com.beeregg2001.komorebi.data.repository.WatchHistoryRepository
 import com.beeregg2001.komorebi.util.AppUpdater
@@ -32,6 +34,7 @@ import kotlinx.coroutines.withContext
 import java.time.LocalTime
 import java.time.OffsetDateTime
 import javax.inject.Inject
+import dagger.hilt.android.qualifiers.ApplicationContext
 
 data class BaseballGameInfo(
     val program: EpgProgram,
@@ -43,6 +46,7 @@ data class BaseballGameInfo(
 @OptIn(FlowPreview::class)
 @HiltViewModel
 class HomeViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val liveProvider: LiveProvider,
     private val konomiRepository: KonomiRepository,
     private val epgRepository: EpgRepository,
@@ -373,6 +377,12 @@ class HomeViewModel @Inject constructor(
         val currentBackend = settingsRepository.backendType.first()
 
         if (currentBackend == "KONOMITV") return
+        // 通常APKでチューナー一覧の許可待ちならヘルスチェックを延期する。
+        // 権限ダイアログより先にバックエンド失敗通知を出さない。
+        if (currentBackend == TifInput.BACKEND_TYPE &&
+            TifInput.inputs(context).any { !it.isPassthroughInput } &&
+            context.checkSelfPermission(TifInput.READ_LISTINGS_PERMISSION) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED) return
 
         try {
             liveProvider.getChannels()

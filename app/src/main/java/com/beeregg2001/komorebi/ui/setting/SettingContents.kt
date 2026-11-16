@@ -327,7 +327,7 @@ fun ConnectionSettingsContent(
             val backendLabel = when (backendType) {
                 "EDCB" -> "EDCB (EpgTimerSrv)"
                 "EPGSTATION" -> "EPGStation"
-                "TIF" -> "TV Input Framework (Maleicacid)"
+                "TIF" -> "TV Input Framework"
                 "MIRAKURUN_ONLY" -> "Mirakurun (録画なし)"
                 else -> "KonomiTV"
             }
@@ -349,7 +349,7 @@ fun ConnectionSettingsContent(
             if (backendType == "TIF") {
                 SettingItem(
                     title = "TV入力のチャンネルスキャン",
-                    value = "Maleicacid TV入力のセットアップを起動",
+                    value = "入力一覧からセットアップ対象を選ぶ",
                     icon = Icons.Default.Tv,
                     modifier = Modifier
                         .focusRequester(backendIpR)
@@ -357,7 +357,7 @@ fun ConnectionSettingsContent(
                     onClick = { onClick(backendIpR); onSetupTif() }
                 )
                 Text(
-                    "TIFは端末内のTV入力を使用します。IP/ポートは不要です。録画・予約はtv#116で未対応です。",
+                    "TIFはOSで登録されたTV入力を使用します。IP/ポートは不要です。録画・予約はこのKomorebiバックエンドでは未対応です。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = colors.textSecondary
                 )

@@ -132,9 +132,15 @@ fun MainRootScreen(
     LaunchedEffect(backendType) {
         state.backendType = backendType
         if (backendType == TifInput.BACKEND_TYPE) {
-            if (ContextCompat.checkSelfPermission(context, TifInput.READ_LISTINGS_PERMISSION) ==
-                PackageManager.PERMISSION_GRANTED) channelViewModel.fetchChannels()
-            else listingsPermission.launch(TifInput.READ_LISTINGS_PERMISSION)
+            // パススルー入力のみならTvProvider一覧への権限は不要。
+            val tunerListed = TifInput.inputs(context).any { !it.isPassthroughInput }
+            if (!tunerListed ||
+                ContextCompat.checkSelfPermission(context, TifInput.READ_LISTINGS_PERMISSION) ==
+                PackageManager.PERMISSION_GRANTED) {
+                channelViewModel.fetchChannels()
+            } else {
+                listingsPermission.launch(TifInput.READ_LISTINGS_PERMISSION)
+            }
         }
     }
 
