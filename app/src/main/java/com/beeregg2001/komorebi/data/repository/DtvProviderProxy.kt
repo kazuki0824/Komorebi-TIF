@@ -47,7 +47,6 @@ class DtvProviderProxy @Inject constructor(
             "EDCB" -> edcbLiveRepository
             "EPGSTATION" -> epgStationLiveRepository
             TifInput.BACKEND_TYPE -> tifRepository
-            TifInput.BACKEND_TYPE -> tifRepository
             else -> konomiRepository
         }
     }
