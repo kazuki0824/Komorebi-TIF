@@ -75,7 +75,9 @@ fun TifLivePlayerScreen(
         }
         resolutionComplete = true
     }
-    var videoStatus by remember(channel.id) { mutableStateOf("映像の受信を開始しています…") }
+    var videoStatus by remember(channel.id, isStarted) { mutableStateOf("映像の受信を開始しています…") }
+    var videoAvailable by remember(channel.id, isStarted) { mutableStateOf(false) }
+    var contentBlocked by remember(channel.id, isStarted) { mutableStateOf(false) }
     var captions by rememberSaveable { mutableStateOf(true) }
     val rootFocus = remember { FocusRequester() }
     val listFocus = remember { FocusRequester() }
@@ -144,31 +146,46 @@ fun TifLivePlayerScreen(
                             isFocusableInTouchMode = false
                             setCallback(object : TvView.TvInputCallback() {
                                 override fun onVideoAvailable(inputId: String) {
-                                    videoStatus = ""
-                                    setCaptionEnabled(captions)
+                                    videoAvailable = true
+                                    if (!contentBlocked) videoStatus = ""
                                 }
                                 override fun onContentBlocked(inputId: String, rating: TvContentRating) {
+                                    contentBlocked = true
                                     videoStatus = "視聴年齢制限により、この番組はブロックされています"
                                 }
                                 override fun onContentAllowed(inputId: String) {
-                                    // 保護解除は映像の初回出力を意味しない。
-                                    videoStatus = "映像の受信を開始しています…"
+                                    val wasBlocked = contentBlocked
+                                    contentBlocked = false
+                                    if (wasBlocked) {
+                                        // 映像の初回出力未確認なら再生成功表示へ移行しない。
+                                        videoStatus = if (videoAvailable) "" else "映像の受信を開始しています…"
+                                    }
                                 }
                                 override fun onVideoUnavailable(inputId: String, reason: Int) {
-                                    videoStatus = if (reason == TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY) {
-                                        "音声のみの放送です"
-                                    } else {
-                                        "映像を利用できません (TIF reason=$reason)"
+                                    videoAvailable = false
+                                    if (!contentBlocked) {
+                                        videoStatus = if (reason == TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY) {
+                                            "音声のみの放送です"
+                                        } else {
+                                            "映像を利用できません (TIF reason=$reason)"
+                                        }
                                     }
                                 }
                                 override fun onConnectionFailed(inputId: String) {
+                                    videoAvailable = false
                                     videoStatus = "TV入力との接続に失敗しました"
                                 }
                                 override fun onDisconnected(inputId: String) {
+                                    videoAvailable = false
                                     videoStatus = "TV入力との接続が切れました"
                                 }
                             })
-                            tune(tuneTarget.inputId, tuneTarget.channelUri)
+                            try {
+                                tune(tuneTarget.inputId, tuneTarget.channelUri)
+                            } catch (error: Exception) {
+                                videoStatus = "TV入力の選局に失敗しました: " + error.message
+                                reset()
+                            }
                         }
                     },
                     update = { view -> view.setCaptionEnabled(captions) },

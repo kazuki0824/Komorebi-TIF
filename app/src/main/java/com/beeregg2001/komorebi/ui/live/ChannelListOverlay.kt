@@ -100,6 +100,11 @@ fun ChannelListOverlay(
         }
     }
 
+    if (availableTabKeys.isEmpty()) {
+        Text("表示可能なチャンネルがありません", color = colors.textPrimary, modifier = Modifier.padding(16.dp))
+        return
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -139,6 +144,8 @@ fun ChannelListOverlay(
                         "CS" -> "CS"
                         "BS4K" -> "BS4K"
                         "SKY" -> "スカパー"
+                        "TV" -> "その他のTV"
+                        "INPUT" -> "外部入力"
                         else -> tabKey
                     }
 

@@ -288,6 +288,14 @@ class TifRepository @Inject constructor(
         val rows = readTunerChannels(infos)
         rows.filter { channelType.isNullOrBlank() || it.category == channelType }.map { row ->
             val id = TifInput.channelId(row.inputId, row.id)
+            val programs = try {
+                readPrograms(row.id, from, to)
+            } catch (error: SecurityException) {
+                throw error
+            } catch (error: Exception) {
+                Log.w("TifRepository", "EPG取得失敗 rowId=" + row.id, error)
+                emptyList()
+            }
             EpgChannelWrapper(
                 channel = EpgChannel(
                     id = id, display_channel_id = row.number.ifBlank { row.sid.toString() },
@@ -297,7 +305,7 @@ class TifRepository @Inject constructor(
                     type = row.category, name = row.name, jikkyo_force = null,
                     is_subchannel = false, is_radiochannel = row.audioOnly, is_watchable = true
                 ),
-                programs = readPrograms(row.id, from, to).map { program ->
+                programs = programs.map { program ->
                     EpgProgram(
                         id = "tif-program:" + program.id, channel_id = id,
                         network_id = row.onid.toInt(), service_id = row.sid.toInt(),
