@@ -30,6 +30,7 @@ import androidx.tv.material3.*
 import com.beeregg2001.komorebi.common.safeRequestFocus
 import com.beeregg2001.komorebi.common.AppStrings
 import com.beeregg2001.komorebi.data.SettingsRepository
+import com.beeregg2001.komorebi.data.repository.tif.TifInput
 import com.beeregg2001.komorebi.data.model.StreamQuality
 import com.beeregg2001.komorebi.ui.components.GlobalToast
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
@@ -532,22 +533,18 @@ fun SettingsScreen(
                                     listOf(
                                         "KonomiTV" to "KONOMITV",
                                         "EDCB (EpgTimerSrv)" to "EDCB",
-                                        "EPGStation" to "EPGSTATION"
+                                        "EPGStation" to "EPGSTATION",
+                                        "TV Input Framework (Maleicacid)" to "TIF"
                                     ),
                                     if (listOf(
                                             "KONOMITV",
                                             "EDCB",
                                             "EPGSTATION",
+                                            "TIF",
                                             "MIRAKURUN_ONLY"
                                         ).any { it == prefs.backendType }
                                     ) prefs.backendType else "KONOMITV"
                                 ) {
-                                    scope.launch(Dispatchers.IO) {
-                                        repository.saveString(
-                                            SettingsRepository.BACKEND_TYPE,
-                                            it
-                                        )
-                                    }
                                     viewModel.updateBackendType(it)
                                 }
                             },
@@ -586,7 +583,19 @@ fun SettingsScreen(
                             itemFocusRequesters[1][6],
                             itemFocusRequesters[1][8],
                             itemFocusRequesters[1][9],
-                            categoryFocusRequesters[1]
+                            categoryFocusRequesters[1],
+                            {
+                                val setup = TifInput.findInput(context)?.createSetupIntent()
+                                if (setup == null) {
+                                    toastMessage = "Maleicacid TV入力がありません。tv#116をOSへ組み込んでください。"
+                                } else {
+                                    try {
+                                        context.startActivity(setup)
+                                    } catch (error: android.content.ActivityNotFoundException) {
+                                        toastMessage = "TV入力の設定を起動できません: " + error.message
+                                    }
+                                }
+                            }
                         ) { uiState.restoreFocusRequester = it; uiState.restoreCategoryIndex = 1 }
 
                         2 -> PlaybackSettingsContent(

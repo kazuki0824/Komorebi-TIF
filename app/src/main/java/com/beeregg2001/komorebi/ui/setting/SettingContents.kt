@@ -283,6 +283,7 @@ fun ConnectionSettingsContent(
     cfIdR: FocusRequester,
     cfSecretR: FocusRequester,
     sidebarR: FocusRequester,
+    onSetupTif: () -> Unit,
     onClick: (FocusRequester) -> Unit
 ) {
     val colors = KomorebiTheme.colors
@@ -326,6 +327,7 @@ fun ConnectionSettingsContent(
             val backendLabel = when (backendType) {
                 "EDCB" -> "EDCB (EpgTimerSrv)"
                 "EPGSTATION" -> "EPGStation"
+                "TIF" -> "TV Input Framework (Maleicacid)"
                 "MIRAKURUN_ONLY" -> "Mirakurun (録画なし)"
                 else -> "KonomiTV"
             }
@@ -344,6 +346,22 @@ fun ConnectionSettingsContent(
                 onClick = { onClick(backendTypeR); onSelectBackend() }
             )
 
+            if (backendType == "TIF") {
+                SettingItem(
+                    title = "TV入力のチャンネルスキャン",
+                    value = "Maleicacid TV入力のセットアップを起動",
+                    icon = Icons.Default.Tv,
+                    modifier = Modifier
+                        .focusRequester(backendIpR)
+                        .focusProperties { left = sidebarR; up = backendTypeR; down = addSmbR },
+                    onClick = { onClick(backendIpR); onSetupTif() }
+                )
+                Text(
+                    "TIFは端末内のTV入力を使用します。IP/ポートは不要です。録画・予約はtv#116で未対応です。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.textSecondary
+                )
+            } else {
             val currentIp = when (backendType) {
                 "EDCB" -> edcbIp
                 "EPGSTATION" -> epgStationIp
@@ -412,6 +430,7 @@ fun ConnectionSettingsContent(
             if (currentIp.isBlank() || currentPort.isBlank()) {
                 ValidationErrorText("メインシステムのIPアドレスまたはポート番号が未設定です。\n番組情報の取得や録画機能が正常に動作しません。")
             }
+            }
         }
 
         if (backendType == "EDCB") {
@@ -432,8 +451,8 @@ fun ConnectionSettingsContent(
             }
         }
 
-        val hasOverride = prefSrc == "MIRAKURUN" || (prefSrc == "EDCB" && backendType != "EDCB")
-        if (backendType != "MIRAKURUN_ONLY") {
+        val hasOverride = backendType != "TIF" && (prefSrc == "MIRAKURUN" || (prefSrc == "EDCB" && backendType != "EDCB"))
+        if (backendType != "MIRAKURUN_ONLY" && backendType != "TIF") {
             SettingsSection("ライブ視聴ソースの優先設定") {
                 val srcLabel = when {
                     prefSrc == "MIRAKURUN" -> "Mirakurun を優先"
@@ -527,7 +546,7 @@ fun ConnectionSettingsContent(
                     .focusRequester(addSmbR)
                     .focusProperties {
                         left = sidebarR
-                        up = if (hasOverride) overridePortR else prefSrcR
+                        up = if (backendType == "TIF") backendIpR else if (hasOverride) overridePortR else prefSrcR
                         down =
                             if (smbServerList.isEmpty()) cfIdR else smbItemRs.firstOrNull()
                                 ?: cfIdR

@@ -38,6 +38,7 @@ import androidx.media3.ui.PlayerView
 import androidx.tv.material3.*
 import com.beeregg2001.komorebi.common.AppStrings
 import com.beeregg2001.komorebi.data.SettingsRepository
+import com.beeregg2001.komorebi.data.repository.tif.TifInput
 import com.beeregg2001.komorebi.viewmodel.*
 import com.beeregg2001.komorebi.common.safeRequestFocus
 import com.beeregg2001.komorebi.common.safeRequestFocusWithRetry
@@ -85,6 +86,18 @@ fun LivePlayerScreen(
     livePlayerViewModel: LivePlayerViewModel = hiltViewModel(),
     timeFormat: String = "24H"
 ) {
+    val selectedBackend by settingsViewModel.backendType.collectAsState()
+    if (selectedBackend == TifInput.BACKEND_TYPE) {
+        val tifChannels by channelViewModel.groupedChannels.collectAsState()
+        TifLivePlayerScreen(
+            channel = channel,
+            groupedChannels = tifChannels,
+            isMiniListOpen = isMiniListOpen,
+            onMiniListToggle = onMiniListToggle,
+            onChannelSelect = onChannelSelect
+        )
+        return
+    }
     val uiContext = LocalContext.current
     val colors = KomorebiTheme.colors
     val scope = rememberCoroutineScope()

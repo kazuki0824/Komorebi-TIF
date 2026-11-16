@@ -633,8 +633,11 @@ class SettingsViewModel @Inject constructor(
             context.imageLoader.diskCache?.clear()
         } catch (e: Exception) {
         }
-        syncEngine.launchSyncAllRecords(forceFullSync = true)
-        forceSyncStreamQualities()
+        // tv#116は録画に非対応。サーバー向けの録画同期や画質取得は起動しない。
+        if (newType != "TIF") {
+            syncEngine.launchSyncAllRecords(forceFullSync = true)
+            forceSyncStreamQualities()
+        }
     }
 
     fun updateEdcbIp(ip: String) = viewModelScope.launch(Dispatchers.IO) {

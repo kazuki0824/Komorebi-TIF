@@ -4,6 +4,11 @@ package com.beeregg2001.komorebi.ui.main
 
 import android.os.Build
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
+import com.beeregg2001.komorebi.data.repository.tif.TifInput
 import androidx.annotation.RequiresApi
 import androidx.compose.animation.*
 import androidx.compose.animation.core.animateDpAsState
@@ -120,7 +125,18 @@ fun MainRootScreen(
     }
 
     val backendType by homeViewModel.backendType.collectAsState()
-    LaunchedEffect(backendType) { state.backendType = backendType }
+    val listingsPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) channelViewModel.fetchChannels()
+        else state.toastMessage = "TV番組一覧へのアクセス許可が必要です。アプリの権限設定で許可してください。"
+    }
+    LaunchedEffect(backendType) {
+        state.backendType = backendType
+        if (backendType == TifInput.BACKEND_TYPE) {
+            if (ContextCompat.checkSelfPermission(context, TifInput.READ_LISTINGS_PERMISSION) ==
+                PackageManager.PERMISSION_GRANTED) channelViewModel.fetchChannels()
+            else listingsPermission.launch(TifInput.READ_LISTINGS_PERMISSION)
+        }
+    }
 
     val baseTabs = state.getVisibleTabs()
     val favoriteBaseballTeams by homeViewModel.favoriteBaseballTeams.collectAsState()
