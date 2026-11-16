@@ -64,11 +64,16 @@ object TifInput {
         // 再スキャンによるrow ID再利用などで、保存済みIDが別の入力へ乗り移らないようにする。
         val cursor = context.contentResolver.query(
             TvContract.buildChannelUri(rowId),
-            arrayOf(TvContract.Channels.COLUMN_INPUT_ID, TvContract.Channels.COLUMN_BROWSABLE),
+            arrayOf(
+                TvContract.Channels.COLUMN_INPUT_ID,
+                TvContract.Channels.COLUMN_BROWSABLE,
+                TvContract.Channels.COLUMN_SEARCHABLE
+            ),
             null, null, null
         ) ?: return null
         val stillOwned = cursor.use { rows ->
-            rows.moveToFirst() && rows.getString(0) == info.id && rows.getInt(1) == 1
+            rows.moveToFirst() && rows.getString(0) == info.id &&
+                rows.getInt(1) == 1 && rows.getInt(2) == 1
         }
         return if (stillOwned) TuneTarget(info.id, TvContract.buildChannelUri(rowId)) else null
     }
