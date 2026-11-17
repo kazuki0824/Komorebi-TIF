@@ -127,7 +127,7 @@ class EpgRepository @Inject constructor(
     }
 
     @RequiresApi(Build.VERSION_CODES.O)
-    fun searchFuturePrograms(
+    suspend fun searchFuturePrograms(
         query: String = "",
         genre: String? = null,
         dateStr: String? = null,
@@ -155,7 +155,13 @@ class EpgRepository @Inject constructor(
             null
         }
 
-        memoryCache.values.flatten().forEach { wrapper ->
+        // backend別に保持したcacheを、検索時も選択中backendだけに限定する。
+        // 全cache.valuesを検索すると切替前のEPGが結果に混入する。
+        val selectedBackend = settingsRepository.backendType.first()
+        memoryCache.entries.asSequence()
+            .filter { (key, _) -> key.startsWith(selectedBackend + "_") }
+            .flatMap { (_, channels) -> channels.asSequence() }
+            .forEach { wrapper ->
             if (!channelName.isNullOrBlank() && !wrapper.channel.name.contains(
                     channelName,
                     ignoreCase = true

@@ -16,7 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.OffsetDateTime
-import java.time.ZoneOffset
+import java.time.ZoneId
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -201,15 +201,17 @@ class TifRepository @Inject constructor(
         }
     }
 
-    private fun utc(ms: Long): String =
-        OffsetDateTime.ofInstant(Instant.ofEpochMilli(ms), ZoneOffset.UTC).toString()
+    // TvProvider epochはUTC基準の瞬間。既存UIはOffsetDateTimeをゾーン変換せず表示・
+    // 放送日04:00境界で評価するため、モデル境界で端末の表示ゾーンへ変換する。
+    private fun displayTime(ms: Long): String =
+        OffsetDateTime.ofInstant(Instant.ofEpochMilli(ms), ZoneId.systemDefault()).toString()
 
     private fun seconds(start: Long, end: Long): Int =
         ((end - start) / 1000).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
 
     private fun ProgramRow.toLive(): Program = Program(
         id = "tif-program:" + id, title = title, description = description,
-        detail = null, startTime = utc(start), endTime = utc(end),
+        detail = null, startTime = displayTime(start), endTime = displayTime(end),
         duration = seconds(start, end), genres = null, videoResolution = null
     )
 
@@ -316,7 +318,7 @@ class TifRepository @Inject constructor(
                         network_id = row.onid.toInt(), service_id = row.sid.toInt(),
                         event_id = program.eventId, title = program.title,
                         description = program.description, detail = null,
-                        start_time = utc(program.start), end_time = utc(program.end),
+                        start_time = displayTime(program.start), end_time = displayTime(program.end),
                         duration = seconds(program.start, program.end), is_free = program.isFree,
                         genres = null, video_type = null, audio_type = null, audio_sampling_rate = null
                     )

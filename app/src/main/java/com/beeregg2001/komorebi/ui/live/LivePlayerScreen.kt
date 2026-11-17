@@ -86,8 +86,16 @@ fun LivePlayerScreen(
     livePlayerViewModel: LivePlayerViewModel? = null,
     timeFormat: String = "24H"
 ) {
-    val backend by settingsViewModel.backendType.collectAsState()
-    if (backend == TifInput.BACKEND_TYPE) {
+    val backend by settingsViewModel.confirmedBackendType.collectAsState(initial = null)
+    if (backend == null) {
+        // backend未確定の間はNetwork/TIF双方のPlayer ViewModelを生成しない。
+        androidx.compose.foundation.layout.Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("再生バックエンドを確認しています…")
+        }
+    } else if (backend == TifInput.BACKEND_TYPE) {
         val channels by channelViewModel.groupedChannels.collectAsState()
         TifLivePlayerScreen(
             channel = channel,

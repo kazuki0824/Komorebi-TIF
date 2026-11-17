@@ -32,6 +32,8 @@ import com.beeregg2001.komorebi.ColdStartDiag
 import com.beeregg2001.komorebi.ui.home.LoadingScreen
 import com.beeregg2001.komorebi.ui.live.LivePlayerScreen
 import com.beeregg2001.komorebi.ui.video.player.VideoPlayerScreen
+import com.beeregg2001.komorebi.data.model.RecordedProgram
+import com.beeregg2001.komorebi.data.model.RecordedVideo
 import com.beeregg2001.komorebi.viewmodel.*
 import com.beeregg2001.komorebi.ui.theme.AppTheme
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
@@ -753,17 +755,39 @@ fun MainRootScreen(
                                     }
                                 )
                             } else if (state.selectedSmbItem != null) {
-                                val baseProgram =
-                                    recordViewModel.recentRecordings.collectAsState().value.firstOrNull()
-                                if (baseProgram != null) {
-                                    val dummyProgram = baseProgram.copy(
-                                        id = state.selectedSmbItem!!.path.hashCode(),
-                                        title = state.selectedSmbItem!!.name,
-                                        description = "SMBネットワーク再生: ${state.selectedSmbItem!!.path}"
+                                val smbItem = requireNotNull(state.selectedSmbItem)
+                                // SMB再生に必要な表示モデルはSMB項目から作る。録画履歴は一切参照しない。
+                                // SmbVlcPlayerScreenの既存UI型に合わせるためだけのアダプターであり、
+                                // 放送録画の実データがあるかのように扱わない。
+                                val dummyProgram = remember(smbItem) {
+                                    val fileTime = java.time.Instant.ofEpochMilli(
+                                        smbItem.lastModified.coerceAtLeast(0L)
+                                    ).toString()
+                                    val playbackId = smbItem.path.hashCode()
+                                    RecordedProgram(
+                                        id = playbackId,
+                                        title = smbItem.name,
+                                        description = "SMBネットワーク再生: " + smbItem.path,
+                                        startTime = fileTime,
+                                        endTime = fileTime,
+                                        duration = 0.0,
+                                        isPartiallyRecorded = false,
+                                        recordedVideo = RecordedVideo(
+                                            id = playbackId,
+                                            status = "SMB",
+                                            filePath = smbItem.path,
+                                            recordingStartTime = fileTime,
+                                            recordingEndTime = fileTime,
+                                            duration = 0.0,
+                                            containerFormat = smbItem.name.substringAfterLast('.', ""),
+                                            videoCodec = "",
+                                            audioCodec = ""
+                                        )
                                     )
-                                    com.beeregg2001.komorebi.ui.video.smb.player.SmbVlcPlayerScreen(
+                                }
+                                com.beeregg2001.komorebi.ui.video.smb.player.SmbVlcPlayerScreen(
                                         program = dummyProgram,
-                                        smbItem = state.selectedSmbItem!!,
+                                        smbItem = smbItem,
                                         initialPositionMs = state.initialPlaybackPositionMs,
                                         showControls = state.showPlayerControls,
                                         onShowControlsChange = { state.showPlayerControls = it },
@@ -786,13 +810,6 @@ fun MainRootScreen(
                                         },
                                         settingsViewModel = settingsViewModel
                                     )
-                                } else {
-                                    LaunchedEffect(Unit) {
-                                        state.toastMessage =
-                                            "再生用のダミーデータを生成できませんでした"
-                                        state.selectedSmbItem = null
-                                    }
-                                }
                             }
                         }
                     }

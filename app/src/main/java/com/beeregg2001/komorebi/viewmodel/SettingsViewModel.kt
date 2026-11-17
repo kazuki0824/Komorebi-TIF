@@ -23,6 +23,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -186,6 +187,9 @@ class SettingsViewModel @Inject constructor(
     val lastSyncedAt: StateFlow<Long> = db.syncMetaDao().getSyncMetaFlow()
         .map { it?.lastSyncedAt ?: 0L }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
+
+    // 初回DataStore emission前にKonomiTVと決め打ちしない。TIF経路が不要なJNIをロードするのを防ぐ。
+    val confirmedBackendType: Flow<String?> = settingsRepository.backendType.map { it }
 
     val backendType: StateFlow<String> = settingsRepository.backendType.stateIn(
         viewModelScope,

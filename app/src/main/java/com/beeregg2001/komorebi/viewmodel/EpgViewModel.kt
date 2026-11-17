@@ -61,6 +61,10 @@ class EpgViewModel @OptIn(UnstableApi::class)
 
     private var hasInitialFetched = false
     private var observedBackend: String? = null
+    // Main/Default workerを跨ぐ非同期検索・スライスの旧backend結果の公開を禁止する。
+    @Volatile private var backendGeneration: Long = 0L
+    private var searchGeneration: Long = 0L
+    private var searchJob: Job? = null
     private var epgJob: Job? = null
 
     // ★ 追加: DB検索待ちをゼロにするためのメモリキャッシュ群
@@ -175,7 +179,10 @@ class EpgViewModel @OptIn(UnstableApi::class)
         isLiveOnly: Boolean = false,
         channelName: String? = null
     ) {
-        viewModelScope.launch {
+        searchJob?.cancel()
+        val generation = backendGeneration
+        val request = ++searchGeneration
+        searchJob = viewModelScope.launch {
             _isSearching.value = true
             val displayQuery = listOfNotNull(
                 keyword.takeIf { it.isNotBlank() },
@@ -218,12 +225,20 @@ class EpgViewModel @OptIn(UnstableApi::class)
                     }.awaitAll()
                 }
 
-                _searchResults.value = results
+                if (generation == backendGeneration && request == searchGeneration) {
+                    _searchResults.value = results
+                }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e("EpgViewModel", "Search Error", e)
-                _searchResults.value = emptyList()
+                if (generation == backendGeneration && request == searchGeneration) {
+                    _searchResults.value = emptyList()
+                }
             } finally {
-                _isSearching.value = false
+                if (generation == backendGeneration && request == searchGeneration) {
+                    _isSearching.value = false
+                }
             }
         }
     }
@@ -235,6 +250,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
         isLiveOnly: Boolean = false,
         channelName: String? = null
     ): List<UiSearchResultItem> {
+        val generation = backendGeneration
         return try {
             val rawResults = withContext(Dispatchers.Default) {
                 repository.searchFuturePrograms(keyword, genre, dateStr, isLiveOnly, channelName)
@@ -248,7 +264,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
                 }
             }.take(100)
 
-            withContext(Dispatchers.IO) {
+            val results = withContext(Dispatchers.IO) {
                 topMatches.map { item ->
                     async {
                         UiSearchResultItem(
@@ -259,12 +275,18 @@ class EpgViewModel @OptIn(UnstableApi::class)
                     }
                 }.awaitAll()
             }
+            if (generation == backendGeneration) results else emptyList()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             emptyList()
         }
     }
 
     fun clearSearch() {
+        searchJob?.cancel()
+        searchGeneration++
+        _isSearching.value = false
         _activeSearchQuery.value = ""
         _searchQuery.value = ""
         _searchResults.value = emptyList()
@@ -296,7 +318,10 @@ class EpgViewModel @OptIn(UnstableApi::class)
                 _selectedBroadcastingType
             ) { isInit, backend, mIp, mPort, type ->
                 if (observedBackend != backend) {
+                    backendGeneration++
                     epgJob?.cancel()
+                    sliceJob?.cancel()
+                    clearSearch()
                     epgMemoryCache.clear()
                     logoMemoryCache.clear()
                     fullEpgData = emptyList()
@@ -411,20 +436,26 @@ class EpgViewModel @OptIn(UnstableApi::class)
     private var sliceJob: Job? = null
 
     private fun sliceAndEmitEpgData() {
+        sliceJob?.cancel()
         if (fullEpgData.isEmpty()) return
+        val generation = backendGeneration
+        val sourceData = fullEpgData
+        val sourceLogos = fullLogoUrls
+        val sourceTargetTime = currentTargetTime
+        val sourceMirakurunIp = mirakurunIp
+        val sourceMirakurunPort = mirakurunPort
         // ★ 最適化 + 競合の修正:
         //   従来は呼ばれるたびに新しいコルーチンを起動しっぱなしだったため、
         //   日付を素早く連打すると同じデータに対する重いスライス処理が多重に走り、
         //   さらに完了順が前後すると古い結果が新しい結果を上書きする可能性があった。
-        sliceJob?.cancel()
         sliceJob = viewModelScope.launch(Dispatchers.Default) {
 
-            val tvDayStart = getTvDayStart(currentTargetTime)
+            val tvDayStart = getTvDayStart(sourceTargetTime)
             val tvDayEnd = tvDayStart.plusHours(24)
             val tvDayStartMs = tvDayStart.toInstant().toEpochMilli()
             val tvDayEndMs = tvDayEnd.toInstant().toEpochMilli()
 
-            val slicedData = fullEpgData.map { wrapper ->
+            val slicedData = sourceData.map { wrapper ->
                 val filteredPrograms = wrapper.programs.filter { prog ->
                     val startMs = parseEpochMillis(prog.start_time)
                     val endMs = parseEpochMillis(prog.end_time)
@@ -435,13 +466,19 @@ class EpgViewModel @OptIn(UnstableApi::class)
                 wrapper.copy(programs = filteredPrograms)
             }
 
-            uiState = EpgUiState.Success(
-                data = slicedData,
-                logoUrls = fullLogoUrls,
-                mirakurunIp = mirakurunIp,
-                mirakurunPort = mirakurunPort,
-                targetTime = currentTargetTime
-            )
+            // CPU上のmap/filterはcancel()だけでは即停止しない。
+            // 計算完了後にgenerationとactiveを確認し、Mainでのみ描画状態を公開する。
+            ensureActive()
+            withContext(Dispatchers.Main.immediate) {
+                if (generation != backendGeneration || !isActive) return@withContext
+                uiState = EpgUiState.Success(
+                    data = slicedData,
+                    logoUrls = sourceLogos,
+                    mirakurunIp = sourceMirakurunIp,
+                    mirakurunPort = sourceMirakurunPort,
+                    targetTime = sourceTargetTime
+                )
+            }
         }
     }
 

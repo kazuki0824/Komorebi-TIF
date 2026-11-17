@@ -50,6 +50,18 @@ KomorebiがAndroid標準TV Input Framework（TIF）を経由して、OSに登録
 | TIFで録画UIが残る | 録画予約タブを隠し、ビデオタブはSMB専用案内。EPG予約ボタンを非表示・AI予約要求を拒否 | 非対応機能が操作できない／SMBは利用可能 |
 | ビルド・受入れ記録 | Draftを継続し、未実施項目を下表に残す | ビルド・実機ログ一式が必要 |
 
+### 2026-11-17 追加レビューで指摘された実装境界
+
+| 指摘 | 対応の責務 | 検証境界 |
+| --- | --- | --- |
+| バックエンド初回未確定によるJNIロード | `SettingsViewModel.confirmedBackendType`は初回DataStore emissionまではnull。再生親Composableは確定までどちらのプレイヤーも生成しない | 保存済みTIFでプロセス再起動し、Media3/JNIを生成しないことを確認 |
+| 録画0件でSMB起動不能 | SMBの表示用`RecordedProgram`は`SmbItem`だけで構築し、録画一覧から流用しない | 録画DBが空のTIFでSMBファイルを起動 |
+| TvProvider時刻の表示ゾーン | epochを変更せず、UIモデルへの投影時に端末`ZoneId.systemDefault()`でISO8601を表現 | 日本時間07:00と04:00放送日境界、日付跨ぎの表示・検索 |
+| EPG検索に他backendのcacheが混入 | Repositoryは現在のbackend接頭辞のcacheのみを検索。ViewModelは切替時に検索ジョブと結果を破棄 | KonomiTVにのみ存在する番組がTIF選択後に検索されない |
+| EPG旧スライスが描画を上書き | sliceJobを取消し、計算終了後にbackend generationとactive状態を検査してMainで公開 | 旧スライス遅延中にTIF切替し、旧Successが表示されない |
+
+これらは別々の新機能を増設するのではなく、すでにあるTIF/ネットワーク境界で必要な所有関係・時刻表現・非同期結果の一貫性を修正するもの。受入れログは未取得。
+
 ### 実機受入れ記録（未実施）
 
 | 項目 | 結果 | 記録すべき証跡 |
