@@ -135,6 +135,7 @@ fun MainRootScreen(
             // 既存バックエンドから切替えた際の録画・予約オーバーレイを閉じる。
             state.isRecordListOpen = false
             state.isSeriesListOpen = false
+            state.selectedProgram = null // 録画番組再生は旧バックエンドに依存する。SMBは保持する。
             state.selectedReserve = null
             state.editingReserveItem = null
             state.editingNewProgram = null
