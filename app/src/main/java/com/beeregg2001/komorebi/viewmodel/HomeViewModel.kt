@@ -206,7 +206,13 @@ class HomeViewModel @Inject constructor(
             val startSearch = now.minusHours(1)
             val endSearch = now.plusDays(3)
 
-            val types = listOf("GR", "BS", "CS")
+            // 汎用TIFのATSC/DVB/IPTV等はTVに分類される。外部INPUTはEPGを持たない。
+            // 従来ネットワークバックエンドの取得種別は変更しない。
+            val types = if (settingsRepository.backendType.first() == "TIF") {
+                listOf("GR", "BS", "CS", "TV")
+            } else {
+                listOf("GR", "BS", "CS")
+            }
 
             val allPrograms = types.map { type ->
                 async {

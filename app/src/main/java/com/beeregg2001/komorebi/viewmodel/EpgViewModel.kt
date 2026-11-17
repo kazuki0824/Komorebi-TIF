@@ -327,6 +327,8 @@ class EpgViewModel @OptIn(UnstableApi::class)
                     fullEpgData = emptyList()
                     fullLogoUrls = emptyList()
                     uiState = EpgUiState.Loading
+                    _isInitialLoadComplete.value = false
+                    _isPreloading.value = true
                     hasInitialFetched = false
                     observedBackend = backend
                 }
@@ -437,7 +439,17 @@ class EpgViewModel @OptIn(UnstableApi::class)
 
     private fun sliceAndEmitEpgData() {
         sliceJob?.cancel()
-        if (fullEpgData.isEmpty()) return
+        if (fullEpgData.isEmpty()) {
+            // EPGを持たないTIF（HDMIのみ等）も正常完了。Loadingのままにしない。
+            uiState = EpgUiState.Success(
+                data = emptyList(),
+                logoUrls = emptyList(),
+                mirakurunIp = mirakurunIp,
+                mirakurunPort = mirakurunPort,
+                targetTime = currentTargetTime
+            )
+            return
+        }
         val generation = backendGeneration
         val sourceData = fullEpgData
         val sourceLogos = fullLogoUrls

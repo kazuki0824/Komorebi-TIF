@@ -95,7 +95,8 @@ class TifRepository @Inject constructor(
 
     private data class ProgramRow(
         val id: Long, val eventId: Int, val start: Long, val end: Long,
-        val title: String, val description: String, val isFree: Boolean
+        val title: String, val description: String, val isFree: Boolean,
+        val genres: List<EpgGenre>?
     )
 
     private fun hasListingsPermission(): Boolean =
@@ -172,6 +173,12 @@ class TifRepository @Inject constructor(
             columns.add(TvContract.Programs.COLUMN_EVENT_ID)
             columns.lastIndex
         } else -1
+        val broadcastGenreIndex = columns.size
+        columns += TvContract.Programs.COLUMN_BROADCAST_GENRE
+        val canonicalGenreIndex = if (Build.VERSION.SDK_INT >= 26) {
+            columns += TvContract.Programs.COLUMN_CANONICAL_GENRE
+            columns.lastIndex
+        } else -1
         val scrambledIndex = if (Build.VERSION.SDK_INT >= 33) {
             columns.add(TvContract.Programs.COLUMN_SCRAMBLED)
             columns.lastIndex
@@ -194,7 +201,11 @@ class TifRepository @Inject constructor(
                     description = if (descriptionIndex >= 0) it.stringAt(descriptionIndex) else "",
                     // scrambling有無を「有料/無料」と同一視しない。未提供時は真偽を推測しない。
                     isFree = scrambledIndex >= 0 && !it.isNull(scrambledIndex) &&
-                        it.getInt(scrambledIndex) == 0
+                        it.getInt(scrambledIndex) == 0,
+                    genres = programGenres(
+                        if (canonicalGenreIndex >= 0) it.stringAt(canonicalGenreIndex) else "",
+                        it.stringAt(broadcastGenreIndex)
+                    )
                 )
             }
             result.sortedBy { it.start }
@@ -203,6 +214,44 @@ class TifRepository @Inject constructor(
 
     // TvProvider epochはUTC基準の瞬間。既存UIはOffsetDateTimeをゾーン変換せず表示・
     // 放送日04:00境界で評価するため、モデル境界で端末の表示ゾーンへ変換する。
+    /**
+     * TvContractの公開ジャンルだけを解釈する。
+     * canonical genreを日本語の既存UI分類へ写像し、broadcast genreの具体名は
+     * 未解釈のまま捨てずに保持する。ARIB等の内部descriptorは参照しない。
+     */
+    private fun programGenres(canonicalEncoded: String, broadcastEncoded: String): List<EpgGenre>? {
+        fun decode(encoded: String): List<String> = if (encoded.isBlank()) emptyList()
+            else TvContract.Programs.Genres.decode(encoded).filter { it.isNotBlank() }
+
+        val broadcast = decode(broadcastEncoded).map { it.substringAfter(':', it).trim() }
+        val canonicals = decode(canonicalEncoded)
+        val labels = mapOf(
+            "NEWS" to "ニュース", "SPORTS" to "スポーツ",
+            "MOVIES" to "映画", "DRAMA" to "ドラマ",
+            "MUSIC" to "音楽", "COMEDY" to "バラエティ",
+            "ENTERTAINMENT" to "バラエティ", "FAMILY_KIDS" to "キッズ",
+            "ANIMAL_WILDLIFE" to "ドキュメンタリー", "EDUCATION" to "趣味/教育",
+            "ARTS" to "趣味/教育", "TECH_SCIENCE" to "ドキュメンタリー",
+            "LIFE_STYLE" to "情報", "TRAVEL" to "趣味/教育",
+            "SHOPPING" to "情報", "GAMING" to "趣味/教育",
+            "PREMIER" to "その他"
+        )
+        val result = linkedSetOf<EpgGenre>()
+        // 放送由来の具体名を優先する。ARIBの場合は「スポーツ/野球」のような階層名。
+        for (item in broadcast) {
+            val parts = item.split('/').map { it.trim() }.filter { it.isNotEmpty() }
+            if (parts.isNotEmpty()) {
+                val major = parts.first()
+                result += EpgGenre(major = major, middle = parts.drop(1).joinToString("/"))
+            }
+        }
+        for (canonical in canonicals) {
+            val major = labels[canonical] ?: canonical
+            if (result.none { it.major == major }) result += EpgGenre(major = major, middle = "")
+        }
+        return result.toList().ifEmpty { null }
+    }
+
     private fun displayTime(ms: Long): String =
         OffsetDateTime.ofInstant(Instant.ofEpochMilli(ms), ZoneId.systemDefault()).toString()
 
@@ -212,7 +261,7 @@ class TifRepository @Inject constructor(
     private fun ProgramRow.toLive(): Program = Program(
         id = "tif-program:" + id, title = title, description = description,
         detail = null, startTime = displayTime(start), endTime = displayTime(end),
-        duration = seconds(start, end), genres = null, videoResolution = null
+        duration = seconds(start, end), genres = genres?.map { Genre(it.major, it.middle) }, videoResolution = null
     )
 
     private fun ChannelRow.toLiveChannel(current: ProgramRow?, next: ProgramRow?): Channel = Channel(
@@ -320,7 +369,7 @@ class TifRepository @Inject constructor(
                         description = program.description, detail = null,
                         start_time = displayTime(program.start), end_time = displayTime(program.end),
                         duration = seconds(program.start, program.end), is_free = program.isFree,
-                        genres = null, video_type = null, audio_type = null, audio_sampling_rate = null
+                        genres = program.genres, video_type = null, audio_type = null, audio_sampling_rate = null
                     )
                 }
             )

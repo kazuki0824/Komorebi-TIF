@@ -203,6 +203,20 @@ fun HomeLauncherScreen(
     val baseballDateOffset by homeViewModel.baseballDateOffset.collectAsState()
 
     val backendType by homeViewModel.backendType.collectAsState()
+    LaunchedEffect(backendType, groupedChannels.keys) {
+        if (backendType == "TIF") {
+            // 例えばATSC/DVB/IPTVだけの入力ではGRが存在しない。
+            // TvProviderが提供する放送チャンネルからEPGの初期種別を選ぶ。
+            val types = listOf("GR", "BS", "CS", "BS4K", "SKY", "TV")
+            val available = types.filter { it in groupedChannels.keys }
+            if (available.isNotEmpty() &&
+                epgViewModel.selectedBroadcastingType.value !in available
+            ) {
+                epgViewModel.updateBroadcastingType(available.first())
+            }
+            // HDMIなどINPUTのみの場合はEPG対象を作らず、空Successを表示する。
+        }
+    }
     val shouldCropLogo = remember(backendType) { backendType == "KONOMITV" }
 
     val tabs = remember(favoriteBaseballTeams, backendType) {
