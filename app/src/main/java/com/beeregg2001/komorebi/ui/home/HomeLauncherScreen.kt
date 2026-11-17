@@ -207,6 +207,7 @@ fun HomeLauncherScreen(
 
     val tabs = remember(favoriteBaseballTeams, backendType) {
         val base = listOf("ホーム", "ライブ", "ビデオ", "番組表", "録画予約")
+            .let { if (backendType == "TIF") it.filterNot { tab -> tab == "録画予約" } else it }
         if (favoriteBaseballTeams.isNotEmpty()) base + "プロ野球" else base
     }
 
@@ -899,9 +900,9 @@ fun HomeLauncherScreen(
                     when (currentTabLabel) {
                         "ホーム" -> HomeContents(
                             lastWatchedChannels = translatedLastChannels,
-                            watchHistory = ui.watchHistory,
+                            watchHistory = if (backendType == "TIF") emptyList() else ui.watchHistory,
                             hotChannels = ui.hotChannels,
-                            upcomingReserves = ui.upcomingReserves,
+                            upcomingReserves = if (backendType == "TIF") emptyList() else ui.upcomingReserves,
                             genrePickup = ui.genrePickup,
                             pickupGenreName = ui.pickupGenreLabel,
                             pickupTimeSlot = ui.genrePickupTimeSlot,
@@ -912,6 +913,7 @@ fun HomeLauncherScreen(
                                 if (it != null) onChannelClick(it, false)
                             },
                             onHistoryClick = { historyItem ->
+                                if (backendType == "TIF") return@HomeContents
                                 val programId = historyItem.program.id.toIntOrNull()
                                 // クリック時にのみ必要な値なので、composition では購読せず
                                 // ここで ViewModel の最新値を直接読み出す。
@@ -922,7 +924,7 @@ fun HomeLauncherScreen(
                                         ?: KonomiDataMapper.toDomainModel(historyItem)
                                 )
                             },
-                            onReserveClick = onReserveSelected,
+                            onReserveClick = { if (backendType != "TIF") onReserveSelected(it) },
                             onProgramClick = { onEpgProgramSelected(it) },
                             onNavigateToTab = { targetIndex ->
                                 ui.tabFocusRequesters.getOrNull(targetIndex)
@@ -1006,7 +1008,8 @@ fun HomeLauncherScreen(
                                 timeFormat = timeFormat,
                                 watchHistory = ui.watchHistory,
                                 aiFocusReturnTick = if (currentTabLabel == "ビデオ") aiFocusReturnTick else 0,
-                                onAiReturnConsumed = onAiReturnConsumed
+                                onAiReturnConsumed = onAiReturnConsumed,
+                                isTifMode = backendType == "TIF"
                             )
                             // 録画一覧は Room の Flow から供給され、ローカル DB からの
                             // 読み出しなので待ち合わせが必要なほど遅くはない。

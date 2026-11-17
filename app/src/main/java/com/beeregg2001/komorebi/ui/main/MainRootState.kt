@@ -145,7 +145,9 @@ class MainRootState {
     }
 
     fun getVisibleTabs(): List<String> {
-        return listOf("ホーム", "ライブ", "ビデオ", "番組表", "録画予約")
+        val tabs = listOf("ホーム", "ライブ", "ビデオ", "番組表", "録画予約")
+        // 「ビデオ」はSMBライブラリを含むため残す。「録画予約」だけ非表示。
+        return if (backendType == "TIF") tabs.filterNot { it == "録画予約" } else tabs
     }
 }
 

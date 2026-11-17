@@ -132,6 +132,18 @@ fun MainRootScreen(
     LaunchedEffect(backendType) {
         state.backendType = backendType
         if (backendType == TifInput.BACKEND_TYPE) {
+            // 既存バックエンドから切替えた際の録画・予約オーバーレイを閉じる。
+            state.isRecordListOpen = false
+            state.isSeriesListOpen = false
+            state.selectedReserve = null
+            state.editingReserveItem = null
+            state.editingNewProgram = null
+            state.reserveToDelete = null
+            state.selectedConditionReserveItem = null
+            state.editingCondition = null
+            state.selectedProgramForAutoReserve = null
+        }
+        if (backendType == TifInput.BACKEND_TYPE) {
             // パススルー入力のみならTvProvider一覧への権限は不要。
             val tunerListed = TifInput.inputs(context).any { !it.isPassthroughInput }
             if (!tunerListed ||
@@ -224,6 +236,10 @@ fun MainRootScreen(
 
                 is AiConciergeAction.SearchRecord -> {
                     closeAiConcierge(false)
+                    if (state.backendType == TifInput.BACKEND_TYPE) {
+                        state.toastMessage = "TIFでは録画検索に対応していません。SMBライブラリはビデオ画面から利用できます。"
+                        return@collect
+                    }
                     val tabIndex = tabs.indexOf("ビデオ")
                     if (tabIndex != -1) {
                         state.currentTabIndex = tabIndex; state.isRecordListOpen = true
@@ -254,6 +270,10 @@ fun MainRootScreen(
                 }
 
                 is AiConciergeAction.ReqRecSearch -> {
+                    if (state.backendType == TifInput.BACKEND_TYPE) {
+                        aiConciergeViewModel.submitSilentRecordSearchResult(action.keyword, emptyList())
+                        return@collect
+                    }
                     scope.launch {
                         val allRecs = recordViewModel.recentRecordings.value
                         val keywords =
@@ -276,6 +296,10 @@ fun MainRootScreen(
 
                 is AiConciergeAction.ReserveSingle -> {
                     closeAiConcierge(true)
+                    if (state.backendType == TifInput.BACKEND_TYPE) {
+                        state.toastMessage = "TIFでは録画・予約に対応していません。"
+                        return@collect
+                    }
                     reserveViewModel.addReserve(
                         programId = action.programId,
                         onFailure = { state.toastMessage = it }
@@ -286,6 +310,10 @@ fun MainRootScreen(
 
                 is AiConciergeAction.ReserveAuto -> {
                     closeAiConcierge(true)
+                    if (state.backendType == TifInput.BACKEND_TYPE) {
+                        state.toastMessage = "TIFでは録画・予約に対応していません。"
+                        return@collect
+                    }
                     reserveViewModel.addEpgReserve(
                         keyword = action.keyword,
                         networkId = 0,
@@ -416,7 +444,11 @@ fun MainRootScreen(
         }
     }
 
-    LaunchedEffect(state.isRecordListOpen) { if (state.isRecordListOpen) recordViewModel.triggerSmartSync() }
+    LaunchedEffect(state.isRecordListOpen, backendType) {
+        if (state.isRecordListOpen && backendType != TifInput.BACKEND_TYPE) {
+            recordViewModel.triggerSmartSync()
+        }
+    }
 
     val closeSettingsAndRefresh = {
         state.isSettingsOpen = false; state.isDataReady = false; state.isUiReady =
@@ -424,7 +456,10 @@ fun MainRootScreen(
         state.currentTabIndex = 0
         // 設定変更を確実に反映させるため、間引きを無視して更新する。
         channelViewModel.fetchChannels(force = true); epgViewModel.preloadAllEpgData(); homeViewModel.refreshHomeData(force = true)
-        recordViewModel.fetchRecentRecordings(forceRefresh = false); reserveViewModel.fetchReserves()
+        if (backendType != TifInput.BACKEND_TYPE) {
+            recordViewModel.fetchRecentRecordings(forceRefresh = false)
+            reserveViewModel.fetchReserves()
+        }
         state.settingsInitialCategoryIndex = 0
         state.settingsInitialFocusItemIndex = null
     }
@@ -563,7 +598,8 @@ fun MainRootScreen(
                     // 親玉（MainRoot）がイベントを横取りせず、子要素（PlayerControlsの早送り連打など）にイベントを譲る！
                     val isVideoUiVisible =
                         (state.selectedProgram != null || state.selectedSmbItem != null) && state.showPlayerControls
-                    val isLiveUiVisible = (state.selectedChannel != null) && state.playerShowOverlay
+                    val isLiveUiVisible = (state.selectedChannel != null) &&
+                        (state.playerShowOverlay || backendType == TifInput.BACKEND_TYPE)
                     if ((isVideoUiVisible || isLiveUiVisible) && isCenterKey) {
                         return@onPreviewKeyEvent false // 横取りせず、子要素へスルーさせる
                     }

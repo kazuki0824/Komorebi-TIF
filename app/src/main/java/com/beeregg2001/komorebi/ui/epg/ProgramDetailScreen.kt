@@ -54,6 +54,7 @@ fun ProgramDetailScreen(
     mode: ProgramDetailMode = ProgramDetailMode.EPG,
     isReserved: Boolean = false,
     isReadOnly: Boolean = false,
+    recordingAvailable: Boolean = true,
     onPlayClick: (EpgProgram) -> Unit = {},
     onRecordClick: (EpgProgram) -> Unit = {},
     onRecordDetailClick: (EpgProgram) -> Unit = {},
@@ -218,7 +219,9 @@ fun ProgramDetailScreen(
                                 )
                             }
 
-                            if (isReserved) {
+                            if (!recordingAvailable) {
+                                Text("TIFでは録画・予約に対応していません。視聴は利用できます。", color = colors.textSecondary)
+                            } else if (isReserved) {
                                 Button(
                                     onClick = { if (isClickEnabled) onEditReserveClick(safeProgram) },
                                     colors = ButtonDefaults.colors(
@@ -289,7 +292,15 @@ fun ProgramDetailScreen(
                             }
 
                         } else if (isFuture) {
-                            if (isReserved) {
+                            if (!recordingAvailable) {
+                                Text(
+                                    "TIFでは録画・予約に対応していません。",
+                                    color = colors.textSecondary,
+                                    modifier = Modifier
+                                        .focusRequester(initialFocusRequester)
+                                        .focusable()
+                                )
+                            } else if (isReserved) {
                                 Button(
                                     onClick = { if (isClickEnabled) onEditReserveClick(safeProgram) },
                                     colors = ButtonDefaults.colors(

@@ -81,23 +81,80 @@ fun LivePlayerScreen(
     isPiPMode: Boolean = false,
     onPiPRequested: () -> Unit = {},
     channelViewModel: ChannelViewModel = hiltViewModel(),
+    reserveViewModel: ReserveViewModel? = null,
+    settingsViewModel: SettingsViewModel = hiltViewModel(),
+    livePlayerViewModel: LivePlayerViewModel? = null,
+    timeFormat: String = "24H"
+) {
+    val backend by settingsViewModel.backendType.collectAsState()
+    if (backend == TifInput.BACKEND_TYPE) {
+        val channels by channelViewModel.groupedChannels.collectAsState()
+        TifLivePlayerScreen(
+            channel = channel,
+            groupedChannels = channels,
+            isMiniListOpen = isMiniListOpen,
+            onMiniListToggle = onMiniListToggle,
+            onChannelSelect = onChannelSelect,
+            showOverlay = showOverlay,
+            onShowOverlayChange = onShowOverlayChange
+        )
+    } else {
+        // Media3/JNIに依存するVMは非TIF枝でのみ取得する。署名上の既定引数で先に初期化しない。
+        NetworkLivePlayerScreen(
+            channel = channel,
+            initialQuality = initialQuality,
+            isBaseballMode = isBaseballMode,
+            isMiniListOpen = isMiniListOpen,
+            onMiniListToggle = onMiniListToggle,
+            showOverlay = showOverlay,
+            onShowOverlayChange = onShowOverlayChange,
+            isManualOverlay = isManualOverlay,
+            onManualOverlayChange = onManualOverlayChange,
+            isPinnedOverlay = isPinnedOverlay,
+            onPinnedOverlayChange = onPinnedOverlayChange,
+            isSubMenuOpen = isSubMenuOpen,
+            onSubMenuToggle = onSubMenuToggle,
+            onChannelSelect = onChannelSelect,
+            onBackPressed = onBackPressed,
+            onShowToast = onShowToast,
+            isPiPMode = isPiPMode,
+            onPiPRequested = onPiPRequested,
+            channelViewModel = channelViewModel,
+            reserveViewModel = reserveViewModel ?: hiltViewModel(),
+            settingsViewModel = settingsViewModel,
+            livePlayerViewModel = livePlayerViewModel ?: hiltViewModel(),
+            timeFormat = timeFormat
+        )
+    }
+}
+
+@RequiresApi(Build.VERSION_CODES.O)
+@Composable
+private fun NetworkLivePlayerScreen(
+    channel: Channel,
+    initialQuality: String = "1080p-60fps",
+    isBaseballMode: Boolean = false,
+    isMiniListOpen: Boolean,
+    onMiniListToggle: (Boolean) -> Unit,
+    showOverlay: Boolean,
+    onShowOverlayChange: (Boolean) -> Unit,
+    isManualOverlay: Boolean,
+    onManualOverlayChange: (Boolean) -> Unit,
+    isPinnedOverlay: Boolean,
+    onPinnedOverlayChange: (Boolean) -> Unit,
+    isSubMenuOpen: Boolean,
+    onSubMenuToggle: (Boolean) -> Unit,
+    onChannelSelect: (Channel) -> Unit,
+    onBackPressed: () -> Unit,
+    onShowToast: (String) -> Unit,
+    isPiPMode: Boolean = false,
+    onPiPRequested: () -> Unit = {},
+    channelViewModel: ChannelViewModel = hiltViewModel(),
     reserveViewModel: ReserveViewModel = hiltViewModel(),
     settingsViewModel: SettingsViewModel = hiltViewModel(),
     livePlayerViewModel: LivePlayerViewModel = hiltViewModel(),
     timeFormat: String = "24H"
 ) {
-    val selectedBackend by settingsViewModel.backendType.collectAsState()
-    if (selectedBackend == TifInput.BACKEND_TYPE) {
-        val tifChannels by channelViewModel.groupedChannels.collectAsState()
-        TifLivePlayerScreen(
-            channel = channel,
-            groupedChannels = tifChannels,
-            isMiniListOpen = isMiniListOpen,
-            onMiniListToggle = onMiniListToggle,
-            onChannelSelect = onChannelSelect
-        )
-        return
-    }
     val uiContext = LocalContext.current
     val colors = KomorebiTheme.colors
     val scope = rememberCoroutineScope()

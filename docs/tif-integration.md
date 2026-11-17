@@ -36,6 +36,34 @@ KomorebiがAndroid標準TV Input Framework（TIF）を経由して、OSに登録
 `ACCESS_ALL_EPG_DATA`・`ACCESS_TV_TUNER`・`TUNER_RESOURCE_ACCESS`などの
 特権権限をKomorebiへ付与しない。
 
+## PR #1 レビュー指摘の対応
+
+2026-11-17、レビュー7件について、実装に関係する6件を以下のコード経路へ接続する。実装の静的確認と実機受入れは別判定にする。
+
+| 指摘 | コード上の対応 | 残る実機確認 |
+| --- | --- | --- |
+| Media3 ViewModel/JNI の不要初期化 | `LivePlayerScreen`がTIFとネットワーク再生を分岐し、非TIF時だけ`LivePlayerViewModel`を取得する | ARM以外のTIF起動でも不要な.soを要求しない |
+| D-pad操作の横取り | 親の`onPreviewKeyEvent`をやめ、操作帯の子ButtonにKeyを先渡し | 決定、左右、字幕、一覧、操作帯をすべてリモコンで操作 |
+| 視聴制限案内 | `onContentBlocked`で端末の保護者設定確認と再選局を案内。無認証の解除経路は作らない | 設定確認、許可後の再選局、制限維持 |
+| 音声トラック選択 | `onTracksChanged`で実トラックID/説明を取得、`TvView.selectTrack(TYPE_AUDIO)`へ渡す。確定表示は`onTrackSelected`から更新 | 主副音声/二重音声の切替と選択通知 |
+| 操作帯の常時表示 | 親の`showOverlay`状態に統合。表示・非表示をTVボタンで切り替え、非表示時は決定キーで復帰 | 映像だけの表示、リモコン再表示、操作中のフォーカス維持 |
+| TIFで録画UIが残る | 録画予約タブを隠し、ビデオタブはSMB専用案内。EPG予約ボタンを非表示・AI予約要求を拒否 | 非対応機能が操作できない／SMBは利用可能 |
+| ビルド・受入れ記録 | Draftを継続し、未実施項目を下表に残す | ビルド・実機ログ一式が必要 |
+
+### 実機受入れ記録（未実施）
+
+| 項目 | 結果 | 記録すべき証跡 |
+| --- | --- | --- |
+| Androidビルド | 未実施 | 対象commit、Gradle/Android SDK/NDK、ABI、タスク・終了コード |
+| 通常APK導入と権限 | 未実施 | `adb install`、`READ_TV_LISTINGS`許可／拒否、公開行の取得 |
+| tv#116を含む複数TIS | 未実施 | 入力ID一覧、選局先、番組表、視聴中の映像・音声 |
+| 音声・字幕・保護者設定 | 未実施 | track通知と選択結果、字幕、制限状態と許可後再選局 |
+| 操作・資源寿命 | 未実施 | リモコン、連続選局、STOP/START、他TVアプリと競合時の動作 |
+| 他バックエンド回帰 | 未実施 | KonomiTV、EDCB、EPGStationのライブ／録画／予約 |
+| SMB回帰 | 未実施 | TIF選択時もSMB動画を再生可能 |
+
+実行環境を持たない場合は「OK」とせず、これらを未実施のまま記録する。
+
 ## 検査項目
 
 ### 静的
@@ -55,7 +83,8 @@ KomorebiがAndroid標準TV Input Framework（TIF）を経由して、OSに登録
 - [ ] TvProvider row IDの再利用、TIS追加/削除、inputID変更時の取り違えがない
 - [ ] `browsable=0`、`searchable=0`、未知broadcast type、番組情報なし、音声のみを確認
 - [ ] HDMI等のpassthrough入力を選局し、映像の表示・資源解放を確認
-- [ ] 選局、チャンネル切替、停止、バックグラウンド復帰、字幕、年齢制限、接続失敗を確認
+- [ ] 選局、チャンネル切替、停止、バックグラウンド復帰、字幕、年齢制限、音声トラック切替、接続失敗を確認
+- [ ] D-padで字幕・音声・チャンネル選択・操作帯の表示切替を確認
 - [ ] TIF/ネットワークバックエンド切替後、前バックエンドのEPGが混入しない
 - [ ] TIFの録画・予約UIが誤成功しない、既存ネットワークバックエンドに退行がない
 
