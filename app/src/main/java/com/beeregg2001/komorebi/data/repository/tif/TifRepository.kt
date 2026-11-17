@@ -249,7 +249,7 @@ class TifRepository @Inject constructor(
             val major = labels[canonical] ?: canonical
             if (result.none { it.major == major }) result += EpgGenre(major = major, middle = "")
         }
-        return result.toList().ifEmpty { null }
+        return result.takeIf { it.isNotEmpty() }?.toList()
     }
 
     private fun displayTime(ms: Long): String =
