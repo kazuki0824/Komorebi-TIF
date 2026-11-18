@@ -448,8 +448,10 @@ fun MainRootScreen(
                     } else startupChannelSetting
                     flatChannels.find { it.id == wanted }
                 } else if (startupChannelSetting == "LAST_WATCHED") {
-                    val lastHistory = lastChannels.firstOrNull()
-                    flatChannels.find { it.id == lastHistory?.id } ?: flatChannels.first()
+                    // 両backendの履歴を保持するため、直近の他backend履歴を飛ばす。
+                    lastChannels.firstNotNullOfOrNull { history ->
+                        flatChannels.find { it.id == history.id }
+                    } ?: flatChannels.first()
                 } else flatChannels.find { it.id == startupChannelSetting } ?: flatChannels.first()
 
                 if (targetChannel != null) {

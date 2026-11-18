@@ -79,6 +79,9 @@ class RecordSyncEngine @Inject constructor(
     private val dictionaryMutex = Mutex()
     private val smartSyncMutex = Mutex()
     private var activeSyncJob: Job? = null
+    private val backendTransitionMutex = Mutex()
+    @Volatile private var switchingBackend = false
+    private var dictionaryJob: Job? = null
 
     private data class SyncProfile(
         val name: String,
@@ -182,26 +185,40 @@ class RecordSyncEngine @Inject constructor(
             return
         }
         Log.i(TAG, "launchSyncAllRecords: launching. forceFullSync=$forceFullSync")
-        engineScope.launch {
-            if (settingsRepository.backendType.first() != "TIF") syncAllRecords(forceFullSync)
-        }
+        engineScope.launch { syncAllRecords(forceFullSync) }
     }
 
     fun launchSmartSync() {
-        engineScope.launch {
-            if (settingsRepository.backendType.first() != "TIF") smartSync()
-        }
+        engineScope.launch { smartSync() }
     }
 
     /** バックエンド切替前に進行中の録画DB書込みを終了させる。 */
-    suspend fun cancelActiveSyncAndWait() {
-        val job = jobMutex.withLock { activeSyncJob }
-        job?.cancel()
-        job?.join()
+    /**
+     * 録画DBへの書込みとbackend切替を直列化する。
+     * 待機ジョブもswitchingBackendを検査し、旧backendでの新規開始を禁止する。
+     */
+    suspend fun switchBackend(updateSetting: suspend () -> Unit) {
+        backendTransitionMutex.withLock {
+            switchingBackend = true
+            try {
+                val active = jobMutex.withLock { activeSyncJob }
+                active?.cancel()
+                active?.join()
+                // キューに積まれた同期はロック取得後にswitchingBackendを見て終了する。
+                syncMutex.withLock {
+                    val dictionary = dictionaryJob
+                    dictionary?.cancel()
+                    dictionary?.join()
+                    updateSetting()
+                }
+            } finally {
+                switchingBackend = false
+            }
+        }
     }
 
     suspend fun syncAllRecords(forceFullSync: Boolean = false) {
-        if (settingsRepository.backendType.first() == "TIF") return
+        if (switchingBackend || settingsRepository.backendType.first() == "TIF") return
         val currentJob = currentCoroutineContext().job
 
         var jobToJoin: Job? = null
@@ -217,7 +234,7 @@ class RecordSyncEngine @Inject constructor(
 
         syncMutex.withLock {
             // キュー待機中にTIFへ変わった場合は同期を開始しない。
-            if (settingsRepository.backendType.first() == "TIF") return@withLock
+            if (switchingBackend || settingsRepository.backendType.first() == "TIF") return@withLock
             jobMutex.withLock {
                 activeSyncJob = currentJob
             }
@@ -485,16 +502,19 @@ class RecordSyncEngine @Inject constructor(
             }
         }
 
-        if (isSyncSuccessful) {
-            engineScope.launch {
-                startDictionaryResolutionLoop()
+        if (isSyncSuccessful && !switchingBackend) {
+            dictionaryJob = engineScope.launch {
+                if (!switchingBackend && settingsRepository.backendType.first() != "TIF") {
+                    startDictionaryResolutionLoop()
+                }
             }
         }
     }
 
     suspend fun clearDatabase() {
-        if (settingsRepository.backendType.first() == "TIF") return
+        if (switchingBackend || settingsRepository.backendType.first() == "TIF") return
         syncMutex.withLock {
+            if (switchingBackend || settingsRepository.backendType.first() == "TIF") return@withLock
             withContext(Dispatchers.IO) {
                 db.recordedProgramDao().clearAll()
                 aiSeriesDictionaryDao.clearAll()
@@ -511,7 +531,7 @@ class RecordSyncEngine @Inject constructor(
     }
 
     suspend fun smartSync() {
-        if (settingsRepository.backendType.first() == "TIF") return
+        if (switchingBackend || settingsRepository.backendType.first() == "TIF") return
         if (!smartSyncMutex.tryLock()) {
             Log.i(TAG, "smartSync: already running. Skipping.")
             return
@@ -533,7 +553,7 @@ class RecordSyncEngine @Inject constructor(
             var isSyncSuccessful = false
 
             syncMutex.withLock {
-                if (settingsRepository.backendType.first() == "TIF") return@withLock
+                if (switchingBackend || settingsRepository.backendType.first() == "TIF") return@withLock
                 jobMutex.withLock { activeSyncJob = currentJob }
                 withContext(Dispatchers.IO) {
                     try {
@@ -593,8 +613,12 @@ class RecordSyncEngine @Inject constructor(
             }
 
             if (isSyncSuccessful) {
-                if (!dictionaryMutex.isLocked) {
-                    engineScope.launch { startDictionaryResolutionLoop() }
+                if (!switchingBackend && !dictionaryMutex.isLocked) {
+                    dictionaryJob = engineScope.launch {
+                        if (!switchingBackend && settingsRepository.backendType.first() != "TIF") {
+                            startDictionaryResolutionLoop()
+                        }
+                    }
                 } else {
                     Log.i(TAG, "smartSync: dictionary already running, skipping launch.")
                 }
@@ -606,6 +630,7 @@ class RecordSyncEngine @Inject constructor(
     }
 
     private suspend fun startDictionaryResolutionLoop() {
+        if (switchingBackend || settingsRepository.backendType.first() == "TIF") return
         // EPGStationは同期時点でサーバー側のシリーズ情報(recorded[].series等)を直接
         // seriesNameへ採用済み(EpgStationDataMapper参照)であり、このループが処理対象とする
         // 「未解決タイトル」自体が発生しない設計のため、辞書生成をスキップする。

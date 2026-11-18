@@ -57,26 +57,41 @@ fun TifLivePlayerScreen(
     var isStarted by remember(lifecycleOwner) {
         mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
     }
+    // Composeが停止中に描画フレームを持たなくても、TvViewを直ちにresetする。
+    // 世代はSTART毎に変え、停止直後に再開した場合も旧セッションを再使用しない。
+    var sessionGeneration by remember(lifecycleOwner) { mutableIntStateOf(0) }
+    var activeViewForLifecycle by remember { mutableStateOf<TvView?>(null) }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_STOP -> isStarted = false
-                Lifecycle.Event.ON_START -> isStarted = true
+                Lifecycle.Event.ON_STOP -> {
+                    activeViewForLifecycle?.reset()
+                    activeViewForLifecycle = null
+                    isStarted = false
+                }
+                Lifecycle.Event.ON_START -> {
+                    sessionGeneration++
+                    isStarted = true
+                }
                 else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            activeViewForLifecycle?.reset()
+            activeViewForLifecycle = null
+        }
     }
 
     // 明示的な再選局は新セッションを作成し、古いTvViewを解放する。
     var retuneGeneration by remember(channel.id) { mutableIntStateOf(0) }
-    var target by remember(channel.id, isStarted, retuneGeneration) {
+    var target by remember(channel.id, isStarted, retuneGeneration, sessionGeneration) {
         mutableStateOf<TifInput.TuneTarget?>(null)
     }
-    var resolutionComplete by remember(channel.id, isStarted, retuneGeneration) { mutableStateOf(false) }
-    var resolveError by remember(channel.id, isStarted, retuneGeneration) { mutableStateOf<String?>(null) }
-    LaunchedEffect(context, channel.id, isStarted, retuneGeneration) {
+    var resolutionComplete by remember(channel.id, isStarted, retuneGeneration, sessionGeneration) { mutableStateOf(false) }
+    var resolveError by remember(channel.id, isStarted, retuneGeneration, sessionGeneration) { mutableStateOf<String?>(null) }
+    LaunchedEffect(context, channel.id, isStarted, retuneGeneration, sessionGeneration) {
         target = null
         resolutionComplete = false
         resolveError = null
@@ -92,16 +107,16 @@ fun TifLivePlayerScreen(
         resolutionComplete = true
     }
 
-    var videoStatus by remember(channel.id, isStarted, retuneGeneration) {
+    var videoStatus by remember(channel.id, isStarted, retuneGeneration, sessionGeneration) {
         mutableStateOf("映像の受信を開始しています…")
     }
-    var videoAvailable by remember(channel.id, isStarted, retuneGeneration) { mutableStateOf(false) }
-    var contentBlocked by remember(channel.id, isStarted, retuneGeneration) { mutableStateOf(false) }
-    var audioTracks by remember(channel.id, isStarted, retuneGeneration) {
+    var videoAvailable by remember(channel.id, isStarted, retuneGeneration, sessionGeneration) { mutableStateOf(false) }
+    var contentBlocked by remember(channel.id, isStarted, retuneGeneration, sessionGeneration) { mutableStateOf(false) }
+    var audioTracks by remember(channel.id, isStarted, retuneGeneration, sessionGeneration) {
         mutableStateOf<List<TvTrackInfo>>(emptyList())
     }
-    var selectedAudioId by remember(channel.id, isStarted, retuneGeneration) { mutableStateOf<String?>(null) }
-    var activeView by remember(channel.id, isStarted, retuneGeneration) { mutableStateOf<TvView?>(null) }
+    var selectedAudioId by remember(channel.id, isStarted, retuneGeneration, sessionGeneration) { mutableStateOf<String?>(null) }
+    var activeView by remember(channel.id, isStarted, retuneGeneration, sessionGeneration) { mutableStateOf<TvView?>(null) }
     var captions by rememberSaveable { mutableStateOf(true) }
 
     val rootFocus = remember { FocusRequester() }
@@ -172,7 +187,7 @@ fun TifLivePlayerScreen(
             )
         } else {
             val tuneTarget = requireNotNull(target)
-            key(tuneTarget.inputId, channel.id, retuneGeneration) {
+            key(tuneTarget.inputId, channel.id, retuneGeneration, sessionGeneration) {
                 AndroidView(
                     factory = { viewContext ->
                         TvView(viewContext).apply {
@@ -231,6 +246,7 @@ fun TifLivePlayerScreen(
                             try {
                                 tune(tuneTarget.inputId, tuneTarget.channelUri)
                                 activeView = this
+                                activeViewForLifecycle = this
                             } catch (error: Exception) {
                                 videoStatus = "TV入力の選局に失敗しました: " + error.message
                                 reset()
@@ -244,6 +260,7 @@ fun TifLivePlayerScreen(
                         view.setCallback(null)
                         view.reset()
                         if (activeView === view) activeView = null
+                        if (activeViewForLifecycle === view) activeViewForLifecycle = null
                     },
                     modifier = Modifier.fillMaxSize()
                 )

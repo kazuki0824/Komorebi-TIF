@@ -461,7 +461,6 @@ class TifRepository @Inject constructor(
     override suspend fun getChannelLogoUrl(channelId: String): String = ""
 
     private suspend fun toEpgWrapper(row: ChannelRow, from: Long, to: Long): EpgChannelWrapper {
-            currentCoroutineContext().ensureActive()
             val id = TifInput.channelId(row.inputId, row.id)
             val programs = readProgramsOrEmpty(row.id, from, to)
             return EpgChannelWrapper(
@@ -500,10 +499,7 @@ class TifRepository @Inject constructor(
         val infos = TifInput.inputs(context)
         val rows = readTunerChannels(infos)
         rows.filter { channelType.isNullOrBlank() || it.category == channelType }
-            .map {
-                currentCoroutineContext().ensureActive()
-                toEpgWrapper(it, from, to)
-            }
+            .map { toEpgWrapper(it, from, to) }
     }
 
     override suspend fun getPinnedEpgPrograms(pinnedChannelIds: String): List<EpgChannelWrapper> =
@@ -516,10 +512,7 @@ class TifRepository @Inject constructor(
             // 既存のTIF可視性・所有inputID照合を通した後、query前にrowを絞る。
             readTunerChannels(TifInput.inputs(context))
                 .filter { TifInput.channelId(it.inputId, it.id) in wanted }
-                .map {
-                    currentCoroutineContext().ensureActive()
-                    toEpgWrapper(it, from, to)
-                }
+                .map { toEpgWrapper(it, from, to) }
         }
 
     // 汎用TIFの録画対応可否と、Komorebiの録画UI実装可否は別問題。

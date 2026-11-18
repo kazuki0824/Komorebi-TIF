@@ -267,10 +267,7 @@ class RecordViewModel @Inject constructor(
     }
 
     fun triggerSmartSync() {
-        // 最終的な同期ガードはRecordSyncEngine側にも設ける。
-        viewModelScope.launch {
-            if (settingsRepository.backendType.first() != "TIF") syncEngine.launchSmartSync()
-        }
+        syncEngine.launchSmartSync()
     }
 
     // ★ 修正: ソート状態も Pager のトリガーとして Combine に含める
@@ -424,11 +421,7 @@ class RecordViewModel @Inject constructor(
     }
 
     fun fetchRecentRecordings(forceRefresh: Boolean = false) {
-        viewModelScope.launch {
-            if (settingsRepository.backendType.first() != "TIF") {
-                syncEngine.launchSyncAllRecords(forceFullSync = forceRefresh)
-            }
-        }
+        syncEngine.launchSyncAllRecords(forceFullSync = forceRefresh)
     }
 
     fun loadNextPage() {}

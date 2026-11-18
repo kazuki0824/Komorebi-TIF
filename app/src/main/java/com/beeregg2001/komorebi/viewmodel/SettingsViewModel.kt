@@ -632,8 +632,9 @@ class SettingsViewModel @Inject constructor(
 
         // TIFへの切替前に旧backendの録画同期を停止する。
         // 全表消去は視聴履歴・録画同期メタデータを破壊するため行わない。
-        syncEngine.cancelActiveSyncAndWait()
-        settingsRepository.saveString(SettingsRepository.BACKEND_TYPE, newType)
+        syncEngine.switchBackend {
+            settingsRepository.saveString(SettingsRepository.BACKEND_TYPE, newType)
+        }
         try {
             context.imageLoader.memoryCache?.clear()
             context.imageLoader.diskCache?.clear()
