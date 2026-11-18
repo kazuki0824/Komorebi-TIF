@@ -251,11 +251,18 @@ fun HomeLauncherScreen(
     val returnPlayerFocusRequester = remember { FocusRequester() }
     val displayFlatChannels = remember(groupedChannels) { groupedChannels.values.flatten() }
 
-    val translatedLastChannels = remember(ui.lastChannels, displayFlatChannels) {
-        ui.lastChannels.map { savedChannel ->
-            displayFlatChannels.find {
-                it.networkId == savedChannel.networkId && it.serviceId == savedChannel.serviceId
-            } ?: savedChannel
+    val translatedLastChannels = remember(ui.lastChannels, displayFlatChannels, backendType) {
+        ui.lastChannels.mapNotNull { savedChannel ->
+            when {
+                // TIFは入力IDを含むchannel.idが正本。同じONID/SIDの別TISやHDMIへすり替えない。
+                // 入力が削除された場合も、古いカードから別入力を誤選局させない。
+                savedChannel.id.startsWith("tif:") ->
+                    if (backendType == "TIF") displayFlatChannels.find { it.id == savedChannel.id } else null
+                backendType == "TIF" -> null // 前バックエンドの履歴をTIFへ流用しない
+                else -> displayFlatChannels.find {
+                    it.networkId == savedChannel.networkId && it.serviceId == savedChannel.serviceId
+                } ?: savedChannel // 従来のネットワーク履歴挙動は維持
+            }
         }
     }
 
@@ -1112,10 +1119,15 @@ fun HomeLauncherScreen(
                                 dateOffset = baseballDateOffset,
                                 onDateOffsetChange = { homeViewModel.updateBaseballDateOffset(it) },
                                 onChannelClick = { channel ->
-                                    val matchedChannel = displayFlatChannels.find {
-                                        it.networkId == channel.networkId && it.serviceId == channel.serviceId
-                                    } ?: channel
-                                    onChannelClick(matchedChannel, true)
+                                    val matchedChannel = if (backendType == "TIF" || channel.id.startsWith("tif:")) {
+                                        // 野球カードもTIFの所有inputIdを保持して選局する。
+                                        displayFlatChannels.find { it.id == channel.id }
+                                    } else {
+                                        displayFlatChannels.find {
+                                            it.networkId == channel.networkId && it.serviceId == channel.serviceId
+                                        } ?: channel
+                                    }
+                                    if (matchedChannel != null) onChannelClick(matchedChannel, true)
                                 },
                                 onProgramClick = { onEpgProgramSelected(it) },
                                 topNavFocusRequester = ui.tabFocusRequesters[activeRenderIndex],

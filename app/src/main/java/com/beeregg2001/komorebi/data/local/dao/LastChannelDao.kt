@@ -7,9 +7,14 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface LastChannelDao {
-    // ★ 修正: channelId(文字列)ではなく、全国共通の networkId と serviceId の組み合わせで重複判定を行う
-    @Query("DELETE FROM last_watched_channel WHERE networkId = :networkId AND serviceId = :serviceId")
+    // 既存ネットワークbackendはONID/SIDで重複判定するが、
+    // 異なるTIF入力の同じONID/SID（HDMIではともに0）には影響させない。
+    @Query("DELETE FROM last_watched_channel WHERE channelId NOT LIKE 'tif:%' AND networkId = :networkId AND serviceId = :serviceId")
     suspend fun deleteByNetworkAndServiceId(networkId: Long, serviceId: Long)
+
+    // TIFは保存済みの完全なchannelId（inputIdを含む）が履歴の識別子。
+    @Query("DELETE FROM last_watched_channel WHERE channelId = :channelId")
+    suspend fun deleteByChannelId(channelId: String)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(entity: LastChannelEntity)
@@ -17,7 +22,11 @@ interface LastChannelDao {
     // リポジトリから呼ぶためのトランザクション
     @Transaction
     suspend fun insertOrUpdate(entity: LastChannelEntity) {
-        deleteByNetworkAndServiceId(entity.networkId, entity.serviceId)
+        if (entity.channelId.startsWith("tif:")) {
+            deleteByChannelId(entity.channelId)
+        } else {
+            deleteByNetworkAndServiceId(entity.networkId, entity.serviceId)
+        }
         insert(entity)
     }
 
