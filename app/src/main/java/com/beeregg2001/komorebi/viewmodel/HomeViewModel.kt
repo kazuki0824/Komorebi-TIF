@@ -339,13 +339,15 @@ class HomeViewModel @Inject constructor(
         }
         _genrePickupTimeSlot.value = actualTimeSlot
 
+        // AOSPのscrambledは料金区分ではない。TIFでは有料除外を適用できない。
+        val canApplyPaidExclusion = settingsRepository.backendType.first() != "TIF"
         allPrograms.flatMap { wrapper ->
             wrapper.programs.map { it to wrapper.channel.name }
         }.filter { (prog, _) ->
             val isGenre = prog.genres?.any { it.major.contains(genre) } == true
             if (!isGenre) return@filter false
 
-            val isFreeCheckOk = if (isExcludePaid) prog.is_free else true
+            val isFreeCheckOk = if (isExcludePaid && canApplyPaidExclusion) prog.is_free else true
             if (!isFreeCheckOk) return@filter false
 
             val start = runCatching { OffsetDateTime.parse(prog.start_time) }.getOrNull()

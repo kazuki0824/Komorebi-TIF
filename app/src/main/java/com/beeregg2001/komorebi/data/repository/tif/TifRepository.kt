@@ -95,7 +95,7 @@ class TifRepository @Inject constructor(
 
     private data class ProgramRow(
         val id: Long, val eventId: Int, val start: Long, val end: Long,
-        val title: String, val description: String, val isFree: Boolean,
+        val title: String, val description: String, val scrambled: Boolean?,
         val genres: List<EpgGenre>?
     )
 
@@ -199,9 +199,15 @@ class TifRepository @Inject constructor(
                     eventId = if (eventIdIndex >= 0) it.longAt(eventIdIndex).toInt() else 0,
                     start = from, end = to, title = it.stringAt(3),
                     description = if (descriptionIndex >= 0) it.stringAt(descriptionIndex) else "",
-                    // scrambling有無を「有料/無料」と同一視しない。未提供時は真偽を推測しない。
-                    isFree = scrambledIndex >= 0 && !it.isNull(scrambledIndex) &&
-                        it.getInt(scrambledIndex) == 0,
+                    // AOSP COLUMN_SCRAMBLED はスクランブルの有無。
+                    // API 32以下、NULL、未知値は不明のまま保持する（無料/有料と推測しない）。
+                    scrambled = if (scrambledIndex >= 0 && !it.isNull(scrambledIndex)) {
+                        when (it.getInt(scrambledIndex)) {
+                            0 -> false
+                            1 -> true
+                            else -> null
+                        }
+                    } else null,
                     genres = programGenres(
                         if (canonicalGenreIndex >= 0) it.stringAt(canonicalGenreIndex) else "",
                         it.stringAt(broadcastGenreIndex)
@@ -215,16 +221,39 @@ class TifRepository @Inject constructor(
     // TvProvider epochはUTC基準の瞬間。既存UIはOffsetDateTimeをゾーン変換せず表示・
     // 放送日04:00境界で評価するため、モデル境界で端末の表示ゾーンへ変換する。
     /**
-     * TvContractの公開ジャンルだけを解釈する。
-     * canonical genreを日本語の既存UI分類へ写像し、broadcast genreの具体名は
-     * 未解釈のまま捨てずに保持する。ARIB等の内部descriptorは参照しない。
+     * 公開COLUMN_BROADCAST_GENREを優先し、未提供時のみcanonicalを補完する。
+     * Genres.decode()後も#116は「、ARIB(...):」で複数ジャンルを1要素に連結している。
+     * この既知の書式だけ分割し、その他のTISの文字列は改変せず残す。
      */
     private fun programGenres(canonicalEncoded: String, broadcastEncoded: String): List<EpgGenre>? {
         fun decode(encoded: String): List<String> = if (encoded.isBlank()) emptyList()
             else TvContract.Programs.Genres.decode(encoded).filter { it.isNotBlank() }
 
-        val broadcast = decode(broadcastEncoded).map { it.substringAfter(':', it).trim() }
-        val canonicals = decode(canonicalEncoded)
+        val aribEntry = Regex("""^ARIB\(0x[0-9A-Fa-f]+/0x[0-9A-Fa-f]+\):(.*)$""")
+        val aribBoundary = Regex("""、(?=ARIB\(0x[0-9A-Fa-f]+/0x[0-9A-Fa-f]+\):)""")
+        val genres = linkedSetOf<EpgGenre>()
+
+        for (value in decode(broadcastEncoded)) {
+            for (part in value.split(aribBoundary)) {
+                val raw = part.trim()
+                if (raw.isEmpty()) continue
+                val name = aribEntry.matchEntire(raw)?.groupValues?.get(1)?.trim()
+                if (!name.isNullOrEmpty()) {
+                    val hierarchy = name.split('/').map { it.trim() }.filter { it.isNotEmpty() }
+                    if (hierarchy.isNotEmpty()) {
+                        genres += EpgGenre(hierarchy.first(), hierarchy.drop(1).joinToString("/"))
+                        continue
+                    }
+                }
+                // ARIB以外の放送文字列や認識不能なARIB値は元の公開値を保持する。
+                genres += EpgGenre(raw, "")
+            }
+        }
+
+        if (genres.isNotEmpty()) return genres.toList()
+
+        // AOSPのcanonicalは広い分類。具体的なbroadcast genreが既にある場合、
+        // ENTERTAINMENT→バラエティ等を重複追加して誤分類しない。
         val labels = mapOf(
             "NEWS" to "ニュース", "SPORTS" to "スポーツ",
             "MOVIES" to "映画", "DRAMA" to "ドラマ",
@@ -236,20 +265,10 @@ class TifRepository @Inject constructor(
             "SHOPPING" to "情報", "GAMING" to "趣味/教育",
             "PREMIER" to "その他"
         )
-        val result = linkedSetOf<EpgGenre>()
-        // 放送由来の具体名を優先する。ARIBの場合は「スポーツ/野球」のような階層名。
-        for (item in broadcast) {
-            val parts = item.split('/').map { it.trim() }.filter { it.isNotEmpty() }
-            if (parts.isNotEmpty()) {
-                val major = parts.first()
-                result += EpgGenre(major = major, middle = parts.drop(1).joinToString("/"))
-            }
+        for (canonical in decode(canonicalEncoded)) {
+            genres += EpgGenre(labels[canonical] ?: canonical, "")
         }
-        for (canonical in canonicals) {
-            val major = labels[canonical] ?: canonical
-            if (result.none { it.major == major }) result += EpgGenre(major = major, middle = "")
-        }
-        return result.takeIf { it.isNotEmpty() }?.toList()
+        return genres.takeIf { it.isNotEmpty() }?.toList()
     }
 
     private fun displayTime(ms: Long): String =
@@ -368,7 +387,9 @@ class TifRepository @Inject constructor(
                         event_id = program.eventId, title = program.title,
                         description = program.description, detail = null,
                         start_time = displayTime(program.start), end_time = displayTime(program.end),
-                        duration = seconds(program.start, program.end), is_free = program.isFree,
+                        duration = seconds(program.start, program.end),
+                        is_free = program.scrambled == false,
+                        is_scrambled = program.scrambled,
                         genres = program.genres, video_type = null, audio_type = null, audio_sampling_rate = null
                     )
                 }

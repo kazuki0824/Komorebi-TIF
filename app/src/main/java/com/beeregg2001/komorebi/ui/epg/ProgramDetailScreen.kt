@@ -457,6 +457,19 @@ fun ProgramDetailScreen(
                     fontFamily = NotoSansJP
                 )
                 Spacer(modifier = Modifier.height(12.dp))
+                // TIFのscrambledは料金区分ではない。未提供もそのまま可視化する。
+                if (!recordingAvailable) {
+                    Text(
+                        text = when (safeProgram.is_scrambled) {
+                            true -> "スクランブル: あり（料金区分は不明）"
+                            false -> "スクランブル: なし（料金区分は不明）"
+                            null -> "スクランブル: 情報なし（料金区分は不明）"
+                        },
+                        color = colors.textSecondary,
+                        fontFamily = NotoSansJP
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
                 Text(
                     text = safeProgram.title,
                     style = MaterialTheme.typography.displaySmall.copy(

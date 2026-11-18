@@ -773,6 +773,7 @@ fun SettingsScreen(
                             },
                             prefs.pickupGenre,
                             prefs.excludePaid,
+                            prefs.backendType == "TIF",
                             prefs.pickupTime,
                             prefs.startupTab,
                             itemFocusRequesters[4][0],

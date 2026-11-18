@@ -76,6 +76,14 @@ KomorebiがAndroid標準TV Input Framework（TIF）を経由して、OSに登録
 
 実行環境を持たない場合は「OK」とせず、これらを未実施のまま記録する。
 
+## 2026-11-18 追加レビュー対応：ジャンル／料金情報
+
+- TIFの放送ジャンルは公開 `TvContract.Programs.COLUMN_BROADCAST_GENRE` を `Genres.decode()` して扱う。#116の複数ARIBジャンルを1要素へ連結する形式は、認識できる `、ARIB(0x.../0x...):` 境界だけ分割し、各ジャンルの大分類・中分類を独立して保持する。他のTISが公開した未知の文字列はそのまま保持する。
+- Broadcastの具体分類がある場合はそれを優先する。粗いcanonical分類はbroadcast未提供時のみ補完し、アニメを誤って「バラエティ」にも所属させない。公開TvProvider列以上のARIB EIT処理はKomorebiで重複実装しない。
+- `COLUMN_SCRAMBLED` は **料金区分（無料／有料）ではなくスクランブル有無** を表す。API非対応／NULL／未知値を `is_scrambled=null` として保持する。既存の `is_free` はネットワークAPI互換のBooleanなのでTIFの料金判定には使わない。
+- TIFは料金情報がないため、設定画面で「有料放送を除外」を非対応と表示し、ホームのピックアップでもTIFだけ料金による除外を適用しない。番組詳細にはスクランブルのあり／なし／情報なしと料金区分不明を表示する。既存ネットワークbackendのフィルタ動作は維持する。
+- 受入れ（**未実施**）：#116の複数ジャンルと単一アニメ、canonicalだけ提供するTIS、未知のbroadcast文字列、API32・33以降でscrambled列NULL／明示0／明示1を持つ番組、ホームと検索の表示・絞り込みを確認する。
+
 ## 検査項目
 
 ### 静的

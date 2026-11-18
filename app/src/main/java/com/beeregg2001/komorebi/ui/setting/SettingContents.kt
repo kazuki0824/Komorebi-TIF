@@ -841,6 +841,7 @@ fun HomeDisplaySettingsContent(
     themeSeason: String,
     genre: String,
     excludePaid: String,
+    isTifBackend: Boolean,
     pickupTime: String,
     startupTab: String,
     modeR: FocusRequester,
@@ -973,7 +974,7 @@ fun HomeDisplaySettingsContent(
                 onClick = { onClick(timeR); onTime() })
             SettingItem(
                 AppStrings.SETTINGS_ITEM_EXCLUDE_PAID,
-                excludePaid,
+                if (isTifBackend) "TIFでは非対応（料金区分情報がありません）" else excludePaid,
                 Icons.Default.Lock,
                 modifier = Modifier
                     .focusRequester(exPaidR)
@@ -982,7 +983,10 @@ fun HomeDisplaySettingsContent(
                         up = timeR
                         down = FocusRequester.Cancel
                     },
-                onClick = { onClick(exPaidR); onExPaid() })
+                onClick = {
+                    onClick(exPaidR)
+                    if (!isTifBackend) onExPaid()
+                })
         }
     }
 }
