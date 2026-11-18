@@ -145,8 +145,6 @@ fun MainRootScreen(
             state.selectedConditionReserveItem = null
             state.editingCondition = null
             state.selectedProgramForAutoReserve = null
-        }
-        if (backendType == TifInput.BACKEND_TYPE) {
             // パススルー入力のみならTvProvider一覧への権限は不要。
             val tunerListed = TifInput.inputs(context).any { !it.isPassthroughInput }
             if (!tunerListed ||
@@ -159,10 +157,9 @@ fun MainRootScreen(
         }
     }
 
-    val baseTabs = state.getVisibleTabs()
     val favoriteBaseballTeams by homeViewModel.favoriteBaseballTeams.collectAsState()
-    val tabs = remember(favoriteBaseballTeams, baseTabs) {
-        if (favoriteBaseballTeams.isNotEmpty() && !baseTabs.contains("プロ野球")) baseTabs + "プロ野球" else baseTabs
+    val tabs = remember(state.backendType, favoriteBaseballTeams) {
+        visibleHomeTabs(state.backendType, favoriteBaseballTeams.isNotEmpty())
     }
 
     val safeTabIndex = state.currentTabIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0))

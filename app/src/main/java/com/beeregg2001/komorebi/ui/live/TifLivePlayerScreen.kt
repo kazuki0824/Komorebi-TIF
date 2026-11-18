@@ -278,15 +278,14 @@ fun TifLivePlayerScreen(
                     Button(
                         enabled = audioTracks.size > 1,
                         onClick = {
-                            val nextIndex = (selectedIndex + 1) % audioTracks.size
-                            val wanted = audioTracks[nextIndex].id
-                            if (audioTracks.any { it.id == wanted }) {
-                                try {
-                                    activeView?.selectTrack(TvTrackInfo.TYPE_AUDIO, wanted)
-                                    // 選択状態はTISのonTrackSelectedを正本とする。
-                                } catch (error: Exception) {
-                                    videoStatus = "音声切替に失敗しました: " + error.message
-                                }
+                            val tracks = audioTracks
+                            val nextIndex = (selectedIndex + 1) % tracks.size
+                            val wanted = tracks[nextIndex].id
+                            try {
+                                activeView?.selectTrack(TvTrackInfo.TYPE_AUDIO, wanted)
+                                // 選択状態はTISのonTrackSelectedを正本とする。
+                            } catch (error: Exception) {
+                                videoStatus = "音声切替に失敗しました: " + error.message
                             }
                         }
                     ) { Text("音声: " + selection + (if (audioTracks.size > 1) "（切替）" else "")) }

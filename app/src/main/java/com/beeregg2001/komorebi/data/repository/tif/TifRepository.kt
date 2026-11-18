@@ -32,10 +32,16 @@ object TifInput {
 
     data class TuneTarget(val inputId: String, val channelUri: Uri)
 
+    /** OSが公開する入力ラベルを使う。独自ラベル管理は持たない。 */
+    fun label(context: Context, info: TvInputInfo): String =
+        info.loadCustomLabel(context)?.toString()
+            ?: info.loadLabel(context)?.toString()
+            ?: info.id
+
     fun inputs(context: Context): List<TvInputInfo> {
         val manager = context.getSystemService(TvInputManager::class.java) ?: return emptyList()
         return manager.tvInputList.filterNot { it.isHidden(context) }
-            .sortedBy { it.loadCustomLabel(context)?.toString() ?: it.loadLabel(context)?.toString() ?: it.id }
+            .sortedBy { label(context, it) }
     }
 
     fun channelId(inputId: String, rowId: Long): String =
@@ -156,6 +162,17 @@ class TifRepository @Inject constructor(
             out.sortedWith(compareBy<ChannelRow>({ it.category }, { it.number }, { it.inputId }, { it.id }))
         }
     }
+
+    /** 番組情報がないTISでもチャンネルを残す。権限不備だけは必ず呼出元へ伝える。 */
+    private fun readProgramsOrEmpty(rowId: Long, start: Long, end: Long): List<ProgramRow> =
+        try {
+            readPrograms(rowId, start, end)
+        } catch (error: SecurityException) {
+            throw error
+        } catch (error: Exception) {
+            Log.w("TifRepository", "番組情報取得失敗 rowId=" + rowId, error)
+            emptyList()
+        }
 
     private fun readPrograms(rowId: Long, start: Long, end: Long): List<ProgramRow> {
         // optional列の導入APIを守り、古いTvProviderへ未知の列を要求しない。
@@ -299,8 +316,7 @@ class TifRepository @Inject constructor(
     )
 
     private fun TvInputInfo.toPassthroughChannel(): Channel {
-        val label = loadCustomLabel(context)?.toString()
-            ?: loadLabel(context)?.toString() ?: id
+        val label = TifInput.label(context, this)
         return Channel(
             id = TifInput.passthroughId(id),
             displayChannelId = label, name = label, channelNumber = label,
@@ -328,14 +344,7 @@ class TifRepository @Inject constructor(
         val now = System.currentTimeMillis()
         val channels = tunerRows.map { row ->
             // 別TISがEPGを公開していなくても視聴チャンネルまで消さない。
-            val programs = try {
-                readPrograms(row.id, now - 60_000L, now + 6 * 60 * 60_000L)
-            } catch (error: SecurityException) {
-                throw error // 権限問題は明示する
-            } catch (error: Exception) {
-                Log.w("TifRepository", "番組表取得失敗 rowId=" + row.id, error)
-                emptyList()
-            }
+            val programs = readProgramsOrEmpty(row.id, now - 60_000L, now + 6 * 60 * 60_000L)
             row.toLiveChannel(
                 programs.firstOrNull { it.start <= now && it.end > now },
                 programs.firstOrNull { it.start > now }
@@ -367,14 +376,7 @@ class TifRepository @Inject constructor(
         val rows = readTunerChannels(infos)
         rows.filter { channelType.isNullOrBlank() || it.category == channelType }.map { row ->
             val id = TifInput.channelId(row.inputId, row.id)
-            val programs = try {
-                readPrograms(row.id, from, to)
-            } catch (error: SecurityException) {
-                throw error
-            } catch (error: Exception) {
-                Log.w("TifRepository", "EPG取得失敗 rowId=" + row.id, error)
-                emptyList()
-            }
+            val programs = readProgramsOrEmpty(row.id, from, to)
             EpgChannelWrapper(
                 channel = EpgChannel(
                     id = id, display_channel_id = row.number.ifBlank { row.sid.toString() },

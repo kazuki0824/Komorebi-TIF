@@ -29,6 +29,13 @@ class AiFocusTicketManager {
  * MainRootScreenのすべてのUI状態(変数)を管理するState Holderクラス
  */
 @Stable
+/** 親子画面で同一タブ番号を使うための単一の生成規則。 */
+fun visibleHomeTabs(backendType: String, hasBaseballTeams: Boolean): List<String> {
+    val base = listOf("ホーム", "ライブ", "ビデオ", "番組表", "録画予約")
+    val supported = if (backendType == "TIF") base.filterNot { it == "録画予約" } else base
+    return if (hasBaseballTeams) supported + "プロ野球" else supported
+}
+
 class MainRootState {
     // タブ・選択状態
     var currentTabIndex by mutableIntStateOf(0)
@@ -144,11 +151,7 @@ class MainRootState {
                 selectedProgramForAutoReserve != null
     }
 
-    fun getVisibleTabs(): List<String> {
-        val tabs = listOf("ホーム", "ライブ", "ビデオ", "番組表", "録画予約")
-        // 「ビデオ」はSMBライブラリを含むため残す。「録画予約」だけ非表示。
-        return if (backendType == "TIF") tabs.filterNot { it == "録画予約" } else tabs
-    }
+    fun getVisibleTabs(): List<String> = visibleHomeTabs(backendType, false)
 }
 
 @Composable

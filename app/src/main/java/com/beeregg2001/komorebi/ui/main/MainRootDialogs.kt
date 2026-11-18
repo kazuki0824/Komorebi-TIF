@@ -234,6 +234,7 @@ fun MainRootDialogs(
             program = state.epgSelectedProgram!!,
             mode = ProgramDetailMode.EPG,
             recordingAvailable = canRecord,
+            isTifBackend = state.backendType == "TIF",
             isReserved = relatedReserve != null,
             onPlayClick = {
                 val channel = groupedChannels.values.flatten().find { ch -> ch.id == it.channel_id }

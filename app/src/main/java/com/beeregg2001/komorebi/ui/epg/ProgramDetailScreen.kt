@@ -55,6 +55,7 @@ fun ProgramDetailScreen(
     isReserved: Boolean = false,
     isReadOnly: Boolean = false,
     recordingAvailable: Boolean = true,
+    isTifBackend: Boolean = false,
     onPlayClick: (EpgProgram) -> Unit = {},
     onRecordClick: (EpgProgram) -> Unit = {},
     onRecordDetailClick: (EpgProgram) -> Unit = {},
@@ -220,7 +221,11 @@ fun ProgramDetailScreen(
                             }
 
                             if (!recordingAvailable) {
-                                Text("TIFでは録画・予約に対応していません。視聴は利用できます。", color = colors.textSecondary)
+                                Text(
+                                    if (isTifBackend) "TIFでは録画・予約に対応していません。視聴は利用できます。"
+                                    else "録画・予約は利用できません。視聴は利用できます。",
+                                    color = colors.textSecondary
+                                )
                             } else if (isReserved) {
                                 Button(
                                     onClick = { if (isClickEnabled) onEditReserveClick(safeProgram) },
@@ -294,7 +299,8 @@ fun ProgramDetailScreen(
                         } else if (isFuture) {
                             if (!recordingAvailable) {
                                 Text(
-                                    "TIFでは録画・予約に対応していません。",
+                                    if (isTifBackend) "TIFでは録画・予約に対応していません。"
+                                    else "録画・予約は利用できません。",
                                     color = colors.textSecondary,
                                     modifier = Modifier
                                         .focusRequester(initialFocusRequester)
@@ -458,7 +464,7 @@ fun ProgramDetailScreen(
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 // TIFのscrambledは料金区分ではない。未提供もそのまま可視化する。
-                if (!recordingAvailable) {
+                if (isTifBackend) {
                     Text(
                         text = when (safeProgram.is_scrambled) {
                             true -> "スクランブル: あり（料金区分は不明）"

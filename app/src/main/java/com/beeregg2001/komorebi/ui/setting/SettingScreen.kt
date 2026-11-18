@@ -604,8 +604,7 @@ fun SettingsScreen(
                                     else -> uiState.activeDialog = SettingDialogState.Selection(
                                         "セットアップするTV入力",
                                         options.map { info ->
-                                            val title = info.loadCustomLabel(context)?.toString()
-                                                ?: info.loadLabel(context)?.toString() ?: info.id
+                                            val title = TifInput.label(context, info)
                                             (title + " (" + info.id + ")") to info.id
                                         },
                                         options.first().id
