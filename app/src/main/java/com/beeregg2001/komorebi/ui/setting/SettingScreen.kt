@@ -604,10 +604,10 @@ fun SettingsScreen(
                             {
                                 val options = TifInput.inputs(context).filter { it.createSetupIntent() != null }
                                 when (options.size) {
-                                    0 -> toastMessage = "セットアップ可能なTV入力がありません"
+                                    0 -> toastMessage = "再設定できる入力がありません。初回登録は端末標準のテレビアプリまたはTV入力設定で実施してください。"
                                     1 -> startTifSetup(options.single().id)
                                     else -> uiState.activeDialog = SettingDialogState.Selection(
-                                        "セットアップするTV入力",
+                                        "再設定・スキャンするTV入力",
                                         options.map { info ->
                                             val title = TifInput.label(context, info)
                                             (title + " (" + info.id + ")") to info.id

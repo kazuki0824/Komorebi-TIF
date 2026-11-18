@@ -139,10 +139,34 @@ class ChannelViewModel @Inject constructor(
     private var isPollingPaused = false
 
     private val logoCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private var observedBackend: String? = null
+    private var backendGeneration = 0L
 
     init {
         startPolling()
         startProgressUpdater()
+        viewModelScope.launch {
+            settingsRepository.backendType.distinctUntilChanged().collect { backend ->
+                if (observedBackend == null) {
+                    observedBackend = backend
+                    return@collect
+                }
+                if (observedBackend != backend) {
+                    observedBackend = backend
+                    backendGeneration++
+                    pollingJob?.cancel()
+                    initialPollFetchJob?.cancel()
+                    fetchJob?.cancel()
+                    _groupedChannels.value = emptyMap()
+                    _liveRows.value = emptyList()
+                    _connectionError.value = false
+                    logoCache.clear()
+                    lastFetchedTimeMillis = System.currentTimeMillis()
+                    startPolling()
+                    fetchChannels(force = true)
+                }
+            }
+        }
     }
 
     fun setPollingPaused(paused: Boolean) {
@@ -186,7 +210,11 @@ class ChannelViewModel @Inject constructor(
                             channel = ch,
                             displayChannelId = ch.displayChannelId,
                             name = ch.name,
-                            programTitle = ch.programPresent?.title ?: "放送休止中",
+                            programTitle = ch.programPresent?.title ?: when {
+                                ch.id.startsWith("tif:input:") -> ch.name
+                                ch.id.startsWith("tif:") -> "番組情報なし"
+                                else -> "放送休止中"
+                            },
                             progress = progress,
                             hasProgram = ch.programPresent != null,
                             jikkyoForce = ch.jikkyoForce
@@ -198,8 +226,10 @@ class ChannelViewModel @Inject constructor(
 
     @RequiresApi(Build.VERSION_CODES.O)
     private suspend fun fetchChannelsInternal() {
+        val requestBackend = settingsRepository.backendType.first()
+        val generation = backendGeneration
         try {
-            _connectionError.value = false
+            if (generation == backendGeneration) _connectionError.value = false
             val response = liveProvider.getChannels()
 
             // サブチャンネル非表示設定を取得
@@ -246,25 +276,23 @@ class ChannelViewModel @Inject constructor(
                 filteredChannels.filter { it.isDisplay }.groupBy { it.type }
             }
 
-            // ★ 最適化: データが完全に同一の場合は更新（UIの再描画）をスキップする
-            if (_groupedChannels.value != processed) {
-                _groupedChannels.value = processed
-            }
-
             val newRows = transformToUiState(processed)
-            if (_liveRows.value != newRows) {
-                _liveRows.value = newRows
-            }
-
+            if (generation != backendGeneration ||
+                settingsRepository.backendType.first() != requestBackend) return
+            if (_groupedChannels.value != processed) _groupedChannels.value = processed
+            if (_liveRows.value != newRows) _liveRows.value = newRows
             lastFetchedTimeMillis = System.currentTimeMillis()
         } catch (e: CancellationException) {
             Log.d("ChannelViewModel", "fetchChannelsInternal cancelled")
             throw e
         } catch (e: Throwable) {
             Log.e("ChannelViewModel", "Error fetching channels", e)
-            _connectionError.value = true
+            if (generation == backendGeneration &&
+                settingsRepository.backendType.first() == requestBackend) {
+                _connectionError.value = true
+            }
         } finally {
-            _isLoading.value = false
+            if (generation == backendGeneration) _isLoading.value = false
         }
     }
 

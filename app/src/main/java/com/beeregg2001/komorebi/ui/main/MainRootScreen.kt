@@ -39,6 +39,7 @@ import com.beeregg2001.komorebi.ui.theme.AppTheme
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
 import com.beeregg2001.komorebi.ui.theme.getSeasonalBackgroundBrush
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -193,6 +194,10 @@ fun MainRootScreen(
 
                 is AiConciergeAction.PlayRecorded -> {
                     closeAiConcierge(false)
+                    if (settingsViewModel.confirmedBackendType.first() == TifInput.BACKEND_TYPE) {
+                        state.toastMessage = "TIFでは録画番組を再生できません。"
+                        return@collect
+                    }
                     val target =
                         recordViewModel.recentRecordings.value.find { it.id == action.videoId }
                     if (target != null) {

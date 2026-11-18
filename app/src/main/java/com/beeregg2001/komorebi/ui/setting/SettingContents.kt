@@ -348,8 +348,8 @@ fun ConnectionSettingsContent(
 
             if (backendType == "TIF") {
                 SettingItem(
-                    title = "TV入力のチャンネルスキャン",
-                    value = "入力一覧からセットアップ対象を選ぶ",
+                    title = "TV入力の再設定・スキャン",
+                    value = "初回登録済みの入力から選ぶ",
                     icon = Icons.Default.Tv,
                     modifier = Modifier
                         .focusRequester(backendIpR)
@@ -357,7 +357,9 @@ fun ConnectionSettingsContent(
                     onClick = { onClick(backendIpR); onSetupTif() }
                 )
                 Text(
-                    "TIFはOSで登録されたTV入力を使用します。IP/ポートは不要です。録画・予約はこのKomorebiバックエンドでは未対応です。",
+                    "初回のTV入力登録は端末標準のテレビアプリ（Live TV）またはTV入力設定で完了してください。" +
+                        "登録後の再スキャンは各入力の再設定画面から行えます。IP/ポートは不要です。" +
+                        "録画・予約はこのKomorebiバックエンドでは未対応です。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = colors.textSecondary
                 )

@@ -50,7 +50,7 @@ data class EpgSearchResultItem(
 @Singleton
 class EpgRepository @Inject constructor(
     @ApplicationContext private val context: Context, // ★ 追加: キャッシュディレクトリを使用するためContextを注入
-    private val epgProvider: EpgProvider,
+    private val epgProvider: DtvProviderProxy,
     private val epgCacheDao: EpgCacheDao,
     private val gson: Gson,
     private val settingsRepository: SettingsRepository
@@ -250,7 +250,8 @@ class EpgRepository @Inject constructor(
         endTime: OffsetDateTime,
         channelType: String
     ) {
-        val cacheKey = scopedCacheKey(channelType)
+        val requestBackend = settingsRepository.backendType.first()
+        val cacheKey = requestBackend + "_" + channelType
         if (memoryCache.containsKey(cacheKey)) return
 
         var isFreshCacheAvailable = false
@@ -258,6 +259,7 @@ class EpgRepository @Inject constructor(
         // ★修正: DBではなくファイルから読み込む
         val cachedData = readFromFileCache(cacheKey)
         if (cachedData != null) {
+            if (settingsRepository.backendType.first() != requestBackend) return
             memoryCache[cacheKey] = cachedData
 
             val oneDayLater = System.currentTimeMillis() + (24 * 60 * 60 * 1000)
@@ -281,12 +283,13 @@ class EpgRepository @Inject constructor(
             val startStr = startTime.format(formatter)
             val endStr = endTime.format(formatter)
 
-            val channels = epgProvider.getEpgPrograms(
+            val channels = epgProvider.getEpgProgramsForBackend(
+                backend = requestBackend,
                 startTime = startStr,
                 endTime = endStr,
                 channelType = channelType
             )
-            if (cacheKey != scopedCacheKey(channelType)) return
+            if (settingsRepository.backendType.first() != requestBackend) return
             memoryCache[cacheKey] = channels
 
             // ★修正: ファイルへ保存する
@@ -305,13 +308,16 @@ class EpgRepository @Inject constructor(
         endTime: OffsetDateTime,
         channelType: String
     ): Flow<Result<List<EpgChannelWrapper>>> = flow {
-        val cacheKey = scopedCacheKey(channelType)
+        val requestBackend = settingsRepository.backendType.first()
+        val cacheKey = requestBackend + "_" + channelType
+        if (settingsRepository.backendType.first() != requestBackend) return@flow
         memoryCache[cacheKey]?.let { emit(Result.success(it)) }
 
         if (memoryCache[cacheKey] == null) {
             // ★修正: DBではなくファイルから読み込む
             val cachedData = readFromFileCache(cacheKey)
             if (cachedData != null) {
+                if (settingsRepository.backendType.first() != requestBackend) return@flow
                 memoryCache[cacheKey] = cachedData
                 emit(Result.success(cachedData))
             }
@@ -322,13 +328,14 @@ class EpgRepository @Inject constructor(
             val startStr = startTime.format(formatter)
             val endStr = endTime.format(formatter)
 
-            val channels = epgProvider.getEpgPrograms(
+            val channels = epgProvider.getEpgProgramsForBackend(
+                backend = requestBackend,
                 startTime = startStr,
                 endTime = endStr,
                 channelType = channelType
             )
 
-            if (cacheKey != scopedCacheKey(channelType)) return@flow
+            if (settingsRepository.backendType.first() != requestBackend) return@flow
             memoryCache[cacheKey] = channels
             emit(Result.success(channels))
 

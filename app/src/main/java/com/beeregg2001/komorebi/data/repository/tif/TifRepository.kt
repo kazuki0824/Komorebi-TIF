@@ -182,11 +182,13 @@ class TifRepository @Inject constructor(
     }
 
     /** 番組情報がないTISでもチャンネルを残す。権限不備だけは必ず呼出元へ伝える。 */
-    private suspend fun readProgramsOrEmpty(rowId: Long, start: Long, end: Long): List<ProgramRow> =
+    private suspend fun readProgramsOrEmpty(
+        rowId: Long, start: Long, end: Long, liveNow: Long? = null
+    ): List<ProgramRow> =
         try {
-            // cancel済みの旧TIF先読みが後続の番組queryを発行しない。
             currentCoroutineContext().ensureActive()
-            readPrograms(rowId, start, end)
+            if (liveNow != null) readLivePrograms(rowId, liveNow)
+            else readPrograms(rowId, start, end)
         } catch (error: CancellationException) {
             throw error
         } catch (error: SecurityException) {
@@ -195,6 +197,68 @@ class TifRepository @Inject constructor(
             Log.w("TifRepository", "番組情報取得失敗 rowId=" + rowId, error)
             emptyList()
         }
+
+    /**
+     * ライブ一覧は現在番組と次番組だけ必要。候補を時刻列だけで先に選び、
+     * 説明/ジャンルの投影は選ばれた最大2行に限定する。
+     */
+    private fun readLivePrograms(rowId: Long, now: Long): List<ProgramRow> {
+        val columns = mutableListOf(
+            TvContract.Programs._ID,
+            TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS,
+            TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS,
+            TvContract.Programs.COLUMN_TITLE,
+            TvContract.Programs.COLUMN_BROADCAST_GENRE
+        )
+        val descriptionIndex = if (Build.VERSION.SDK_INT >= 26) {
+            columns += TvContract.Programs.COLUMN_SHORT_DESCRIPTION
+            columns.lastIndex
+        } else -1
+        val canonicalIndex = if (Build.VERSION.SDK_INT >= 26) {
+            columns += TvContract.Programs.COLUMN_CANONICAL_GENRE
+            columns.lastIndex
+        } else -1
+        val cursor = context.contentResolver.query(
+            TvContract.buildProgramsUriForChannel(
+                rowId, now - 24L * 60L * 60_000L, now + 6L * 60L * 60_000L
+            ), columns.toTypedArray(), null, null, null
+        ) ?: error("TvProviderがライブ用program queryにnullを返しました。")
+        return cursor.use { rows ->
+            var presentPosition = -1
+            var nextPosition = -1
+            var latestStart = Long.MIN_VALUE
+            var earliestNext = Long.MAX_VALUE
+            while (rows.moveToNext()) {
+                val start = rows.longAt(1)
+                val end = rows.longAt(2)
+                if (start <= now && end > now && start > latestStart) {
+                    presentPosition = rows.position
+                    latestStart = start
+                } else if (start > now && end > start && start < earliestNext) {
+                    nextPosition = rows.position
+                    earliestNext = start
+                }
+            }
+            listOf(presentPosition, nextPosition)
+                .filter { it >= 0 }
+                .mapNotNull { position ->
+                    if (!rows.moveToPosition(position)) null else ProgramRow(
+                        id = rows.longAt(0),
+                        eventId = 0, // ライブのProgram表示モデルではeventIdは未使用
+                        start = rows.longAt(1),
+                        end = rows.longAt(2),
+                        title = rows.stringAt(3),
+                        description = if (descriptionIndex >= 0) rows.stringAt(descriptionIndex) else "",
+                        scrambled = null, // ライブカードは料金／スクランブルを表示しない
+                        genres = programGenres(
+                            if (canonicalIndex >= 0) rows.stringAt(canonicalIndex) else "",
+                            rows.stringAt(4)
+                        )
+                    )
+                }
+                .sortedBy { it.start }
+        }
+    }
 
     private fun readPrograms(rowId: Long, start: Long, end: Long): List<ProgramRow> {
         // optional列の導入APIを守り、古いTvProviderへ未知の列を要求しない。
@@ -314,10 +378,12 @@ class TifRepository @Inject constructor(
         duration = seconds(start, end), genres = genres?.map { Genre(it.major, it.middle) }, videoResolution = null
     )
 
-    private fun ChannelRow.toLiveChannel(current: ProgramRow?, next: ProgramRow?): Channel = Channel(
+    private fun ChannelRow.toLiveChannel(
+        current: ProgramRow?, next: ProgramRow?, displayName: String
+    ): Channel = Channel(
         id = TifInput.channelId(inputId, id),
         displayChannelId = number.ifBlank { sid.toString() },
-        name = name.ifBlank { "TVチャンネル " + id },
+        name = displayName.ifBlank { "TVチャンネル " + id },
         channelNumber = number.ifBlank { sid.toString() },
         networkId = onid, serviceId = sid, transportStreamId = tsid,
         type = category, isWatchable = true, is_subchannel = false,
@@ -364,12 +430,20 @@ class TifRepository @Inject constructor(
             emptyList()
         }
         val now = System.currentTimeMillis()
+        val duplicates = tunerRows.groupingBy { it.name to it.number }.eachCount()
+        val inputNames = infos.associate { it.id to TifInput.label(context, it) }
         val channels = tunerRows.map { row ->
             // 別TISがEPGを公開していなくても視聴チャンネルまで消さない。
-            val programs = readProgramsOrEmpty(row.id, now - 60_000L, now + 6 * 60 * 60_000L)
+            val programs = readProgramsOrEmpty(
+                row.id, now - 24L * 60L * 60_000L, now + 6L * 60L * 60_000L, liveNow = now
+            )
+            val displayName = if ((duplicates[row.name to row.number] ?: 0) > 1) {
+                row.name + "（" + (inputNames[row.inputId] ?: row.inputId) + "）"
+            } else row.name
             row.toLiveChannel(
                 programs.firstOrNull { it.start <= now && it.end > now },
-                programs.firstOrNull { it.start > now }
+                programs.firstOrNull { it.start > now },
+                displayName
             )
         }
         ChannelApiResponse(

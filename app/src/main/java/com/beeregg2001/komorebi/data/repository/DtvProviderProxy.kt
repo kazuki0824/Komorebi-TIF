@@ -71,14 +71,21 @@ class DtvProviderProxy @Inject constructor(
         }
     }
 
-    private suspend fun getEpgProvider(): EpgProvider {
-        return when (settingsRepository.backendType.first()) {
-            "EDCB" -> edcbEpgRepository
-            "EPGSTATION" -> epgStationEpgRepository
-            TifInput.BACKEND_TYPE -> tifRepository
-            else -> konomiRepository
-        }
+    private fun epgProviderFor(backend: String): EpgProvider = when (backend) {
+        "EDCB" -> edcbEpgRepository
+        "EPGSTATION" -> epgStationEpgRepository
+        TifInput.BACKEND_TYPE -> tifRepository
+        else -> konomiRepository
     }
+
+    private suspend fun getEpgProvider(): EpgProvider =
+        epgProviderFor(settingsRepository.backendType.first())
+
+    /** ディスク待機中の設定変更に左右されず、指定backendのEPGを取得する。 */
+    suspend fun getEpgProgramsForBackend(
+        backend: String, startTime: String?, endTime: String?, channelType: String?
+    ): List<EpgChannelWrapper> =
+        epgProviderFor(backend).getEpgPrograms(startTime, endTime, channelType)
 
     // ========================================================================
     // LiveProvider (ライブ視聴関連)
