@@ -232,6 +232,7 @@ class TifRepository @Inject constructor(
         val aribEntry = Regex("""^ARIB\(0x[0-9A-Fa-f]+/0x[0-9A-Fa-f]+\):(.*)$""")
         val aribBoundary = Regex("""、(?=ARIB\(0x[0-9A-Fa-f]+/0x[0-9A-Fa-f]+\):)""")
         val genres = linkedSetOf<EpgGenre>()
+        var hasInterpretedBroadcastGenre = false
 
         for (value in decode(broadcastEncoded)) {
             for (part in value.split(aribBoundary)) {
@@ -242,6 +243,7 @@ class TifRepository @Inject constructor(
                     val hierarchy = name.split('/').map { it.trim() }.filter { it.isNotEmpty() }
                     if (hierarchy.isNotEmpty()) {
                         genres += EpgGenre(hierarchy.first(), hierarchy.drop(1).joinToString("/"))
+                        hasInterpretedBroadcastGenre = true
                         continue
                     }
                 }
@@ -250,10 +252,12 @@ class TifRepository @Inject constructor(
             }
         }
 
-        if (genres.isNotEmpty()) return genres.toList()
+        // 原文を残しただけでは分類を解釈できたことにはならない。
+        // ARIBの具体分類が読めた場合にのみ広いcanonicalの誤分類を抑制する。
+        // 未知のbroadcast文字列は原文のまま残し、独立したcanonicalも併用する。
+        if (hasInterpretedBroadcastGenre) return genres.toList()
 
-        // AOSPのcanonicalは広い分類。具体的なbroadcast genreが既にある場合、
-        // ENTERTAINMENT→バラエティ等を重複追加して誤分類しない。
+        // canonicalはAOSP公開の広い分類。broadcastが未解釈の場合の補完に使う。
         val labels = mapOf(
             "NEWS" to "ニュース", "SPORTS" to "スポーツ",
             "MOVIES" to "映画", "DRAMA" to "ドラマ",
