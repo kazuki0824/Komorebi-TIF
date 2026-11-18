@@ -175,6 +175,7 @@ class RecordSyncEngine @Inject constructor(
         _syncProgress.value = _syncProgress.value.copy(error = null)
     }
 
+    /** 切替先が視聴専用TIFなら、録画DBと同期メタデータに一切触れない。 */
     fun launchSyncAllRecords(forceFullSync: Boolean = false) {
         if (!forceFullSync && syncMutex.isLocked) {
             Log.i(TAG, "launchSyncAllRecords: sync already running. Skipping.")
@@ -182,17 +183,25 @@ class RecordSyncEngine @Inject constructor(
         }
         Log.i(TAG, "launchSyncAllRecords: launching. forceFullSync=$forceFullSync")
         engineScope.launch {
-            syncAllRecords(forceFullSync)
+            if (settingsRepository.backendType.first() != "TIF") syncAllRecords(forceFullSync)
         }
     }
 
     fun launchSmartSync() {
         engineScope.launch {
-            smartSync()
+            if (settingsRepository.backendType.first() != "TIF") smartSync()
         }
     }
 
+    /** バックエンド切替前に進行中の録画DB書込みを終了させる。 */
+    suspend fun cancelActiveSyncAndWait() {
+        val job = jobMutex.withLock { activeSyncJob }
+        job?.cancel()
+        job?.join()
+    }
+
     suspend fun syncAllRecords(forceFullSync: Boolean = false) {
+        if (settingsRepository.backendType.first() == "TIF") return
         val currentJob = currentCoroutineContext().job
 
         var jobToJoin: Job? = null
@@ -207,6 +216,8 @@ class RecordSyncEngine @Inject constructor(
         var isSyncSuccessful = false
 
         syncMutex.withLock {
+            // キュー待機中にTIFへ変わった場合は同期を開始しない。
+            if (settingsRepository.backendType.first() == "TIF") return@withLock
             jobMutex.withLock {
                 activeSyncJob = currentJob
             }
@@ -482,6 +493,7 @@ class RecordSyncEngine @Inject constructor(
     }
 
     suspend fun clearDatabase() {
+        if (settingsRepository.backendType.first() == "TIF") return
         syncMutex.withLock {
             withContext(Dispatchers.IO) {
                 db.recordedProgramDao().clearAll()
@@ -499,6 +511,7 @@ class RecordSyncEngine @Inject constructor(
     }
 
     suspend fun smartSync() {
+        if (settingsRepository.backendType.first() == "TIF") return
         if (!smartSyncMutex.tryLock()) {
             Log.i(TAG, "smartSync: already running. Skipping.")
             return
@@ -520,6 +533,7 @@ class RecordSyncEngine @Inject constructor(
             var isSyncSuccessful = false
 
             syncMutex.withLock {
+                if (settingsRepository.backendType.first() == "TIF") return@withLock
                 jobMutex.withLock { activeSyncJob = currentJob }
                 withContext(Dispatchers.IO) {
                     try {

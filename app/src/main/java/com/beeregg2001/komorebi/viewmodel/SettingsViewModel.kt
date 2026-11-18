@@ -189,7 +189,7 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
 
     // 初回DataStore emission前にKonomiTVと決め打ちしない。TIF経路が不要なJNIをロードするのを防ぐ。
-    val confirmedBackendType: Flow<String?> = settingsRepository.backendType.map { it }
+    val confirmedBackendType: Flow<String?> = settingsRepository.backendType
 
     val backendType: StateFlow<String> = settingsRepository.backendType.stateIn(
         viewModelScope,
@@ -630,12 +630,15 @@ class SettingsViewModel @Inject constructor(
         val oldType = settingsRepository.backendType.first()
         if (oldType == newType) return@launch
 
+        // TIFへの切替前に旧backendの録画同期を停止する。
+        // 全表消去は視聴履歴・録画同期メタデータを破壊するため行わない。
+        syncEngine.cancelActiveSyncAndWait()
         settingsRepository.saveString(SettingsRepository.BACKEND_TYPE, newType)
         try {
-            db.clearAllTables()
             context.imageLoader.memoryCache?.clear()
             context.imageLoader.diskCache?.clear()
         } catch (e: Exception) {
+            Log.w("SettingsViewModel", "Failed to clear image cache after backend switch", e)
         }
         // TIF視聴アダプターは録画・予約を実装しないため、サーバー向け同期を起動しない。
         if (newType != "TIF") {
@@ -711,7 +714,11 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun triggerFullSync() {
-        viewModelScope.launch { syncEngine.launchSyncAllRecords(forceFullSync = true) }
+        viewModelScope.launch {
+            if (settingsRepository.backendType.first() != "TIF") {
+                syncEngine.launchSyncAllRecords(forceFullSync = true)
+            }
+        }
     }
 
     fun addPostRecordingBatch(name: String, path: String) {

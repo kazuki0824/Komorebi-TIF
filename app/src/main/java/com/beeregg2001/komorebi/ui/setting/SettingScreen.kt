@@ -31,6 +31,7 @@ import com.beeregg2001.komorebi.common.safeRequestFocus
 import com.beeregg2001.komorebi.common.AppStrings
 import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.repository.tif.TifInput
+import com.beeregg2001.komorebi.ui.main.visibleHomeTabs
 import com.beeregg2001.komorebi.data.model.StreamQuality
 import com.beeregg2001.komorebi.ui.components.GlobalToast
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
@@ -379,10 +380,14 @@ fun SettingsScreen(
                             { viewModel.checkForUpdatesManually() },
                             itemFocusRequesters[0][5],
                             {
-                                uiState.activeDialog = SettingDialogState.ConfirmClear(
-                                    "データベースの再構築",
-                                    "すべての録画データをサーバーから再取得します。よろしいですか？"
-                                ) { viewModel.triggerFullSync() }
+                                if (prefs.backendType == "TIF") {
+                                    toastMessage = "TIFでは録画データベースの再構築に対応していません。"
+                                } else {
+                                    uiState.activeDialog = SettingDialogState.ConfirmClear(
+                                        "データベースの再構築",
+                                        "すべての録画データをサーバーから再取得します。よろしいですか？"
+                                    ) { viewModel.triggerFullSync() }
+                                }
                             },
                             {
                                 uiState.activeDialog = SettingDialogState.ConfirmClear(
@@ -844,20 +849,9 @@ fun SettingsScreen(
                             {
                                 uiState.activeDialog = SettingDialogState.Selection(
                                     AppStrings.SETTINGS_ITEM_STARTUP_TAB,
-                                    if (prefs.favoriteBaseballTeams.isNotEmpty()) listOf(
-                                        "ホーム" to "ホーム",
-                                        "ライブ" to "ライブ",
-                                        "ビデオ" to "ビデオ",
-                                        "番組表" to "番組表",
-                                        "録画予約" to "録画予約",
-                                        "プロ野球" to "プロ野球"
-                                    ) else listOf(
-                                        "ホーム" to "ホーム",
-                                        "ライブ" to "ライブ",
-                                        "ビデオ" to "ビデオ",
-                                        "番組表" to "番組表",
-                                        "録画予約" to "録画予約"
-                                    ),
+                                    visibleHomeTabs(
+                                        prefs.backendType, prefs.favoriteBaseballTeams.isNotEmpty()
+                                    ).map { it to it },
                                     prefs.startupTab
                                 ) {
                                     scope.launch {
@@ -929,20 +923,9 @@ fun SettingsScreen(
                             {
                                 uiState.activeDialog = SettingDialogState.Selection(
                                     AppStrings.SETTINGS_ITEM_STARTUP_TAB,
-                                    if (prefs.favoriteBaseballTeams.isNotEmpty()) listOf(
-                                        "ホーム" to "ホーム",
-                                        "ライブ" to "ライブ",
-                                        "ビデオ" to "ビデオ",
-                                        "番組表" to "番組表",
-                                        "録画予約" to "録画予約",
-                                        "プロ野球" to "プロ野球"
-                                    ) else listOf(
-                                        "ホーム" to "ホーム",
-                                        "ライブ" to "ライブ",
-                                        "ビデオ" to "ビデオ",
-                                        "番組表" to "番組表",
-                                        "録画予約" to "録画予約"
-                                    ),
+                                    visibleHomeTabs(
+                                        prefs.backendType, prefs.favoriteBaseballTeams.isNotEmpty()
+                                    ).map { it to it },
                                     prefs.startupTab
                                 ) {
                                     scope.launch {

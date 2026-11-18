@@ -13,6 +13,9 @@ import com.beeregg2001.komorebi.data.model.*
 import com.beeregg2001.komorebi.data.repository.*
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.OffsetDateTime
@@ -179,9 +182,13 @@ class TifRepository @Inject constructor(
     }
 
     /** 番組情報がないTISでもチャンネルを残す。権限不備だけは必ず呼出元へ伝える。 */
-    private fun readProgramsOrEmpty(rowId: Long, start: Long, end: Long): List<ProgramRow> =
+    private suspend fun readProgramsOrEmpty(rowId: Long, start: Long, end: Long): List<ProgramRow> =
         try {
+            // cancel済みの旧TIF先読みが後続の番組queryを発行しない。
+            currentCoroutineContext().ensureActive()
             readPrograms(rowId, start, end)
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: SecurityException) {
             throw error
         } catch (error: Exception) {
@@ -330,13 +337,15 @@ class TifRepository @Inject constructor(
     }
 
     /** 疎通確認用。入力・公開チャンネルだけを読み、全局EPG queryを行わない。 */
-    suspend fun checkReady() = withContext(Dispatchers.IO) {
+    suspend fun checkReady(): Boolean = withContext(Dispatchers.IO) {
+        // OSのTV入力列挙はこのIO処理中の1回だけ行う。
         val infos = TifInput.inputs(context)
         check(infos.isNotEmpty()) { "利用可能なTV入力がありません。" }
         if (infos.any { !it.isPassthroughInput }) {
+            if (!hasListingsPermission()) return@withContext false // 権限要求待ち
             readTunerChannels(infos)
         }
-        Unit
+        true
     }
 
     override suspend fun getChannels(): ChannelApiResponse = withContext(Dispatchers.IO) {
@@ -377,7 +386,8 @@ class TifRepository @Inject constructor(
         throw UnsupportedOperationException("TIFはTvView.tune()によって視聴します。")
     override suspend fun getChannelLogoUrl(channelId: String): String = ""
 
-    private fun toEpgWrapper(row: ChannelRow, from: Long, to: Long): EpgChannelWrapper {
+    private suspend fun toEpgWrapper(row: ChannelRow, from: Long, to: Long): EpgChannelWrapper {
+            currentCoroutineContext().ensureActive()
             val id = TifInput.channelId(row.inputId, row.id)
             val programs = readProgramsOrEmpty(row.id, from, to)
             return EpgChannelWrapper(
@@ -416,7 +426,10 @@ class TifRepository @Inject constructor(
         val infos = TifInput.inputs(context)
         val rows = readTunerChannels(infos)
         rows.filter { channelType.isNullOrBlank() || it.category == channelType }
-            .map { toEpgWrapper(it, from, to) }
+            .map {
+                currentCoroutineContext().ensureActive()
+                toEpgWrapper(it, from, to)
+            }
     }
 
     override suspend fun getPinnedEpgPrograms(pinnedChannelIds: String): List<EpgChannelWrapper> =
@@ -429,7 +442,10 @@ class TifRepository @Inject constructor(
             // 既存のTIF可視性・所有inputID照合を通した後、query前にrowを絞る。
             readTunerChannels(TifInput.inputs(context))
                 .filter { TifInput.channelId(it.inputId, it.id) in wanted }
-                .map { toEpgWrapper(it, from, to) }
+                .map {
+                    currentCoroutineContext().ensureActive()
+                    toEpgWrapper(it, from, to)
+                }
         }
 
     // 汎用TIFの録画対応可否と、Komorebiの録画UI実装可否は別問題。

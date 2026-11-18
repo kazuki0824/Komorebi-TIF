@@ -247,9 +247,14 @@ class RecordViewModel @Inject constructor(
             // 起動直後に走らせると、Room への書き込みのたびに録画一覧の Flow が
             // 発火し、ホーム画面の初回描画と CPU / ディスクを奪い合って
             // 「起動直後だけ操作が極端に重い」状態を作っていた。
-            val alreadyBuilt = syncEngine.isInitialBuildCompleted()
-            delay(if (alreadyBuilt) 6000L else 1500L)
-            syncEngine.launchSyncAllRecords()
+            // TIFには録画セッションがない。空録画一覧を初期DB構築成功と誤認しない。
+            if (settingsRepository.backendType.first() != "TIF") {
+                val alreadyBuilt = syncEngine.isInitialBuildCompleted()
+                delay(if (alreadyBuilt) 6000L else 1500L)
+                if (settingsRepository.backendType.first() != "TIF") {
+                    syncEngine.launchSyncAllRecords()
+                }
+            }
         }
     }
 
@@ -262,7 +267,10 @@ class RecordViewModel @Inject constructor(
     }
 
     fun triggerSmartSync() {
-        syncEngine.launchSmartSync()
+        // 最終的な同期ガードはRecordSyncEngine側にも設ける。
+        viewModelScope.launch {
+            if (settingsRepository.backendType.first() != "TIF") syncEngine.launchSmartSync()
+        }
     }
 
     // ★ 修正: ソート状態も Pager のトリガーとして Combine に含める
@@ -416,7 +424,11 @@ class RecordViewModel @Inject constructor(
     }
 
     fun fetchRecentRecordings(forceRefresh: Boolean = false) {
-        syncEngine.launchSyncAllRecords(forceFullSync = forceRefresh)
+        viewModelScope.launch {
+            if (settingsRepository.backendType.first() != "TIF") {
+                syncEngine.launchSyncAllRecords(forceFullSync = forceRefresh)
+            }
+        }
     }
 
     fun loadNextPage() {}

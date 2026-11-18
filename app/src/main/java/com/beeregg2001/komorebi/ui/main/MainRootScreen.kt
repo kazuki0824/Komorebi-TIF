@@ -94,12 +94,15 @@ fun MainRootScreen(
                         channelViewModel.fetchChannels()
 
                         // 2. プレイヤー（ライブ・ビデオ・SMB）を開いたまま裏に行っていた場合、強制的にホーム画面に戻す
+                        val hasTifPlayback = state.selectedChannel?.id?.startsWith("tif:") == true
                         if (state.selectedChannel != null || state.selectedProgram != null || state.selectedSmbItem != null) {
-                            state.selectedChannel = null
+                            // TIFは子TvViewがON_STOPで解放、ON_STARTで新セッションを再選局する。
+                            // 親が選択中のTIF IDを消してしまうと復帰先自体を失う。
+                            if (!hasTifPlayback) state.selectedChannel = null
                             state.selectedProgram = null
                             state.selectedSmbItem = null
                             state.isMiniPlayerMode = false
-                            state.isReturningFromPlayer = true // ホーム画面側で適切にフォーカスを復元させる
+                            state.isReturningFromPlayer = !hasTifPlayback
                         }
                     }
                 }
@@ -128,8 +131,11 @@ fun MainRootScreen(
 
     val backendType by homeViewModel.backendType.collectAsState()
     val listingsPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) channelViewModel.fetchChannels()
-        else state.toastMessage = "TV番組一覧へのアクセス許可が必要です。アプリの権限設定で許可してください。"
+        if (granted) {
+            channelViewModel.fetchChannels()
+            // 権限ダイアログ中に失敗した可視EPGも同じ種別で再取得する。
+            epgViewModel.refreshEpgData()
+        } else state.toastMessage = "TV番組一覧へのアクセス許可が必要です。アプリの権限設定で許可してください。"
     }
     LaunchedEffect(backendType) {
         state.backendType = backendType
@@ -420,25 +426,37 @@ fun MainRootScreen(
         isSettingsInitialized,
         isChannelLoading,
         isHomeLoading,
-        lastChannels
+        lastChannels,
+        backendType,
+        startupChannelSetting
     ) {
-        if (isSettingsInitialized && state.hasAppliedStartupTab && !state.hasAppliedStartupChannel && !isChannelLoading && !isHomeLoading && groupedChannels.isNotEmpty()) {
+        if (isSettingsInitialized && state.hasAppliedStartupTab && !state.hasAppliedStartupChannel && !isChannelLoading && !isHomeLoading &&
+            (backendType == TifInput.BACKEND_TYPE || groupedChannels.isNotEmpty())) {
+            // 0チャンネルのTIFも完了としてホーム・スキャン導線を表示する。
             state.hasAppliedStartupChannel = true
             val flatChannels = groupedChannels.values.flatten()
             if (flatChannels.isNotEmpty() && startupChannelSetting != "OFF") {
-                val targetChannel = if (startupChannelSetting == "LAST_WATCHED") {
+                val targetChannel = if (backendType == TifInput.BACKEND_TYPE) {
+                    // ユーザーが指定した完全なTIF ID以外へ自動フォールバックしない。
+                    val wanted = if (startupChannelSetting == "LAST_WATCHED") {
+                        lastChannels.firstOrNull { it.id.startsWith("tif:") }?.id
+                    } else startupChannelSetting
+                    flatChannels.find { it.id == wanted }
+                } else if (startupChannelSetting == "LAST_WATCHED") {
                     val lastHistory = lastChannels.firstOrNull()
                     flatChannels.find { it.id == lastHistory?.id } ?: flatChannels.first()
                 } else flatChannels.find { it.id == startupChannelSetting } ?: flatChannels.first()
 
-                state.selectedChannel = targetChannel; state.isBaseballMode =
-                    false; state.lastSelectedChannelId = targetChannel.id
-                state.lastSelectedProgramId =
-                    null; homeViewModel.saveLastChannel(targetChannel); state.isReturningFromPlayer =
-                    false
-
-                val liveIndex = tabs.indexOf("ライブ")
-                if (liveIndex != -1) state.currentTabIndex = liveIndex
+                if (targetChannel != null) {
+                    state.selectedChannel = targetChannel
+                    state.isBaseballMode = false
+                    state.lastSelectedChannelId = targetChannel.id
+                    state.lastSelectedProgramId = null
+                    homeViewModel.saveLastChannel(targetChannel)
+                    state.isReturningFromPlayer = false
+                    val liveIndex = tabs.indexOf("ライブ")
+                    if (liveIndex != -1) state.currentTabIndex = liveIndex
+                }
                 state.isUiReady = true
             }
         }

@@ -80,6 +80,7 @@ class HomeViewModel @Inject constructor(
     // ジャンルピックアップ / プロ野球カードの取得ジョブ。起動直後に複数経路から
     // 同時に呼ばれても EPG 取得を 1 本にまとめるために保持する。
     private var genrePickupJob: Job? = null
+    private var lastPickupBackend: String? = null
 
     // バックエンド疎通確認は EDCB / EPGStation ではチャンネル一覧の取得そのもの。
     // 起動直後に init 側と refreshHomeData 側の両方から呼ばれて二重に通信していた。
@@ -200,6 +201,7 @@ class HomeViewModel @Inject constructor(
         }
         genrePickupJob?.cancel()
         genrePickupJob = viewModelScope.launch {
+            val requestedBackend = settingsRepository.backendType.first()
             val genre = pickupGenreLabel.value
             val timeSetting = pickupTimeSetting.value
             val isExcludePaid = excludePaidBroadcasts.value == "ON"
@@ -210,7 +212,7 @@ class HomeViewModel @Inject constructor(
 
             // 汎用TIFのATSC/DVB/IPTV等はTVに分類される。外部INPUTはEPGを持たない。
             // 従来ネットワークバックエンドの取得種別は変更しない。
-            val types = if (settingsRepository.backendType.first() == "TIF") {
+            val types = if (requestedBackend == "TIF") {
                 listOf("GR", "BS", "CS", "TV")
             } else {
                 listOf("GR", "BS", "CS")
@@ -225,7 +227,7 @@ class HomeViewModel @Inject constructor(
                 }
             }.awaitAll().flatten()
 
-            cachedBaseballPrograms = withContext(Dispatchers.Default) {
+            val fetchedBaseballPrograms = withContext(Dispatchers.Default) {
                 allPrograms.flatMap { wrapper ->
                     wrapper.programs.map { it to wrapper.channel }
                 }.filter { (prog, _) ->
@@ -259,14 +261,18 @@ class HomeViewModel @Inject constructor(
                 }
             }
 
-            _genrePickupPrograms.value =
-                filterGenrePickup(allPrograms, genre, timeSetting, isExcludePaid)
-
-            _favoriteBaseballGames.value = filterFavoriteBaseballGames(
-                cachedBaseballPrograms,
+            val fetchedGenrePickup = filterGenrePickup(allPrograms, genre, timeSetting, isExcludePaid)
+            val fetchedGames = filterFavoriteBaseballGames(
+                fetchedBaseballPrograms,
                 favoriteBaseballTeams.value,
                 _baseballDateOffset.value
             )
+            // 前バックエンドの遅い収集結果で現在のホーム内容を上書きしない。
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (settingsRepository.backendType.first() != requestedBackend) return@launch
+            cachedBaseballPrograms = fetchedBaseballPrograms
+            _genrePickupPrograms.value = fetchedGenrePickup
+            _favoriteBaseballGames.value = fetchedGames
         }
     }
 
@@ -387,16 +393,10 @@ class HomeViewModel @Inject constructor(
         val currentBackend = settingsRepository.backendType.first()
 
         if (currentBackend == "KONOMITV") return
-        // 通常APKでチューナー一覧の許可待ちならヘルスチェックを延期する。
-        // 権限ダイアログより先にバックエンド失敗通知を出さない。
-        if (currentBackend == TifInput.BACKEND_TYPE &&
-            TifInput.inputs(context).any { !it.isPassthroughInput } &&
-            context.checkSelfPermission(TifInput.READ_LISTINGS_PERMISSION) !=
-                android.content.pm.PackageManager.PERMISSION_GRANTED) return
-
         try {
             if (currentBackend == TifInput.BACKEND_TYPE) {
-                tifRepository.checkReady() // 入力・チャンネルのみ。番組取得は表示側に委ねる。
+                // checkReadyのIO上で入力列挙は一度だけ。falseは権限要求待ち。
+                if (!tifRepository.checkReady()) return
             } else {
                 liveProvider.getChannels()
             }
@@ -417,11 +417,22 @@ class HomeViewModel @Inject constructor(
                 pickupGenreLabel,
                 pickupTimeSetting,
                 excludePaidBroadcasts,
-                favoriteBaseballTeams
-            ) { genre, time, excludePaid, baseballTeams ->
-                listOf(genre, time, excludePaid, baseballTeams.toString())
+                favoriteBaseballTeams,
+                settingsRepository.backendType
+            ) { genre, time, excludePaid, baseballTeams, backend ->
+                listOf(genre, time, excludePaid, baseballTeams.toString(), backend)
             }
                 .distinctUntilChanged()
+                .onEach { values ->
+                    val backend = values.last()
+                    if (lastPickupBackend != backend) {
+                        lastPickupBackend = backend
+                        genrePickupJob?.cancel()
+                        cachedBaseballPrograms = emptyList()
+                        _genrePickupPrograms.value = emptyList()
+                        _favoriteBaseballGames.value = emptyList()
+                    }
+                }
                 .debounce(1500L)
                 .collectLatest {
                     // 設定変更を確実に反映させるため、実行中のジョブは捨てて取り直す。
