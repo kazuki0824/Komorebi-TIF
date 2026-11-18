@@ -15,6 +15,7 @@ import com.beeregg2001.komorebi.data.repository.KonomiRepository
 import com.beeregg2001.komorebi.data.repository.EpgRepository
 import com.beeregg2001.komorebi.data.repository.LastChannelRepository
 import com.beeregg2001.komorebi.data.repository.tif.TifInput
+import com.beeregg2001.komorebi.data.repository.tif.TifRepository
 import com.beeregg2001.komorebi.data.repository.LiveProvider
 import com.beeregg2001.komorebi.data.repository.WatchHistoryRepository
 import com.beeregg2001.komorebi.util.AppUpdater
@@ -48,6 +49,7 @@ data class BaseballGameInfo(
 class HomeViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val liveProvider: LiveProvider,
+    private val tifRepository: TifRepository,
     private val konomiRepository: KonomiRepository,
     private val epgRepository: EpgRepository,
     private val settingsRepository: SettingsRepository,
@@ -393,7 +395,11 @@ class HomeViewModel @Inject constructor(
                 android.content.pm.PackageManager.PERMISSION_GRANTED) return
 
         try {
-            liveProvider.getChannels()
+            if (currentBackend == TifInput.BACKEND_TYPE) {
+                tifRepository.checkReady() // 入力・チャンネルのみ。番組取得は表示側に委ねる。
+            } else {
+                liveProvider.getChannels()
+            }
             Log.i("Komorebi_Failsafe", "Health check passed for backend: $currentBackend")
         } catch (e: Throwable) {
             Log.e("Komorebi_Failsafe", "Health check FAILED for backend: $currentBackend", e)

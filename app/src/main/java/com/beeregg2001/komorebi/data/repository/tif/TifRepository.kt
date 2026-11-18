@@ -20,6 +20,21 @@ import java.time.ZoneId
 import javax.inject.Inject
 import javax.inject.Singleton
 
+// 固定のTIF公開文字列の認識規則は番組行ごとに再生成しない。
+private val ARIB_GENRE_ENTRY = Regex("""^ARIB\(0x[0-9A-Fa-f]+/0x[0-9A-Fa-f]+\):(.*)$""")
+private val ARIB_GENRE_BOUNDARY = Regex("""、(?=ARIB\(0x[0-9A-Fa-f]+/0x[0-9A-Fa-f]+\):)""")
+private val CANONICAL_GENRE_LABELS = mapOf(
+    "NEWS" to "ニュース", "SPORTS" to "スポーツ",
+            "MOVIES" to "映画", "DRAMA" to "ドラマ",
+            "MUSIC" to "音楽", "COMEDY" to "バラエティ",
+            "ENTERTAINMENT" to "バラエティ", "FAMILY_KIDS" to "キッズ",
+            "ANIMAL_WILDLIFE" to "ドキュメンタリー", "EDUCATION" to "趣味/教育",
+            "ARTS" to "趣味/教育", "TECH_SCIENCE" to "ドキュメンタリー",
+            "LIFE_STYLE" to "情報", "TRAVEL" to "趣味/教育",
+            "SHOPPING" to "情報", "GAMING" to "趣味/教育",
+            "PREMIER" to "その他"
+        )
+
 /**
  * 特定のTV入力提供元を指定せず、frameworkの公開TvInputInfoから選局対象を解決する。
  * TvProviderのrow IDだけでなく、所有input IDもチャンネル識別子へ保持する。
@@ -246,16 +261,14 @@ class TifRepository @Inject constructor(
         fun decode(encoded: String): List<String> = if (encoded.isBlank()) emptyList()
             else TvContract.Programs.Genres.decode(encoded).filter { it.isNotBlank() }
 
-        val aribEntry = Regex("""^ARIB\(0x[0-9A-Fa-f]+/0x[0-9A-Fa-f]+\):(.*)$""")
-        val aribBoundary = Regex("""、(?=ARIB\(0x[0-9A-Fa-f]+/0x[0-9A-Fa-f]+\):)""")
         val genres = linkedSetOf<EpgGenre>()
         var hasInterpretedBroadcastGenre = false
 
         for (value in decode(broadcastEncoded)) {
-            for (part in value.split(aribBoundary)) {
+            for (part in value.split(ARIB_GENRE_BOUNDARY)) {
                 val raw = part.trim()
                 if (raw.isEmpty()) continue
-                val name = aribEntry.matchEntire(raw)?.groupValues?.get(1)?.trim()
+                val name = ARIB_GENRE_ENTRY.matchEntire(raw)?.groupValues?.get(1)?.trim()
                 if (!name.isNullOrEmpty()) {
                     val hierarchy = name.split('/').map { it.trim() }.filter { it.isNotEmpty() }
                     if (hierarchy.isNotEmpty()) {
@@ -275,19 +288,9 @@ class TifRepository @Inject constructor(
         if (hasInterpretedBroadcastGenre) return genres.toList()
 
         // canonicalはAOSP公開の広い分類。broadcastが未解釈の場合の補完に使う。
-        val labels = mapOf(
-            "NEWS" to "ニュース", "SPORTS" to "スポーツ",
-            "MOVIES" to "映画", "DRAMA" to "ドラマ",
-            "MUSIC" to "音楽", "COMEDY" to "バラエティ",
-            "ENTERTAINMENT" to "バラエティ", "FAMILY_KIDS" to "キッズ",
-            "ANIMAL_WILDLIFE" to "ドキュメンタリー", "EDUCATION" to "趣味/教育",
-            "ARTS" to "趣味/教育", "TECH_SCIENCE" to "ドキュメンタリー",
-            "LIFE_STYLE" to "情報", "TRAVEL" to "趣味/教育",
-            "SHOPPING" to "情報", "GAMING" to "趣味/教育",
-            "PREMIER" to "その他"
-        )
+
         for (canonical in decode(canonicalEncoded)) {
-            genres += EpgGenre(labels[canonical] ?: canonical, "")
+            genres += EpgGenre(CANONICAL_GENRE_LABELS[canonical] ?: canonical, "")
         }
         return genres.takeIf { it.isNotEmpty() }?.toList()
     }
@@ -324,6 +327,16 @@ class TifRepository @Inject constructor(
             type = "INPUT", isWatchable = true, is_subchannel = false,
             isDisplay = true, programPresent = null, programFollowing = null, remocon_Id = 0
         )
+    }
+
+    /** 疎通確認用。入力・公開チャンネルだけを読み、全局EPG queryを行わない。 */
+    suspend fun checkReady() = withContext(Dispatchers.IO) {
+        val infos = TifInput.inputs(context)
+        check(infos.isNotEmpty()) { "利用可能なTV入力がありません。" }
+        if (infos.any { !it.isPassthroughInput }) {
+            readTunerChannels(infos)
+        }
+        Unit
     }
 
     override suspend fun getChannels(): ChannelApiResponse = withContext(Dispatchers.IO) {
@@ -364,20 +377,10 @@ class TifRepository @Inject constructor(
         throw UnsupportedOperationException("TIFはTvView.tune()によって視聴します。")
     override suspend fun getChannelLogoUrl(channelId: String): String = ""
 
-    override suspend fun getEpgPrograms(
-        startTime: String?, endTime: String?, channelType: String?
-    ): List<EpgChannelWrapper> = withContext(Dispatchers.IO) {
-        val from = startTime?.let { OffsetDateTime.parse(it).toInstant().toEpochMilli() }
-            ?: (System.currentTimeMillis() - 60 * 60_000L)
-        val to = endTime?.let { OffsetDateTime.parse(it).toInstant().toEpochMilli() }
-            ?: (from + 24 * 60 * 60_000L)
-        if (to <= from || channelType == "INPUT") return@withContext emptyList()
-        val infos = TifInput.inputs(context)
-        val rows = readTunerChannels(infos)
-        rows.filter { channelType.isNullOrBlank() || it.category == channelType }.map { row ->
+    private fun toEpgWrapper(row: ChannelRow, from: Long, to: Long): EpgChannelWrapper {
             val id = TifInput.channelId(row.inputId, row.id)
             val programs = readProgramsOrEmpty(row.id, from, to)
-            EpgChannelWrapper(
+            return EpgChannelWrapper(
                 channel = EpgChannel(
                     id = id, display_channel_id = row.number.ifBlank { row.sid.toString() },
                     network_id = row.onid.toInt(), service_id = row.sid.toInt(),
@@ -400,14 +403,34 @@ class TifRepository @Inject constructor(
                     )
                 }
             )
-        }
     }
 
-    override suspend fun getPinnedEpgPrograms(pinnedChannelIds: String): List<EpgChannelWrapper> {
-        val wanted = pinnedChannelIds.split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet()
-        if (wanted.isEmpty()) return emptyList()
-        return getEpgPrograms(null, null, null).filter { it.channel.id in wanted }
+    override suspend fun getEpgPrograms(
+        startTime: String?, endTime: String?, channelType: String?
+    ): List<EpgChannelWrapper> = withContext(Dispatchers.IO) {
+        val from = startTime?.let { OffsetDateTime.parse(it).toInstant().toEpochMilli() }
+            ?: (System.currentTimeMillis() - 60 * 60_000L)
+        val to = endTime?.let { OffsetDateTime.parse(it).toInstant().toEpochMilli() }
+            ?: (from + 24 * 60 * 60_000L)
+        if (to <= from || channelType == "INPUT") return@withContext emptyList()
+        val infos = TifInput.inputs(context)
+        val rows = readTunerChannels(infos)
+        rows.filter { channelType.isNullOrBlank() || it.category == channelType }
+            .map { toEpgWrapper(it, from, to) }
     }
+
+    override suspend fun getPinnedEpgPrograms(pinnedChannelIds: String): List<EpgChannelWrapper> =
+        withContext(Dispatchers.IO) {
+            val wanted = pinnedChannelIds.split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet()
+            if (wanted.isEmpty()) return@withContext emptyList()
+            val now = System.currentTimeMillis()
+            val from = now - 60 * 60_000L
+            val to = from + 24 * 60 * 60_000L
+            // 既存のTIF可視性・所有inputID照合を通した後、query前にrowを絞る。
+            readTunerChannels(TifInput.inputs(context))
+                .filter { TifInput.channelId(it.inputId, it.id) in wanted }
+                .map { toEpgWrapper(it, from, to) }
+        }
 
     // 汎用TIFの録画対応可否と、Komorebiの録画UI実装可否は別問題。
     // このAdapterは視聴専用であり、他のネットワークバックエンドへ誤転送しない。

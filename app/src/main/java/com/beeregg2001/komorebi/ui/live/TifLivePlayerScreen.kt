@@ -296,7 +296,8 @@ fun TifLivePlayerScreen(
             }
         }
 
-        if (videoStatus.isNotEmpty()) {
+        // input/URI未解決時は解決失敗だけを表示し、映像受信待ちを重ねない。
+        if (target != null && videoStatus.isNotEmpty()) {
             Text(
                 text = videoStatus,
                 color = Color.White,

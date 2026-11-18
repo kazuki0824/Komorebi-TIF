@@ -66,6 +66,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
     private var searchGeneration: Long = 0L
     private var searchJob: Job? = null
     private var epgJob: Job? = null
+    private var preloadJob: Job? = null
 
     // ★ 追加: DB検索待ちをゼロにするためのメモリキャッシュ群
     private val epgMemoryCache = mutableMapOf<String, List<EpgChannelWrapper>>()
@@ -292,19 +293,32 @@ class EpgViewModel @OptIn(UnstableApi::class)
         _searchResults.value = emptyList()
     }
 
-    fun preloadEpgDataForSearch(availableTypes: List<String>) {
+    // INPUTには番組表がなく、TIFはSKY/BS4Kを独立したカテゴリに分類しない。
+    private fun preloadTypesFor(backend: String): List<String> =
+        if (backend == "TIF") listOf("GR", "BS", "CS", "TV")
+        else listOf("GR", "BS", "CS", "SKY", "BS4K")
+
+    /** 呼出元のJobへ従属させる。delay後の実取得もcancelが伝播する。 */
+    private suspend fun preloadEpgDataForSearchNow(availableTypes: List<String>) {
         val now = OffsetDateTime.now()
         val start = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
         val end = now.plusDays(7)
-
-        viewModelScope.launch(Dispatchers.IO) {
+        coroutineScope {
             availableTypes.map { type ->
-                async {
+                async(Dispatchers.IO) {
                     if (!repository.hasCacheForType(type)) {
                         repository.fetchAndCacheEpgDataSilently(start, end, type)
                     }
                 }
             }.awaitAll()
+        }
+    }
+
+    fun preloadEpgDataForSearch(availableTypes: List<String>) {
+        preloadJob?.cancel()
+        preloadJob = viewModelScope.launch {
+            val backend = settingsRepository.backendType.first()
+            preloadEpgDataForSearchNow(availableTypes.filter { it in preloadTypesFor(backend) })
         }
     }
 
@@ -320,6 +334,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
                 if (observedBackend != backend) {
                     backendGeneration++
                     epgJob?.cancel()
+                    preloadJob?.cancel()
                     sliceJob?.cancel()
                     clearSearch()
                     epgMemoryCache.clear()
@@ -339,9 +354,10 @@ class EpgViewModel @OptIn(UnstableApi::class)
                     hasInitialFetched = true
                     viewModelScope.launch { refreshEpgData(type) }
 
-                    viewModelScope.launch {
+                    preloadJob = viewModelScope.launch {
                         delay(10000)
-                        preloadEpgDataForSearch(listOf("GR", "BS", "CS", "SKY", "BS4K", "TV"))
+                        // 旧backendの遅延ジョブは切替時にcancelし、子の並列取得も一括停止。
+                        preloadEpgDataForSearchNow(preloadTypesFor(backend))
                     }
 
                 } else if (isInit && hasInitialFetched) {
