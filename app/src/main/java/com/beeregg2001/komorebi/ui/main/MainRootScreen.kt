@@ -71,6 +71,7 @@ fun MainRootScreen(
     // =========================================================================================
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     var isAppInForeground by remember { mutableStateOf(true) }
+    var hasBeenInBackground by remember { mutableStateOf(false) }
 
     DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
@@ -78,6 +79,7 @@ fun MainRootScreen(
                 androidx.lifecycle.Lifecycle.Event.ON_STOP -> {
                     // 別のアプリを開いた、またはホーム画面に戻ってアプリが裏に回った（スリープ状態）
                     isAppInForeground = false
+                    hasBeenInBackground = true
                 }
 
                 androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
@@ -144,10 +146,26 @@ fun MainRootScreen(
             epgViewModel.refreshEpgData()
         } else state.toastMessage = "TV番組一覧へのアクセス許可が必要です。アプリの権限設定で許可してください。"
     }
+    // OS設定から復帰した場合も権限を読み直し、チャンネルと番組表を再取得する。
+    LaunchedEffect(isAppInForeground, backendType) {
+        if (isAppInForeground && hasBeenInBackground) {
+            hasBeenInBackground = false
+            if (backendType == TifInput.BACKEND_TYPE) {
+                val currentlyGranted = ContextCompat.checkSelfPermission(
+                    context, TifInput.READ_LISTINGS_PERMISSION
+                ) == PackageManager.PERMISSION_GRANTED
+                if (currentlyGranted && !listingsPermissionGranted) {
+                    channelViewModel.fetchChannels(force = true)
+                    epgViewModel.refreshEpgData()
+                }
+                listingsPermissionGranted = currentlyGranted
+            }
+        }
+    }
     var previouslyAppliedBackend by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(backendType) {
         if (previouslyAppliedBackend != null && previouslyAppliedBackend != backendType) {
-            // 旧ライブのミニプレイヤーだけ閉じ、SMBの再生形態は維持する。
+            // バックエンドに依存するライブ再生だけ閉じ、SMBの再生形態は維持する。
             if (state.selectedChannel != null) state.isMiniPlayerMode = false
             state.selectedChannel = null
             state.lastSelectedChannelId = null
@@ -160,6 +178,9 @@ fun MainRootScreen(
             // 既存バックエンドから切替えた際の録画・予約オーバーレイを閉じる。
             state.isRecordListOpen = false
             state.isSeriesListOpen = false
+            if (state.selectedProgram != null && state.selectedSmbItem == null) {
+                state.isMiniPlayerMode = false
+            }
             state.selectedProgram = null // 録画番組再生は旧バックエンドに依存する。SMBは保持する。
             state.selectedReserve = null
             state.editingReserveItem = null
