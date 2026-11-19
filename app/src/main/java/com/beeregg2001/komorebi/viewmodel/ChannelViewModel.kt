@@ -236,8 +236,7 @@ class ChannelViewModel @Inject constructor(
         // 定期取得も強制取得も、最後に開始した要求だけが結果・エラーを公開する。
         val activeRequestId = requestId ?: ++loadingRequestId
         try {
-            if (generation == backendGeneration && activeRequestId == loadingRequestId)
-                _connectionError.value = false
+            // 取得開始だけでは旧エラーを解除しない。最新要求の一覧確定後に解除する。
             val response = liveProvider.getChannels()
 
             // サブチャンネル非表示設定を取得
@@ -290,6 +289,7 @@ class ChannelViewModel @Inject constructor(
                 currentBackend != requestBackend) return
             if (_groupedChannels.value != processed) _groupedChannels.value = processed
             if (_liveRows.value != newRows) _liveRows.value = newRows
+            _connectionError.value = false
             lastFetchedTimeMillis = System.currentTimeMillis()
         } catch (e: CancellationException) {
             Log.d("ChannelViewModel", "fetchChannelsInternal cancelled")
