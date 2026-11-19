@@ -1,156 +1,112 @@
 # TV Input Framework 視聴機能
 
-## 目的・境界
+## 目的・正本と責務境界
 
-KomorebiがAndroid標準TV Input Framework（TIF）を経由して、OSに登録された任意の
-`TvInputService` を視聴できるようにする。実装は特定のTIS実装、package名、HAL、
-チューナーdriver、CAS、独自provider-data schemaを前提にしない。
+KomorebiはAndroid標準のTV Input Framework（TIF）を介し、OSに登録された任意のTvInputService（TIS）を利用する汎用視聴クライアントとする。特定TIS、HAL、チューナードライバ、CAS、独自のprovider-data形式に依存しない。最初の受入れ対象は [kazuki0824/tv PR #116](https://github.com/kazuki0824/tv/pull/116) だが接続先を限定しない。
 
-最初の受入れ対象として [kazuki0824/tv PR #116](https://github.com/kazuki0824/tv/pull/116) の
-`MaleicacidTvInputService` を使用する。**接続先を#116に限定する契約ではない。**
+本書はKomorebi側の連携仕様・導入手順・受入れ条件の正本。PR本文はその要約と検証状況だけを持ち、レビュー対応履歴はGitHubレビュースレッドに残す。KomorebiはTuner SDK/HALやCASを直接操作せず、SI/EIT/ARIB字幕の解析・復号を重複実装しない。
 
-## 実装
+## TV入力・チャンネルの登録と識別
 
-- 入力の列挙は `TvInputManager.tvInputList`。ユーザーが非表示にした入力は列挙しない。
-- 選局対象はinputIdとTvProvider row IDを一組で識別する。新しいrow IDが旧チャンネルのものと同じでも、所有inputIdの一致を確認してから選局する。
-- チューナー入力：読み取りが許可された `TvContract.Channels` を列挙し、`COLUMN_INPUT_ID` を現在の登録入力と照合する。閲覧不可/検索不可の行はUIに表示しない。
-- パススルー入力（HDMI等）：TvProvider上に実channel rowを持たないため、`TvInputInfo.isPassthroughInput` を確認し `TvContract.buildChannelUriForPassthroughInput(inputId)` で選局する。
-- ライブ映像：`TvView.tune(inputId, channelUri)` を使用し、Media3 URLと混同しない。字幕有効化・利用不能/接続切断・視聴年齢制限をTIF標準callbackで扱う。
-- 終了・バックグラウンド移行で`TvView`を破棄してセッションを解放し、復帰後は新しいセッションで再選局する。
-- チャンネル分類：地上ISDB・衛星ISDB・その他のTVチャンネル・外部入力をUIに区分する。入力側が公開した`browsable`と`searchable`だけを使用し、ワンセグ等の固有サービス種別を強制除外しない。
-- 番組表：許可された公開`TvContract.Programs`を既存EPGモデルへ変換する。番組を公開しないTISでも、チャンネル選局は可能にする。
-- TIFの録画・予約はKomorebi側で未実装。選択されたTISに`canRecord=true`があっても、Komorebiに録画機能が自動で追加されるわけではない。
-- ネットワークバックエンド（KonomiTV、EDCB、EPGStation）については再生経路を変更しない。
-- EPGキャッシュはバックエンドごとに分離し、切替時にはViewModel内の表示データを更新する。
-
-## インストールと利用
-
-1. 利用したいTISをAndroid TV製品に導入して、`TvInputManager`が入力を認識することを確認する。
-2. 通常の `adb install -r` でKomorebiを導入する（Komorebiのpriv-app化は行わない）。
-3. 設定の「利用するシステム」で「TV Input Framework」を選択する。
-4. 設定の「TV入力のチャンネルスキャン」で、セットアップが必要な入力を選び、各TISのセットアップ画面を開く。パススルーのみなら走査は不要。
-5. チューナーの公開番組表を読む場合は `READ_TV_LISTINGS` の実行時許可を付与する。パススルー入力の表示・選局だけならこの許可は要求しない。
-6. ライブ画面でチャンネルまたは外部入力を選ぶ。
-
-`READ_TV_LISTINGS`はAndroid TvProviderのdangerous権限である。
-`ACCESS_ALL_EPG_DATA`・`ACCESS_TV_TUNER`・`TUNER_RESOURCE_ACCESS`などの
-特権権限をKomorebiへ付与しない。
-
-## PR #1 レビュー指摘の対応
-
-2026-11-17、レビュー7件について、実装に関係する6件を以下のコード経路へ接続する。実装の静的確認と実機受入れは別判定にする。
-
-| 指摘 | コード上の対応 | 残る実機確認 |
-| --- | --- | --- |
-| Media3 ViewModel/JNI の不要初期化 | `LivePlayerScreen`がTIFとネットワーク再生を分岐し、非TIF時だけ`LivePlayerViewModel`を取得する | ARM以外のTIF起動でも不要な.soを要求しない |
-| D-pad操作の横取り | 親の`onPreviewKeyEvent`をやめ、操作帯の子ButtonにKeyを先渡し | 決定、左右、字幕、一覧、操作帯をすべてリモコンで操作 |
-| 視聴制限案内 | `onContentBlocked`で端末の保護者設定確認と再選局を案内。無認証の解除経路は作らない | 設定確認、許可後の再選局、制限維持 |
-| 音声トラック選択 | `onTracksChanged`で実トラックID/説明を取得、`TvView.selectTrack(TYPE_AUDIO)`へ渡す。確定表示は`onTrackSelected`から更新 | 主副音声/二重音声の切替と選択通知 |
-| 操作帯の常時表示 | 親の`showOverlay`状態に統合。表示・非表示をTVボタンで切り替え、非表示時は決定キーで復帰 | 映像だけの表示、リモコン再表示、操作中のフォーカス維持 |
-| TIFで録画UIが残る | 録画予約タブを隠し、ビデオタブはSMB専用案内。EPG予約ボタンを非表示・AI予約要求を拒否 | 非対応機能が操作できない／SMBは利用可能 |
-| ビルド・受入れ記録 | Draftを継続し、未実施項目を下表に残す | ビルド・実機ログ一式が必要 |
-
-### 2026-11-17 追加レビューで指摘された実装境界
-
-| 指摘 | 対応の責務 | 検証境界 |
-| --- | --- | --- |
-| バックエンド初回未確定によるJNIロード | `SettingsViewModel.confirmedBackendType`は初回DataStore emissionまではnull。再生親Composableは確定までどちらのプレイヤーも生成しない | 保存済みTIFでプロセス再起動し、Media3/JNIを生成しないことを確認 |
-| 録画0件でSMB起動不能 | SMBの表示用`RecordedProgram`は`SmbItem`だけで構築し、録画一覧から流用しない | 録画DBが空のTIFでSMBファイルを起動 |
-| TvProvider時刻の表示ゾーン | epochを変更せず、UIモデルへの投影時に端末`ZoneId.systemDefault()`でISO8601を表現 | 日本時間07:00と04:00放送日境界、日付跨ぎの表示・検索 |
-| EPG検索に他backendのcacheが混入 | Repositoryは現在のbackend接頭辞のcacheのみを検索。ViewModelは切替時に検索ジョブと結果を破棄 | KonomiTVにのみ存在する番組がTIF選択後に検索されない |
-| EPG旧スライスが描画を上書き | sliceJobを取消し、計算終了後にbackend generationとactive状態を検査してMainで公開 | 旧スライス遅延中にTIF切替し、旧Successが表示されない |
-
-これらは別々の新機能を増設するのではなく、すでにあるTIF/ネットワーク境界で必要な所有関係・時刻表現・非同期結果の一貫性を修正するもの。受入れログは未取得。
-
-### 実機受入れ記録（未実施）
-
-| 項目 | 結果 | 記録すべき証跡 |
-| --- | --- | --- |
-| Androidビルド | 未実施 | 対象commit、Gradle/Android SDK/NDK、ABI、タスク・終了コード |
-| 通常APK導入と権限 | 未実施 | `adb install`、`READ_TV_LISTINGS`許可／拒否、公開行の取得 |
-| tv#116を含む複数TIS | 未実施 | 入力ID一覧、選局先、番組表、視聴中の映像・音声 |
-| 音声・字幕・保護者設定 | 未実施 | track通知と選択結果、字幕、制限状態と許可後再選局 |
-| 操作・資源寿命 | 未実施 | リモコン、連続選局、STOP/START、他TVアプリと競合時の動作 |
-| 他バックエンド回帰 | 未実施 | KonomiTV、EDCB、EPGStationのライブ／録画／予約 |
-| SMB回帰 | 未実施 | TIF選択時もSMB動画を再生可能 |
-
-実行環境を持たない場合は「OK」とせず、これらを未実施のまま記録する。
-
-## 2026-11-18 追加レビュー対応：ジャンル／料金情報
-
-- TIFの放送ジャンルは公開 `TvContract.Programs.COLUMN_BROADCAST_GENRE` を `Genres.decode()` して扱う。#116の複数ARIBジャンルを1要素へ連結する形式は、認識できる `、ARIB(0x.../0x...):` 境界だけ分割し、各ジャンルの大分類・中分類を独立して保持する。他のTISが公開した未知の文字列はそのまま保持する。
-- **解釈できた**broadcastの具体分類がある場合はそれを優先する。未知のbroadcast値は原文を保持したうえで、独立したcanonical分類も補完する。ARIBの具体的なアニメ分類が解釈できた場合は、粗いcanonicalのENTERTAINMENTから「バラエティ」を重複追加しない。公開TvProvider列以上のARIB EIT処理はKomorebiで重複実装しない。
-- `COLUMN_SCRAMBLED` は **料金区分（無料／有料）ではなくスクランブル有無** を表す。API非対応／NULL／未知値を `is_scrambled=null` として保持する。既存の `is_free` はネットワークAPI互換のBooleanなのでTIFの料金判定には使わない。
-- TIFは料金情報がないため、設定画面で「有料放送を除外」を非対応と表示し、ホームのピックアップでもTIFだけ料金による除外を適用しない。番組詳細にはスクランブルのあり／なし／情報なしと料金区分不明を表示する。既存ネットワークbackendのフィルタ動作は維持する。
-- 受入れ（**未実施**）：#116の複数ジャンルと単一アニメ、canonicalだけ提供するTIS、未知のbroadcast文字列、未知broadcastとcanonical SPORTSの同時提供、API32・33以降でscrambled列NULL／明示0／明示1を持つ番組、ホームと検索の表示・絞り込みを確認する。
-
-## 2026-11-18 入力識別子と視聴履歴
-
+- 入力は`TvInputManager.tvInputList`から列挙し、非表示の入力は除く。TISのpackage/classは固定しない。
+- チューナーは許可された`TvContract.Channels`を用い、所有`COLUMN_INPUT_ID`と行IDを合わせて保持する。表示は`browsable`かつ`searchable`の行に限定し、ワンセグなど特定サービスを独自に除外しない。
+- HDMIなどの`TvInputInfo.isPassthroughInput`は実チャンネル行を生成せず`TvContract.buildChannelUriForPassthroughInput()`で選局する。
+- 選局直前に登録入力、row所有者、可視性を再照合する。保存済み入力が削除されても別入力へ黙って切り替えない。
 - TIFチャンネルは`tif:`から始まる完全な`channel.id`（所有するinputIdを含む）が同一性の正本。ONID/SIDが等しくても別のTIS・HDMIへ置換しない。
 - 最終視聴履歴の保存時は、TIFだけ`channelId`一致の旧行を置換する。従来ネットワークバックエンドはONID/SIDによる重複抑止を維持するが、TIFの履歴行は削除しない。
 - ホーム履歴からの再選局では、登録済みの現在のチャンネル一覧との完全な`channel.id`一致を要求する。削除済みTIF入力の履歴は表示しない。別入力への黙ったフォールバックは禁止する。
 - 同じ識別規則をプロ野球タブからのTIF選局にも適用し、現存しないチャンネルへの遷移を抑止する。
-- 受入れ（**未実施**）：HDMI 1/2の両方を順に保存し再選局できること、同じONID/SIDを持つ別TISのチャンネルが共存すること、入力削除後に別入力へ誤復帰しないこと、ネットワーク側の従来履歴挙動が維持されることを検証する。
+- **初回入力登録**は端末の標準Live TV（TV入力設定）から行う。セットアップActivityを通常APKが直接起動するだけでは、TV入力へのTvProvider書込み権限付与・チャンネルの`browsable`切替を代行できない。KomorebiのTIF設定の直接起動は、初回登録済み入力の再設定・再スキャン用に位置付ける。
+- 同名同番号を複数のTISが公開する場合、ライブ／ミニ一覧の局名にOS提供のTV入力名を併記する。
+- 同じ局名・番号・OS入力ラベルを複数の別入力が公開した場合は、表示名先頭に入力グループ内の短い識別番号を追加する。選局の同一性は完全なinputIdを維持する。
+- 起動チャンネルにTIFの保存済みinputIdを含む完全な`channel.id`を用いる。入力削除・スキャン行0件でも他入力を自動選局せず、起動判定を完了してホームとセットアップ導線へ進める。
+- `READ_TV_LISTINGS`の権限許可後にチャンネル一覧と現在の番組表を再取得する。GRのみで初回取得失敗しても再起動を要さない。
+- 権限未許可でチューナー入力がある場合、HDMIだけを取得できても完全取得と扱わない。成功の0局と取得失敗を区別し、保存IDの自動選局を誤って確定しない。ホームと設定は使えるようにする。
 
-## 2026-11-18 追加レビュー：TIFと既存機能の境界
+## 視聴とリモコン操作
 
+- `TvView.tune(inputId, channelUri)`を使い、TIF URIをMedia3/ExoPlayerのURLへ渡さない。
+- `LivePlayerScreen`はTIFとネットワーク再生を分離し、TIF時にMedia3用ViewModel/JNIを初期化しない。バックエンド初回DataStore値が確定するまでプレイヤー生成を待つ。
+- D-padは子の操作Buttonへ優先して渡し、親の`onPreviewKeyEvent`で横取りしない。操作帯は`showOverlay`で表示・非表示を制御し、決定キーで再表示する。
+- `onContentBlocked`時は端末の保護者設定と再選局を案内し、無認証の解除機能を作らない。
+- `onTracksChanged`の音声IDで`TvView.selectTrack(TYPE_AUDIO)`を実行し、確定表示は`onTrackSelected`を正本とする。字幕有効化もTIF APIを利用する。
 - TV入力を解決できないときは入力確認エラーのみ表示し、生成されない`TvView`の「映像受信待ち」を重ねない。
+- Android TVのON_STOPでTvViewを解放し、ON_RESUMEでも親は選局中TIFの`channel.id`を保持する。子がON_STARTで再選局する。
+- 音声トラックが切り替わり0/1件になっても、再描画前のクリックでゼロ除算せず、選択完了は`onTrackSelected`を正本とする。
+- EPGなしのTIF局は「番組情報なし」、HDMI等パススルーは入力名を表示し、「放送休止中」と誤表示しない。
+- バックエンド切替時は旧ライブ選局、復帰状態、操作帯を解放する。旧ライブ由来のミニプレイヤーだけを閉じ、SMBの再生状態は維持する。
+
+## 番組表・時刻・ジャンル・料金表示
+
+- 許可された`TvContract.Programs`を既存EPGモデルへ写像する。番組が未公開でも視聴チャンネルは保持し、独自のSI/EIT収集エンジンは作らない。
+- TvProvider時刻はepochのまま保存し、表示モデルへの投影時に端末`ZoneId.systemDefault()`へ変換する。04:00放送日境界を維持する。
+- TIFの放送ジャンルは公開 `TvContract.Programs.COLUMN_BROADCAST_GENRE` を `Genres.decode()` して扱う。#116の複数ARIBジャンルを1要素へ連結する形式は、認識できる `、ARIB(0x.../0x...):` 境界だけ分割し、各ジャンルの大分類・中分類を独立して保持する。他のTISが公開した未知の文字列はそのまま保持する。
+- **解釈できた**broadcastの具体分類がある場合はそれを優先する。未知のbroadcast値は原文を保持したうえで、独立したcanonical分類も補完する。ARIBの具体的なアニメ分類が解釈できた場合は、粗いcanonicalのENTERTAINMENTから「バラエティ」を重複追加しない。公開TvProvider列以上のARIB EIT処理はKomorebiで重複実装しない。
+- `COLUMN_SCRAMBLED` は **料金区分（無料／有料）ではなくスクランブル有無** を表す。API非対応／NULL／未知値を `is_scrambled=null` として保持する。既存の `is_free` はネットワークAPI互換のBooleanなのでTIFの料金判定には使わない。
+- TIFは料金情報がないため、設定画面で「有料放送を除外」を非対応と表示し、ホームのピックアップでもTIFだけ料金による除外を適用しない。番組詳細にはスクランブルのあり／なし／情報なしと料金区分不明を表示する。既存ネットワークbackendのフィルタ動作は維持する。
+- 固定のARIBジャンル認識正規表現2本とcanonical表示名対応表は一度だけ生成し、従来の公開ジャンル変換結果は変更しない。
+- ライブ一覧の現在番組・次番組は時刻列で候補を絞った後に2件だけ説明・ジャンルを投影する。EPG一覧全件の変換は従来どおり使用する。
+- ライブの現在番組は`start <= now && end > now`、次番組は`start > now`とし、該当する現在・次の最大2行のみ詳細とジャンルを投影する。EPG一覧は要求された範囲の全件を扱う。
+
+## バックエンド切替・同期と既存機能
+
+- KonomiTV／EDCB／EPGStationのネットワーク再生経路は変更しない。TIFにはIP／ポートの設定を要求しない。
+- 非同期取得では開始時のバックエンド、世代、読み込み要求IDを固定し、結果の公開・保存・読み込み終了前に照合する。旧polling／forceの結果や失敗を現行の画面へ反映せず、停止していたpollingは勝手に再開しない。
 - 1回のチャンネル取得では開始時点のbackendを固定し、取得失敗時に別backendへ誤ってフォールバックしない。ロゴ経路も共通のbackend→`LiveProvider`ルーティングを使う。
 - EPG検索用先読みはTIFならGR/BS/CS/TV、その他の既存backendなら従来のGR/BS/CS/SKY/BS4Kに限定する。backend切替時は10秒待ちを含む先読みJobを取消し、進行中の取得へキャンセルを伝える。
 - ピン留めEPGは公開チャンネル一覧で所有inputIdと可視性を確認した後、完全なチャンネルIDで対象を絞ってから対象局だけの番組を取得する。
 - TIFのヘルスチェックでは入力一覧と公開チャンネルのみを確認し、疎通確認だけを目的とする全局番組クエリを行わない。権限拒否の通知を隠さない。
-- 固定のARIBジャンル認識正規表現2本とcanonical表示名対応表は一度だけ生成し、従来の公開ジャンル変換結果は変更しない。
-- 受入れ（**未実施**）：保存済み入力削除時の表示、取得中のbackend切替時の例外、EPGStationでのTV先読み回避、10秒待機中の切替/重複取得、1局ピン留め時の番組クエリ数、TIF疎通確認の番組クエリなし、公開ジャンルの分類一致を確認する。
-
-## 2026-11-19 起動・バックエンド切替・非同期取得の受入れ
-
-- TIFへ切り替える前に実行中の録画同期を取消して完了を待つ。`SettingsViewModel`は`AppDatabase.clearAllTables()`を呼ばず、保存済み視聴履歴、録画同期メタデータ等の永続記録を保持する。画像キャッシュなどは再取得可能。
-- RecordViewModel・RecordSyncEngine・録画同期の明示的な入口では、TIF時の録画同期・全再構築を実行しない。録画情報0件を「初期構築完了」として記録しない。
-- 起動チャンネルにTIFの保存済みinputIdを含む完全な`channel.id`を用いる。入力削除・スキャン行0件でも他入力を自動選局せず、起動判定を完了してホームとセットアップ導線へ進める。
-- Android TVのON_STOPでTvViewを解放し、ON_RESUMEでも親は選局中TIFの`channel.id`を保持する。子がON_STARTで再選局する。
-- `READ_TV_LISTINGS`の権限許可後にチャンネル一覧と現在の番組表を再取得する。GRのみで初回取得失敗しても再起動を要さない。
 - バックエンド切替時はホームのジャンル・野球候補と旧ジョブを無効化し、確定した新backendの結果だけを公開する。
 - 起動時タブの設定候補はホームと同じ`visibleHomeTabs`に従い、TIFでは録画予約を選択できない。
 - TIFのEPG取得では局ごとのquery前に取消状態を確認する。アクセス不能の権限エラーは空番組へ偽装しない。
 - TIFの疎通確認はIO側で入力を1回だけ列挙し、必要な公開チャンネルの確認だけを行う。
-- 音声トラックが切り替わり0/1件になっても、再描画前のクリックでゼロ除算せず、選択完了は`onTrackSelected`を正本とする。
-
-**実機受入れは未実施**：ネットワーク→TIF（HDMI 2）→ネットワーク→TIFの履歴保持、削除済み入力／チャンネル0件での起動、バックグラウンド復帰、権限付与後のEPG、TIF録画同期メタデータ不変、バックエンド切替中のホーム旧結果抑止、クリック直前の音声トラック消滅、EPG取消し時の旧TISの追加query抑止を確認する。
-
-## 2026-11-19 追加レビュー対応：標準TIFセットアップと取得元の一貫性
-
-- **初回入力登録**は端末の標準Live TV（TV入力設定）から行う。セットアップActivityを通常APKが直接起動するだけでは、TV入力へのTvProvider書込み権限付与・チャンネルの`browsable`切替を代行できない。KomorebiのTIF設定の直接起動は、初回登録済み入力の再設定・再スキャン用に位置付ける。
 - チャンネル一覧は取得開始時のbackendと世代を保持し、旧polling/forceリクエストの成功・失敗を現在の表示へ反映しない。切替時に旧ジョブ・旧一覧を破棄する。
 - EPGキャッシュは開始時のbackendと同じbackendへルーティングして取得し、取得後の現行backend確認を通ってから公開・保存する。プロキシの選択値をディスク読込後に取り直さない。
 - AI録画再生は要求実行時にbackendを確認し、TIF選択時はネットワーク専用の録画プレイヤーを起動しない。
-- 同名同番号を複数のTISが公開する場合、ライブ／ミニ一覧の局名にOS提供のTV入力名を併記する。
-- EPGなしのTIF局は「番組情報なし」、HDMI等パススルーは入力名を表示し、「放送休止中」と誤表示しない。
-- ライブ一覧の現在番組・次番組は時刻列で候補を絞った後に2件だけ説明・ジャンルを投影する。EPG一覧全件の変換は従来どおり使用する。
-- **未実施**：標準TVアプリ初回スキャン→browsable→Komorebi選局、旧polling完了と切替の競合、A→B→AのEPG取得、AI録画アクション、複数TIS同局、EPG未提供局・HDMI、長時間番組／番組間隔空きでの現在・次番組選別、既存ネットワーク回帰。
+- EPG検索は当該バックエンドのキャッシュだけを使う。検索・slice変換・野球の日付更新ジョブは取消しと公開前照合を行い、旧結果による上書きを防ぐ。
+- 全件同期とスマート同期の辞書Job起動・登録は同じ既存mutexで排他し、実行中Job参照を上書きしない。切替時は終了を待つ。
+- TIFへ切り替える前に実行中の録画同期を取消して完了を待つ。`SettingsViewModel`は`AppDatabase.clearAllTables()`を呼ばず、保存済み視聴履歴、録画同期メタデータ等の永続記録を保持する。画像キャッシュなどは再取得可能。
+- RecordViewModel・RecordSyncEngine・録画同期の明示的な入口では、TIF時の録画同期・全再構築を実行しない。録画情報0件を「初期構築完了」として記録しない。
+- TIF時は録画／予約タブ・EPG予約・AI録画／録画再生を無効化する。ビデオタブのSMB動画は録画DBが空でも再生可能とする。
 
-## 検査項目
+## インストールと利用
 
-### 静的
+1. **初回登録**は端末の標準Live TV／TV入力設定で対象TISをセットアップ・スキャンし、TvProviderへの登録とbrowsable設定を済ませる。通常APKからTISのセットアップActivityを直接起動するだけでは、この権限付与・公開設定を代行できない。
+2. `adb install -r`で通常APKのKomorebiを導入する。priv-app化しない。
+3. 設定で「TV Input Framework」を選ぶ。Komorebiの「TV入力のチャンネルスキャン」からの直接起動は**登録済み入力の再設定・再スキャン用**とする。HDMIのみならスキャン不要。
+4. チューナーの公開チャンネル・番組表が必要な場合は`READ_TV_LISTINGS`を実行時許可し、許可後にチャンネルと現在番組を再取得する。HDMI等だけなら要求しない。
+5. ライブ画面から公開チャンネルか外部入力を選ぶ。入力が見つからない場合は確認エラーを表示し、別入力への黙った代替選局をしない。
 
-- [ ] TIS package/classハードコードが選局・一覧の条件に残っていない
-- [ ] `COLUMN_INPUT_ID`と行IDを結合し、他TIS行への取り違えがない
-- [ ] `TvInputInfo`パススルーとTvProviderのチャンネルを別に扱う
-- [ ] 特定放送方式・ワンセグなど固有条件で一覧を不当に制限しない
-- [ ] チャンネル・番組表・設定・切替・再生・終了の経路が汎用TIFへ接続される
-- [ ] `getLiveStreamUrl`やExoPlayerへTIFのcontent URIを渡さない
-- [ ] TIFの録画・予約APIがネットワークバックエンドへフォールバックしない
+`READ_TV_LISTINGS`はdangerous権限。`ACCESS_ALL_EPG_DATA`、`ACCESS_TV_TUNER`、`TUNER_RESOURCE_ACCESS`等の特権権限はKomorebiへ付与しない。
 
-### 製品/実機（未実施）
+## 対象外
 
-- [ ] Androidビルド、APKインストール、実行時権限付与・拒否
-- [ ] #116を含む複数TISを登録して、それぞれのチャンネル・番組表・選局を確認
-- [ ] TvProvider row IDの再利用、TIS追加/削除、inputID変更時の取り違えがない
-- [ ] `browsable=0`、`searchable=0`、未知broadcast type、番組情報なし、音声のみを確認
-- [ ] HDMI等のpassthrough入力を選局し、映像の表示・資源解放を確認
-- [ ] 選局、チャンネル切替、停止、バックグラウンド復帰、字幕、年齢制限、音声トラック切替、接続失敗を確認
-- [ ] D-padで字幕・音声・チャンネル選択・操作帯の表示切替を確認
-- [ ] TIF/ネットワークバックエンド切替後、前バックエンドのEPGが混入しない
-- [ ] TIFの録画・予約UIが誤成功しない、既存ネットワークバックエンドに退行がない
+TIS自体の変更、HAL/CAS直接操作、TIF録画・予約、デュアルTIFライブ、独自SI/EIT収集・字幕復号エンジン。TISの`canRecord=true`はKomorebiの録画実装を意味せず、ネットワークの録画経路へ誤転送しない。
 
-現時点でAndroid SDK/NDKビルド・端末接続・実機TIS/HDMI環境試験は未実施。
-静的な差分検査はビルドや実機受入れ試験の代わりとしない。
+## 受入れ条件・証跡
+
+以下は**すべて未実施**。受入れ状態の更新はこの表を正本とし、日付別のレビュー追補を追加しない。個別レビューとの対応はGitHubスレッドで追跡する。
+
+| 検査対象 | 期待結果・記録する証跡 | 状態 |
+| --- | --- | --- |
+| ビルド・インストール | HEAD、Gradle/SDK/NDK、ABI、終了コード、`adb install` | 未実施 |
+| 初回セットアップ／権限 | 標準TVアプリで初回スキャン→browsable→Komorebi選局、許可／拒否／許可後の再取得、HDMIのみの権限不要 | 未実施 |
+| 複数入力・視聴履歴 | #116と別TIS、同名・同番号・同入力ラベル、同ONID/SID、HDMI 1/2、row再利用、削除済み入力、0局、履歴保持、入力ID・実選局先 | 未実施 |
+| 視聴UIとセッション | TIF起動時の不要な.so非ロード、D-pad・操作帯、字幕・音声0/1/複数、主副音声、保護者設定、STOP/START、バックグラウンド復帰、他TVアプリと資源競合 | 未実施 |
+| 番組表と放送日 | 07:00表示／04:00境界／日付跨ぎ、EPGなし、HDMI、長時間番組、番組空白、現在／次番組、局別取得件数 | 未実施 |
+| ジャンル・料金 | #116複数ARIBジャンル・単一アニメ、canonicalのみ、未知broadcast＋canonical SPORTS、API32/33のscrambled不明／NULL／0／1、料金絞り込みと表示 | 未実施 |
+| 切替・非同期 | A→B→A、旧polling／force完了、10秒先読み、検索・描画slice、日付変更、辞書Job、旧TIS query取消し、録画同期メタデータ保持、DB差分 | 未実施 |
+| 既存バックエンド | KonomiTV・EDCB・EPGStationのライブ／録画／予約、SMB再生（録画DB空）、TIF録画／AI要求拒否 | 未実施 |
+| ヘルスチェックと最小取得 | 全局番組クエリなし、1局ピン留め時の対象局のみ取得、権限拒否を隠さない、エラーとquery回数 | 未実施 |
+
+### 静的確認項目
+
+- [ ] 特定TIS package/classのハードコードがない
+- [ ] 入力ID・row ID・可視性とパススルーURIの所有者検証がある
+- [ ] ワンセグ等を独自に除外しない
+- [ ] TIF URIをネットワーク再生へ流さない
+- [ ] TIF録画・予約・AI操作が非TIFバックエンドへ誤転送されない
+- [ ] 非同期取得の旧世代／旧Jobが現行表示と保存状態を変更しない
+- [ ] 全受入れ条件を実コードの正規経路と照合し、未確認を記録する
+
+Androidビルド、instrumentation test、端末接続、実機TIS/HDMI、既存バックエンド回帰は未実施。静的なソース確認を実行確認に代用しない。
