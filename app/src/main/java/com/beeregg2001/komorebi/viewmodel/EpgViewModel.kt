@@ -386,6 +386,11 @@ class EpgViewModel @OptIn(UnstableApi::class)
         fullLogoUrls = emptyList()
         uiState = EpgUiState.Loading
         refreshEpgData()
+        // 番組検索は全種別の7日間を母集団とする。入力変更後も再構築する。
+        preloadJob = viewModelScope.launch {
+            if (settingsRepository.backendType.first() == "TIF")
+                preloadEpgDataForSearchNow(preloadTypesFor("TIF"))
+        }
     }
 
     fun refreshEpgData(channelType: String? = null) {
