@@ -231,8 +231,11 @@ class ChannelViewModel @Inject constructor(
     private suspend fun fetchChannelsInternal(requestId: Long? = null) {
         val requestBackend = settingsRepository.backendType.first()
         val generation = backendGeneration
+        // 定期取得も強制取得も、最後に開始した要求だけが結果・エラーを公開する。
+        val activeRequestId = requestId ?: ++loadingRequestId
         try {
-            if (generation == backendGeneration) _connectionError.value = false
+            if (generation == backendGeneration && activeRequestId == loadingRequestId)
+                _connectionError.value = false
             val response = liveProvider.getChannels()
 
             // サブチャンネル非表示設定を取得
@@ -280,7 +283,7 @@ class ChannelViewModel @Inject constructor(
             }
 
             val newRows = transformToUiState(processed)
-            if (generation != backendGeneration ||
+            if (generation != backendGeneration || activeRequestId != loadingRequestId ||
                 settingsRepository.backendType.first() != requestBackend) return
             if (_groupedChannels.value != processed) _groupedChannels.value = processed
             if (_liveRows.value != newRows) _liveRows.value = newRows
@@ -290,12 +293,12 @@ class ChannelViewModel @Inject constructor(
             throw e
         } catch (e: Throwable) {
             Log.e("ChannelViewModel", "Error fetching channels", e)
-            if (generation == backendGeneration &&
+            if (generation == backendGeneration && activeRequestId == loadingRequestId &&
                 settingsRepository.backendType.first() == requestBackend) {
                 _connectionError.value = true
             }
         } finally {
-            if (generation == backendGeneration && requestId != null && requestId == loadingRequestId)
+            if (generation == backendGeneration && activeRequestId == loadingRequestId && requestId != null)
                 _isLoading.value = false
         }
     }
