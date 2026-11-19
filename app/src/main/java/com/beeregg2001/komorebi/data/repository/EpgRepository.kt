@@ -59,9 +59,14 @@ class EpgRepository @Inject constructor(
 ) {
     private val memoryCache = ConcurrentHashMap<String, List<EpgChannelWrapper>>()
 
-    // 権限を失ったTIFのキャッシュを番組表や検索の成功結果として公開しない。
+    private fun noTifProgramSource(backend: String): Boolean =
+        backend == TifInput.BACKEND_TYPE &&
+            TifInput.inputs(context).none { !it.isPassthroughInput }
+
+    // パススルーのみならEPGは不要。チューナーがある場合だけ権限を要求する。
     private fun unavailableTifListings(backend: String): Boolean =
         backend == TifInput.BACKEND_TYPE &&
+            !noTifProgramSource(backend) &&
             context.checkSelfPermission(TifInput.READ_LISTINGS_PERMISSION) != PackageManager.PERMISSION_GRANTED
 
     // backend間でEPGファイル/Room/メモリキャッシュを共用しない。
@@ -165,7 +170,7 @@ class EpgRepository @Inject constructor(
         // backend別に保持したcacheを、検索時も選択中backendだけに限定する。
         // 全cache.valuesを検索すると切替前のEPGが結果に混入する。
         val selectedBackend = settingsRepository.backendType.first()
-        if (unavailableTifListings(selectedBackend)) return emptyList()
+        if (noTifProgramSource(selectedBackend) || unavailableTifListings(selectedBackend)) return emptyList()
         memoryCache.entries.asSequence()
             .filter { (key, _) -> key.startsWith(selectedBackend + "_") }
             .flatMap { (_, channels) -> channels.asSequence() }
@@ -249,7 +254,7 @@ class EpgRepository @Inject constructor(
 
     suspend fun hasCacheForType(channelType: String): Boolean {
         val backend = settingsRepository.backendType.first()
-        if (unavailableTifListings(backend)) return false
+        if (noTifProgramSource(backend) || unavailableTifListings(backend)) return false
         return memoryCache.containsKey(backend + "_" + channelType)
     }
 
@@ -262,7 +267,7 @@ class EpgRepository @Inject constructor(
     ) {
         val requestBackend = settingsRepository.backendType.first()
         val cacheKey = requestBackend + "_" + channelType
-        if (unavailableTifListings(requestBackend)) {
+        if (noTifProgramSource(requestBackend) || unavailableTifListings(requestBackend)) {
             memoryCache.remove(cacheKey)
             return
         }
@@ -324,6 +329,11 @@ class EpgRepository @Inject constructor(
     ): Flow<Result<List<EpgChannelWrapper>>> = flow {
         val requestBackend = settingsRepository.backendType.first()
         val cacheKey = requestBackend + "_" + channelType
+        if (noTifProgramSource(requestBackend)) {
+            memoryCache.remove(cacheKey)
+            emit(Result.success(emptyList()))
+            return@flow
+        }
         if (unavailableTifListings(requestBackend)) {
             memoryCache.remove(cacheKey)
             emit(Result.failure(SecurityException(
