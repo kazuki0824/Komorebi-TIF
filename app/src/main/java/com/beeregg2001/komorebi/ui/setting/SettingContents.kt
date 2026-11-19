@@ -358,7 +358,9 @@ fun ConnectionSettingsContent(
                 )
                 Text(
                     "初回のTV入力登録は端末標準のテレビアプリ（Live TV）またはTV入力設定で完了してください。" +
-                        "登録後の再スキャンは各入力の再設定画面から行えます。IP/ポートは不要です。" +
+                        "登録後の再スキャンは各入力の再設定画面から行えます。" +
+                        "チューナー番組が表示されない場合はAndroidのアプリ設定でTV番組一覧（READ_TV_LISTINGS）の権限を許可してください。" +
+                        "IP/ポートは不要です。" +
                         "録画・予約はこのKomorebiバックエンドでは未対応です。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = colors.textSecondary
