@@ -263,22 +263,20 @@ class HomeViewModel @Inject constructor(
             }
 
             val fetchedGenrePickup = filterGenrePickup(allPrograms, genre, timeSetting, isExcludePaid)
-            // 最後の中断点（backend Flowの読み取り）を先に通過させる。
-            // それ以降は現在日付の照合と公開の間に中断を入れない。
-            if (settingsRepository.backendType.first() != requestedBackend) return@launch
-            // 初回取得中に日付が変わった場合も、取得済み番組から新しい日付を集計する。
-            // 計算中にさらに日付が変更された場合は、現在の日付で再計算する。
-            var requestedDateOffset: Int
+            // 集計・backend確認での中断後に日付を再確認する。
+            // 最新のbackend・日付を確定してから公開するまで中断点を挟まない。
             var fetchedGames: List<Pair<String, List<BaseballGameInfo>>>
-            do {
-                requestedDateOffset = _baseballDateOffset.value
+            while (true) {
+                val requestedDateOffset = _baseballDateOffset.value
                 fetchedGames = filterFavoriteBaseballGames(
                     fetchedBaseballPrograms,
                     favoriteBaseballTeams.value,
                     requestedDateOffset
                 )
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            } while (_baseballDateOffset.value != requestedDateOffset)
+                if (settingsRepository.backendType.first() != requestedBackend) return@launch
+                if (_baseballDateOffset.value == requestedDateOffset) break
+            }
             cachedBaseballPrograms = fetchedBaseballPrograms
             _genrePickupPrograms.value = fetchedGenrePickup
             _favoriteBaseballGames.value = fetchedGames
