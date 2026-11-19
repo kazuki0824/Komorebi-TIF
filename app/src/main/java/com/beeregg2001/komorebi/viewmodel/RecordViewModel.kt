@@ -191,8 +191,9 @@ class RecordViewModel @Inject constructor(
         detailFetchJob?.cancel()
         detailFetchJob = viewModelScope.launch(Dispatchers.IO) {
             delay(300)
+            if (!syncEngine.recordCacheReady.value) return@launch
             recordProvider.getRecordedProgram(videoId).onSuccess {
-                _programDetail.value = it
+                if (syncEngine.recordCacheReady.value) _programDetail.value = it
             }.onFailure { Log.e(TAG, "Failed to fetch program detail", it) }
         }
     }
@@ -201,8 +202,11 @@ class RecordViewModel @Inject constructor(
         _programDetail.value = null
     }
 
-    val recentRecordings: StateFlow<List<RecordedProgram>> = programDao.getRecentRecordingsFlow()
-        .map { entities -> entities.map { RecordDataMapper.toDomainModel(it) } }
+    val recentRecordings: StateFlow<List<RecordedProgram>> = combine(
+        programDao.getRecentRecordingsFlow(), syncEngine.recordCacheReady
+    ) { entities, ready ->
+        if (ready) entities.map { RecordDataMapper.toDomainModel(it) } else emptyList()
+    }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
@@ -211,11 +215,22 @@ class RecordViewModel @Inject constructor(
 
     init {
         loadSearchHistory()
+        viewModelScope.launch {
+            syncEngine.recordCacheReady.collect { ready ->
+                if (!ready) {
+                    detailFetchJob?.cancel()
+                    _programDetail.value = null
+                    _groupedSeries.value = emptyMap()
+                    _groupedChannels.value = emptyMap()
+                    epgSeriesItems = emptyList()
+                }
+            }
+        }
 
         viewModelScope.launch(Dispatchers.IO) {
             syncEngine.syncProgress.map { it.isSyncing }.distinctUntilChanged()
                 .collect { isSyncing ->
-                    if (!isSyncing) {
+                    if (!isSyncing && syncEngine.recordCacheReady.value) {
                         val seriesList = programDao.getGroupedSeries()
                         val channelsList = programDao.getDistinctChannels()
                         if (settingsRepository.backendType.first() == "EPGSTATION" || seriesList.isNotEmpty() || channelsList.isNotEmpty()) {
@@ -285,9 +300,12 @@ class RecordViewModel @Inject constructor(
         _sortOrder
     ) { partialState, type, order ->
         partialState.copy(sortType = type, sortOrder = order)
-    }.flatMapLatest { state ->
-        flow {
-            emit(PagingData.empty())
+    }.combine(syncEngine.recordCacheReady) { state, ready ->
+        state to ready
+    }.flatMapLatest { (state, ready) ->
+        if (!ready) flowOf(PagingData.empty<RecordedProgram>())
+        else flow {
+            emit(PagingData.empty<RecordedProgram>())
             delay(50)
 
             val pager = Pager(
