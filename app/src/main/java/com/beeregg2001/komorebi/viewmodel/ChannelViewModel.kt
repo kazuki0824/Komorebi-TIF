@@ -422,8 +422,11 @@ class ChannelViewModel @Inject constructor(
 
     fun saveToHistory(program: RecordedProgram) {
         viewModelScope.launch {
-            val entity = KonomiDataMapper.toEntity(program)
-            watchHistoryRepository.saveToLocalHistory(entity)
+            val backend = settingsRepository.backendType.first()
+            if (backend != "TIF") {
+                val entity = KonomiDataMapper.toEntity(program)
+                watchHistoryRepository.saveToLocalHistory(entity, backend)
+            }
         }
     }
 
