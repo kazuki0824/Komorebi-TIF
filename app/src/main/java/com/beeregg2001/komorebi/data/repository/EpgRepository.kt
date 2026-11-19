@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.content.pm.PackageManager
 import com.beeregg2001.komorebi.data.repository.tif.TifInput
+import com.beeregg2001.komorebi.data.repository.tif.TifRepository
 import androidx.annotation.OptIn
 import androidx.annotation.RequiresApi
 import androidx.media3.common.util.Log
@@ -55,7 +56,8 @@ class EpgRepository @Inject constructor(
     private val epgProvider: DtvProviderProxy,
     private val epgCacheDao: EpgCacheDao,
     private val gson: Gson,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val tifRepository: TifRepository
 ) {
     private val memoryCache = ConcurrentHashMap<String, List<EpgChannelWrapper>>()
 
@@ -172,9 +174,12 @@ class EpgRepository @Inject constructor(
         // 全cache.valuesを検索すると切替前のEPGが結果に混入する。
         val selectedBackend = settingsRepository.backendType.first()
         if (tifListingsStatus(selectedBackend) != 0) return emptyList()
+        val visibleTifIds = if (selectedBackend == TifInput.BACKEND_TYPE)
+            tifRepository.visibleChannelIds() else null
         memoryCache.entries.asSequence()
             .filter { (key, _) -> key.startsWith(selectedBackend + "_") }
             .flatMap { (_, channels) -> channels.asSequence() }
+            .filter { wrapper -> visibleTifIds == null || wrapper.channel.id in visibleTifIds }
             .forEach { wrapper ->
             if (!channelName.isNullOrBlank() && !wrapper.channel.name.contains(
                     channelName,
@@ -266,12 +271,12 @@ class EpgRepository @Inject constructor(
             memoryCache.remove(cacheKey)
             return
         }
-        if (memoryCache.containsKey(cacheKey)) return
+        if (requestBackend != TifInput.BACKEND_TYPE && memoryCache.containsKey(cacheKey)) return
 
         var isFreshCacheAvailable = false
 
         // ★修正: DBではなくファイルから読み込む
-        val cachedData = readFromFileCache(cacheKey)
+        val cachedData = if (requestBackend == TifInput.BACKEND_TYPE) null else readFromFileCache(cacheKey)
         if (cachedData != null) {
             if (settingsRepository.backendType.first() != requestBackend) return
             memoryCache[cacheKey] = cachedData
@@ -304,10 +309,13 @@ class EpgRepository @Inject constructor(
                 channelType = channelType
             )
             if (settingsRepository.backendType.first() != requestBackend) return
-            memoryCache[cacheKey] = channels
+            memoryCache[cacheKey] = if (requestBackend == TifInput.BACKEND_TYPE) {
+                val visible = tifRepository.visibleChannelIds()
+                channels.filter { it.channel.id in visible }
+            } else channels
 
             // ★修正: ファイルへ保存する
-            saveToFileCache(cacheKey, channels)
+            saveToFileCache(cacheKey, memoryCache[cacheKey].orEmpty())
 
         } catch (e: Exception) {
             if (e is CancellationException) throw e
@@ -338,11 +346,14 @@ class EpgRepository @Inject constructor(
             return@flow
         }
         if (settingsRepository.backendType.first() != requestBackend) return@flow
+        // TIFはスキャンや入力削除で番組の公開集合が変わる。旧キャッシュを先に出さない。
+        if (requestBackend == TifInput.BACKEND_TYPE) memoryCache.remove(cacheKey)
         memoryCache[cacheKey]?.let { emit(Result.success(it)) }
 
         if (memoryCache[cacheKey] == null) {
             // ★修正: DBではなくファイルから読み込む
-            val cachedData = readFromFileCache(cacheKey)
+            val cachedData = if (requestBackend == TifInput.BACKEND_TYPE)
+                null else readFromFileCache(cacheKey)
             if (cachedData != null) {
                 if (settingsRepository.backendType.first() != requestBackend) return@flow
                 memoryCache[cacheKey] = cachedData
@@ -363,12 +374,17 @@ class EpgRepository @Inject constructor(
             )
 
             if (settingsRepository.backendType.first() != requestBackend) return@flow
-            memoryCache[cacheKey] = channels
-            emit(Result.success(channels))
+            val published = if (requestBackend == TifInput.BACKEND_TYPE) {
+                val visible = tifRepository.visibleChannelIds()
+                channels.filter { it.channel.id in visible }
+            } else channels
+            if (settingsRepository.backendType.first() != requestBackend) return@flow
+            memoryCache[cacheKey] = published
+            emit(Result.success(published))
 
             CoroutineScope(Dispatchers.IO).launch {
                 // ★修正: ファイルへ保存する
-                saveToFileCache(cacheKey, channels)
+                saveToFileCache(cacheKey, published)
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
