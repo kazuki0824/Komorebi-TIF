@@ -134,6 +134,10 @@ fun MainRootScreen(
     }
 
     val backendType by homeViewModel.backendType.collectAsState()
+    val backendSwitchError by settingsViewModel.backendSwitchError.collectAsState()
+    LaunchedEffect(backendSwitchError) {
+        if (backendSwitchError != null) state.toastMessage = backendSwitchError
+    }
     var listingsPermissionGranted by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, TifInput.READ_LISTINGS_PERMISSION) ==
             PackageManager.PERMISSION_GRANTED)
