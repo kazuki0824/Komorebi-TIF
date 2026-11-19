@@ -72,6 +72,7 @@ class WatchHistoryRepository @Inject constructor(
         }
     }
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun getLocalWatchHistory(): Flow<List<WatchHistoryEntity>> =
         settingsRepository.backendType.flatMapLatest { backend ->
             backendHistoryDao.observeRecent(backend).map { rows ->
