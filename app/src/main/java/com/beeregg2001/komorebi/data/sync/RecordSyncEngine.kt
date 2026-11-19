@@ -88,11 +88,8 @@ class RecordSyncEngine @Inject constructor(
             try {
                 val backend = settingsRepository.backendType.first()
                 val isBuilt = db.syncMetaDao().getSyncMeta()?.isInitialBuildCompleted == true
-                // 既存インストールからの一度限りの移行。従来は選択backendの録画を保存していた。
-                if (!ownerPrefs.contains("backend") && !ownerPrefs.getBoolean("pending", false) &&
-                    isBuilt && backend != "TIF") {
-                    ownerPrefs.edit().putString("backend", backend).commit()
-                }
+                // 旧版にはバックエンド所有者の正本がない。推測移行は禁止する。
+                // 所有者不明の録画は再取得まで公開しない。
                 _recordCacheReady.value = backend != "TIF" && isBuilt &&
                     !ownerPrefs.getBoolean("pending", false) &&
                     ownerPrefs.getString("backend", null) == backend
@@ -283,8 +280,11 @@ class RecordSyncEngine @Inject constructor(
     suspend fun syncAllRecords(forceFullSync: Boolean = false) {
         ownerInitialized.await()
         if (switchingBackend || settingsRepository.backendType.first() == "TIF") return
-        // 帰属不明／切替中断後のDBに差分同期してはいけない。全件で再構築する。
-        if (!forceFullSync && !_recordCacheReady.value) {
+        // 構築未完了でも同一backendと確認でき、切替中でなければRoomのページから再開する。
+        val syncBackend = settingsRepository.backendType.first()
+        val ownerMatches = ownerPrefs.getString("backend", null) == syncBackend &&
+            !ownerPrefs.getBoolean("pending", false)
+        if (!forceFullSync && !ownerMatches) {
             syncAllRecords(forceFullSync = true)
             return
         }
@@ -323,10 +323,19 @@ class RecordSyncEngine @Inject constructor(
                     )
 
                     if (forceFullSync) {
-                        programDao.clearAll()
-                        aiSeriesDictionaryDao.clearAll()
+                        // 所有者不明／切替後のデータを消去してから帰属を記録する。
+                        // ページ0を永続化すれば、次回起動の途中同期を安全に再開できる。
                         currentMeta =
                             currentMeta.copy(lastSyncedPage = 0, isInitialBuildCompleted = false)
+                        db.withTransaction {
+                            programDao.clearAll()
+                            aiSeriesDictionaryDao.clearAll()
+                            metaDao.upsert(currentMeta)
+                        }
+                        check(ownerPrefs.edit().putString("backend", syncBackend)
+                            .putBoolean("pending", false).commit()) {
+                            "録画キャッシュ初期化後の取得元保存に失敗しました。"
+                        }
                     }
 
                     val isInitial = forceFullSync || !currentMeta.isInitialBuildCompleted
@@ -547,12 +556,12 @@ class RecordSyncEngine @Inject constructor(
                         current = 0,
                         total = 0
                     )
-                    isSyncSuccessful = true
                     val syncedBackend = settingsRepository.backendType.first()
                     check(ownerPrefs.edit().putString("backend", syncedBackend)
                         .putBoolean("pending", false).commit()) {
                         "録画キャッシュのバックエンド帰属を保存できません。"
                     }
+                    isSyncSuccessful = true
                     _recordCacheReady.value = true
 
                 } catch (e: CancellationException) {
