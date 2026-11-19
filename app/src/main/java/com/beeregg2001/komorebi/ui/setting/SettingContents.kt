@@ -3,6 +3,10 @@
 package com.beeregg2001.komorebi.ui.setting
 
 import android.os.Build
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import androidx.compose.ui.platform.LocalContext
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -287,6 +291,8 @@ fun ConnectionSettingsContent(
     onClick: (FocusRequester) -> Unit
 ) {
     val colors = KomorebiTheme.colors
+    val context = LocalContext.current
+    val tifPermissionR = remember { FocusRequester() }
 
     // ★ 修正: ループによるフォーカスの点滅（奪い合い）を防ぐため、
     // レイアウトの安定（ダイアログの退出アニメーション等）を350msだけ静かに待ち、
@@ -353,8 +359,24 @@ fun ConnectionSettingsContent(
                     icon = Icons.Default.Tv,
                     modifier = Modifier
                         .focusRequester(backendIpR)
-                        .focusProperties { left = sidebarR; up = backendTypeR; down = addSmbR },
+                        .focusProperties { left = sidebarR; up = backendTypeR; down = tifPermissionR },
                     onClick = { onClick(backendIpR); onSetupTif() }
+                )
+                SettingItem(
+                    title = "TV番組一覧の権限設定",
+                    value = "Androidのアプリ設定を開く",
+                    icon = Icons.Default.Settings,
+                    modifier = Modifier
+                        .focusRequester(tifPermissionR)
+                        .focusProperties { left = sidebarR; up = backendIpR; down = addSmbR },
+                    onClick = {
+                        onClick(tifPermissionR)
+                        context.startActivity(
+                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.parse("package:${context.packageName}"))
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    }
                 )
                 Text(
                     "初回のTV入力登録は端末標準のテレビアプリ（Live TV）またはTV入力設定で完了してください。" +
@@ -550,7 +572,7 @@ fun ConnectionSettingsContent(
                     .focusRequester(addSmbR)
                     .focusProperties {
                         left = sidebarR
-                        up = if (backendType == "TIF") backendIpR else if (hasOverride) overridePortR else prefSrcR
+                        up = if (backendType == "TIF") tifPermissionR else if (hasOverride) overridePortR else prefSrcR
                         down =
                             if (smbServerList.isEmpty()) cfIdR else smbItemRs.firstOrNull()
                                 ?: cfIdR
