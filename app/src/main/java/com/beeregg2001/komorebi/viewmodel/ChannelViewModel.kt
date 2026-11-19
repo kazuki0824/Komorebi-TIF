@@ -229,6 +229,8 @@ class ChannelViewModel @Inject constructor(
 
     @RequiresApi(Build.VERSION_CODES.O)
     private suspend fun fetchChannelsInternal(requestId: Long? = null) {
+        // 明示的な再取得が進行中なら、定期取得で公開権を奪わない。
+        if (requestId == null && fetchJob?.isActive == true) return
         val requestBackend = settingsRepository.backendType.first()
         val generation = backendGeneration
         // 定期取得も強制取得も、最後に開始した要求だけが結果・エラーを公開する。
