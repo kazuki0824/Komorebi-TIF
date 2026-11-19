@@ -508,6 +508,10 @@ class RecordViewModel @Inject constructor(
         viewModelScope.launch { historyRepository.saveWatchHistory(program, positionSeconds) }
     }
 
+    /** 異なる録画バックエンドで同じ数値IDを再利用しても誤再生させない。 */
+    fun canResumeHistory(programId: Int, backend: String): Boolean =
+        syncEngine.recordCacheReady.value && historyRepository.isHistoryOwnedBy(programId, backend)
+
     fun clearWatchHistory() {
         viewModelScope.launch {
             try {
