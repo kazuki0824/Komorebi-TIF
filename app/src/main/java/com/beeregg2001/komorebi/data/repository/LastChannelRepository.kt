@@ -23,6 +23,9 @@ class LastChannelRepository @Inject constructor(
      */
     fun getLastChannels() = lastChannelDao.getLastChannels()
 
+    suspend fun getRecentForBackend(backend: String): List<LastChannelEntity> =
+        lastChannelDao.getRecentForBackend(backend == "TIF")
+
     @OptIn(UnstableApi::class)
     suspend fun saveLastChannel(entity: LastChannelEntity) {
         lastChannelDao.insertOrUpdate(entity)
