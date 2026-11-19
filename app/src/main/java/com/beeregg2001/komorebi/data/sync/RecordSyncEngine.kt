@@ -71,6 +71,9 @@ class RecordSyncEngine @Inject constructor(
 ) {
     private val _syncProgress = MutableStateFlow(SyncProgress())
     val syncProgress: StateFlow<SyncProgress> = _syncProgress.asStateFlow()
+    // 切替時に旧backendの録画画面が表示されないよう、完全同期完了まで非公開にする。
+    private val _recordCacheReady = MutableStateFlow(true)
+    val recordCacheReady: StateFlow<Boolean> = _recordCacheReady.asStateFlow()
 
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -209,6 +212,7 @@ class RecordSyncEngine @Inject constructor(
                     val dictionary = dictionaryJob
                     dictionary?.cancel()
                     dictionary?.join()
+                    _recordCacheReady.value = false
                     // 録画DBはbackend固有の再取得可能なキャッシュ。
                     // 視聴履歴や他の永続テーブルは保持し、旧録画だけを設定切替前に不可視化する。
                     db.withTransaction {
@@ -489,6 +493,7 @@ class RecordSyncEngine @Inject constructor(
                         total = 0
                     )
                     isSyncSuccessful = true
+                    _recordCacheReady.value = true
 
                 } catch (e: CancellationException) {
                     Log.i(TAG, "Sync gracefully cancelled: ${e.message}")
