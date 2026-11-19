@@ -131,9 +131,15 @@ fun MainRootScreen(
     }
 
     val backendType by homeViewModel.backendType.collectAsState()
+    var listingsPermissionGranted by remember {
+        mutableStateOf(ContextCompat.checkSelfPermission(context, TifInput.READ_LISTINGS_PERMISSION) ==
+            PackageManager.PERMISSION_GRANTED)
+    }
     val listingsPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
-            channelViewModel.fetchChannels()
+            // 取得中へ移してから許可状態を公開し、部分一覧で起動判定を確定させない。
+            channelViewModel.fetchChannels(force = true)
+            listingsPermissionGranted = true
             // 権限ダイアログ中に失敗した可視EPGも同じ種別で再取得する。
             epgViewModel.refreshEpgData()
         } else state.toastMessage = "TV番組一覧へのアクセス許可が必要です。アプリの権限設定で許可してください。"
@@ -440,12 +446,14 @@ fun MainRootScreen(
         isChannelLoading,
         isChannelError,
         isHomeLoading,
+        listingsPermissionGranted,
         lastChannels,
         backendType,
         startupChannelSetting
     ) {
         if (isSettingsInitialized && state.hasAppliedStartupTab && !state.hasAppliedStartupChannel && !isChannelLoading && !isHomeLoading &&
-            (backendType == TifInput.BACKEND_TYPE && !isChannelError ||
+            (backendType == TifInput.BACKEND_TYPE && !isChannelError &&
+                (listingsPermissionGranted || TifInput.inputs(context).none { !it.isPassthroughInput }) ||
                 backendType != TifInput.BACKEND_TYPE && groupedChannels.isNotEmpty())) {
             // 0チャンネルのTIFも完了としてホーム・スキャン導線を表示する。
             state.hasAppliedStartupChannel = true
@@ -615,7 +623,9 @@ fun MainRootScreen(
 
     val isSystemReady =
         ((state.isDataReady && state.isSplashFinished) || (!isSettingsInitialized && state.isSplashFinished)) &&
-                state.hasAppliedStartupTab && (startupChannelSetting == "OFF" || state.hasAppliedStartupChannel)
+                state.hasAppliedStartupTab && (startupChannelSetting == "OFF" || state.hasAppliedStartupChannel ||
+                    (backendType == TifInput.BACKEND_TYPE && !listingsPermissionGranted &&
+                        TifInput.inputs(context).any { !it.isPassthroughInput }))
 
     KomorebiTheme(theme = currentTheme) {
         val colors = KomorebiTheme.colors
