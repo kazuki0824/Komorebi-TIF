@@ -126,6 +126,7 @@ fun TifLivePlayerScreen(
     val rootFocus = remember { FocusRequester() }
     val listFocus = remember { FocusRequester() }
     val firstControlFocus = remember { FocusRequester() }
+    val captionControlFocus = remember { FocusRequester() }
     var controlHasFocus by remember { mutableStateOf(false) }
 
     val allChannels = remember(groupedChannels) {
@@ -145,7 +146,10 @@ fun TifLivePlayerScreen(
         runCatching {
             when {
                 isMiniListOpen && allChannels.isNotEmpty() -> listFocus.requestFocus()
-                !isMiniListOpen && showOverlay -> firstControlFocus.requestFocus()
+                !isMiniListOpen && showOverlay -> {
+                    if (allChannels.isEmpty()) captionControlFocus.requestFocus()
+                    else firstControlFocus.requestFocus()
+                }
                 else -> rootFocus.requestFocus()
             }
         }
@@ -297,7 +301,10 @@ fun TifLivePlayerScreen(
                     modifier = Modifier.focusRequester(firstControlFocus)
                 ) { Text("チャンネル一覧") }
 
-                Button(onClick = { captions = !captions }) {
+                Button(
+                    onClick = { captions = !captions },
+                    modifier = Modifier.focusRequester(captionControlFocus)
+                ) {
                     Text(if (captions) "字幕: ON" else "字幕: OFF")
                 }
 
@@ -306,7 +313,7 @@ fun TifLivePlayerScreen(
                     val selection = if (selectedIndex >= 0) {
                         val labels = audioTracks.mapIndexed { index, track -> audioLabel(track, index) }
                         val base = labels[selectedIndex]
-                        if (labels.count { it == base } > 1) "$base（${selectedIndex + 1}）" else base
+                        if (labels.count { it == base } > 1) "【${selectedIndex + 1}】$base" else base
                     } else "選択未通知"
                     Button(
                         enabled = audioTracks.size > 1,
