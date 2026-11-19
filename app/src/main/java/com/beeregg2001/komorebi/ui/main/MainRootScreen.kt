@@ -154,11 +154,10 @@ fun MainRootScreen(
                 val currentlyGranted = ContextCompat.checkSelfPermission(
                     context, TifInput.READ_LISTINGS_PERMISSION
                 ) == PackageManager.PERMISSION_GRANTED
-                if (currentlyGranted != listingsPermissionGranted) {
-                    channelViewModel.fetchChannels(force = true)
-                    epgViewModel.refreshEpgData()
-                }
+                if (currentlyGranted != listingsPermissionGranted) channelViewModel.fetchChannels(force = true)
                 listingsPermissionGranted = currentlyGranted
+                // TISスキャン後の復帰では権限に変化がなくてもEPGを更新する。
+                epgViewModel.refreshEpgData()
             }
         }
     }
