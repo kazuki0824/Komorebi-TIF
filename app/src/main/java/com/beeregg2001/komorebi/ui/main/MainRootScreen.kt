@@ -508,8 +508,9 @@ fun MainRootScreen(
                     val liveIndex = tabs.indexOf("ライブ")
                     if (liveIndex != -1) state.currentTabIndex = liveIndex
                 }
-                state.isUiReady = true
             }
+            // 未登録・0局・権限拒否でもホームと設定へ進める。
+            state.isUiReady = true
         }
     }
 
