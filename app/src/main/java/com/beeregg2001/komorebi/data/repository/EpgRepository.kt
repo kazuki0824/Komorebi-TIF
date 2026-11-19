@@ -292,13 +292,11 @@ class EpgRepository @Inject constructor(
                 channelType = channelType
             )
             if (settingsRepository.backendType.first() != requestBackend) return
-            memoryCache[cacheKey] = if (requestBackend == TifInput.BACKEND_TYPE) {
-                val visible = tifRepository.visibleChannelIds()
-                channels.filter { it.channel.id in visible }
-            } else channels
+            // TIFアダプターは同じ入力一覧スナップショットで公開局だけを返す。
+            memoryCache[cacheKey] = channels
 
             // ★修正: ファイルへ保存する
-            saveToFileCache(cacheKey, memoryCache[cacheKey].orEmpty())
+            saveToFileCache(cacheKey, channels)
 
         } catch (e: Exception) {
             if (e is CancellationException) throw e
@@ -344,10 +342,8 @@ class EpgRepository @Inject constructor(
             )
 
             if (settingsRepository.backendType.first() != requestBackend) return@flow
-            val published = if (requestBackend == TifInput.BACKEND_TYPE) {
-                val visible = tifRepository.visibleChannelIds()
-                channels.filter { it.channel.id in visible }
-            } else channels
+            // TIFアダプターが公開・所有者条件を確認した取得結果を正本とする。
+            val published = channels
             if (settingsRepository.backendType.first() != requestBackend) return@flow
             memoryCache[cacheKey] = published
             emit(Result.success(published))
