@@ -377,18 +377,28 @@ class EpgViewModel @OptIn(UnstableApi::class)
         epgJob?.cancel()
         epgJob = viewModelScope.launch {
             val typeToFetch = channelType ?: _selectedBroadcastingType.value
-            if (settingsRepository.backendType.first() == TifInput.BACKEND_TYPE &&
-                context.checkSelfPermission(TifInput.READ_LISTINGS_PERMISSION) != PackageManager.PERMISSION_GRANTED) {
-                // キャッシュ済みTIF番組も権限がない間は表示・選局候補にしない。
-                sliceJob?.cancel()
-                epgMemoryCache.clear()
-                logoMemoryCache.clear()
-                fullEpgData = emptyList()
-                fullLogoUrls = emptyList()
-                uiState = EpgUiState.Error("TV番組一覧の権限がありません。Androidのアプリ設定でREAD_TV_LISTINGSを許可してください。")
-                _isInitialLoadComplete.value = true
-                _isPreloading.value = false
-                return@launch
+            if (settingsRepository.backendType.first() == TifInput.BACKEND_TYPE) {
+                val tunerPresent = TifInput.inputs(context).any { !it.isPassthroughInput }
+                val permissionDenied = context.checkSelfPermission(TifInput.READ_LISTINGS_PERMISSION) !=
+                    PackageManager.PERMISSION_GRANTED
+                if (!tunerPresent || permissionDenied) {
+                    // HDMIのみならEPGは空。チューナーがある場合だけ権限案内を出す。
+                    sliceJob?.cancel()
+                    epgMemoryCache.clear()
+                    logoMemoryCache.clear()
+                    fullEpgData = emptyList()
+                    fullLogoUrls = emptyList()
+                    uiState = if (!tunerPresent) EpgUiState.Success(
+                        data = emptyList(), logoUrls = emptyList(),
+                        mirakurunIp = mirakurunIp, mirakurunPort = mirakurunPort,
+                        targetTime = currentTargetTime
+                    ) else EpgUiState.Error(
+                        "TV番組一覧の権限がありません。Androidのアプリ設定でREAD_TV_LISTINGSを許可してください。"
+                    )
+                    _isInitialLoadComplete.value = true
+                    _isPreloading.value = false
+                    return@launch
+                }
             }
             val now = OffsetDateTime.now()
             val start = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
