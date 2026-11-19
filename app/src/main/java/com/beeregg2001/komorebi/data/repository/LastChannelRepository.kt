@@ -23,8 +23,8 @@ class LastChannelRepository @Inject constructor(
      */
     fun getLastChannels() = lastChannelDao.getLastChannels()
 
-    suspend fun getRecentForBackend(backend: String): List<LastChannelEntity> =
-        lastChannelDao.getRecentForBackend(backend == "TIF")
+    suspend fun getRecentForChannels(ids: List<String>): List<LastChannelEntity> =
+        if (ids.isEmpty()) emptyList() else lastChannelDao.getRecentForChannels(ids)
 
     @OptIn(UnstableApi::class)
     suspend fun saveLastChannel(entity: LastChannelEntity) {
