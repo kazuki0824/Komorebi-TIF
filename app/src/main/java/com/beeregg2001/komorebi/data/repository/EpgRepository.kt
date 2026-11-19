@@ -2,7 +2,6 @@ package com.beeregg2001.komorebi.data.repository
 
 import android.content.Context
 import android.os.Build
-import android.content.pm.PackageManager
 import com.beeregg2001.komorebi.data.repository.tif.TifInput
 import com.beeregg2001.komorebi.data.repository.tif.TifRepository
 import androidx.annotation.OptIn
@@ -60,17 +59,6 @@ class EpgRepository @Inject constructor(
     private val tifRepository: TifRepository
 ) {
     private val memoryCache = ConcurrentHashMap<String, List<EpgChannelWrapper>>()
-
-    // 0:取得可、1:番組を持つチューナー入力なし、2:チューナーあり・権限未許可。
-    // OSの入力一覧の取得は判定1回につき1回だけ行う（表示用のラベル整列は不要）。
-    private fun tifListingsStatus(backend: String): Int {
-        if (backend != TifInput.BACKEND_TYPE) return 0
-        val inputs = context.getSystemService(android.media.tv.TvInputManager::class.java)
-            ?.tvInputList.orEmpty()
-        if (inputs.none { !it.isHidden(context) && !it.isPassthroughInput }) return 1
-        return if (context.checkSelfPermission(TifInput.READ_LISTINGS_PERMISSION) ==
-            PackageManager.PERMISSION_GRANTED) 0 else 2
-    }
 
     // backend間でEPGファイル/Room/メモリキャッシュを共用しない。
     private suspend fun scopedCacheKey(type: String) = settingsRepository.backendType.first() + "_" + type
@@ -173,7 +161,6 @@ class EpgRepository @Inject constructor(
         // backend別に保持したcacheを、検索時も選択中backendだけに限定する。
         // 全cache.valuesを検索すると切替前のEPGが結果に混入する。
         val selectedBackend = settingsRepository.backendType.first()
-        if (tifListingsStatus(selectedBackend) != 0) return emptyList()
         val visibleTifIds = if (selectedBackend == TifInput.BACKEND_TYPE)
             tifRepository.visibleChannelIds() else null
         memoryCache.entries.asSequence()
@@ -267,10 +254,6 @@ class EpgRepository @Inject constructor(
     ) {
         val requestBackend = settingsRepository.backendType.first()
         val cacheKey = requestBackend + "_" + channelType
-        if (tifListingsStatus(requestBackend) != 0) {
-            memoryCache.remove(cacheKey)
-            return
-        }
         if (requestBackend != TifInput.BACKEND_TYPE && memoryCache.containsKey(cacheKey)) return
 
         var isFreshCacheAvailable = false
@@ -332,19 +315,6 @@ class EpgRepository @Inject constructor(
     ): Flow<Result<List<EpgChannelWrapper>>> = flow {
         val requestBackend = settingsRepository.backendType.first()
         val cacheKey = requestBackend + "_" + channelType
-        val tifStatus = tifListingsStatus(requestBackend)
-        if (tifStatus == 1) {
-            memoryCache.remove(cacheKey)
-            emit(Result.success(emptyList()))
-            return@flow
-        }
-        if (tifStatus == 2) {
-            memoryCache.remove(cacheKey)
-            emit(Result.failure(SecurityException(
-                "TV番組表を表示するにはREAD_TV_LISTINGS権限が必要です。Androidのアプリ設定で許可してください。"
-            )))
-            return@flow
-        }
         if (settingsRepository.backendType.first() != requestBackend) return@flow
         // TIFはスキャンや入力削除で番組の公開集合が変わる。旧キャッシュを先に出さない。
         if (requestBackend == TifInput.BACKEND_TYPE) memoryCache.remove(cacheKey)
