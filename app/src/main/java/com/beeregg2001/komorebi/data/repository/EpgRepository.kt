@@ -60,9 +60,6 @@ class EpgRepository @Inject constructor(
 ) {
     private val memoryCache = ConcurrentHashMap<String, List<EpgChannelWrapper>>()
 
-    // backend間でEPGファイル/Room/メモリキャッシュを共用しない。
-    private suspend fun scopedCacheKey(type: String) = settingsRepository.backendType.first() + "_" + type
-
     // ==========================================
     // ★ 高速ファイルキャッシュ処理
     // ==========================================
