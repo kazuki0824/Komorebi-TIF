@@ -220,7 +220,7 @@ class TifRepository @Inject constructor(
         } else -1
         val cursor = context.contentResolver.query(
             TvContract.buildProgramsUriForChannel(
-                rowId, now, now + 6L * 60L * 60_000L
+                rowId, now, Long.MAX_VALUE
             ), columns.toTypedArray(), null, null, null
         ) ?: error("TvProviderがライブ用program queryにnullを返しました。")
         return cursor.use { rows ->
