@@ -2,6 +2,8 @@ package com.beeregg2001.komorebi.viewmodel
 
 import android.content.Context
 import android.os.Build
+import android.content.pm.PackageManager
+import com.beeregg2001.komorebi.data.repository.tif.TifInput
 import androidx.annotation.OptIn
 import androidx.annotation.RequiresApi
 import androidx.compose.runtime.getValue
@@ -375,6 +377,19 @@ class EpgViewModel @OptIn(UnstableApi::class)
         epgJob?.cancel()
         epgJob = viewModelScope.launch {
             val typeToFetch = channelType ?: _selectedBroadcastingType.value
+            if (settingsRepository.backendType.first() == TifInput.BACKEND_TYPE &&
+                context.checkSelfPermission(TifInput.READ_LISTINGS_PERMISSION) != PackageManager.PERMISSION_GRANTED) {
+                // キャッシュ済みTIF番組も権限がない間は表示・選局候補にしない。
+                sliceJob?.cancel()
+                epgMemoryCache.clear()
+                logoMemoryCache.clear()
+                fullEpgData = emptyList()
+                fullLogoUrls = emptyList()
+                uiState = EpgUiState.Error("TV番組一覧の権限がありません。Androidのアプリ設定でREAD_TV_LISTINGSを許可してください。")
+                _isInitialLoadComplete.value = true
+                _isPreloading.value = false
+                return@launch
+            }
             val now = OffsetDateTime.now()
             val start = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
             val end = now.plusDays(7)
