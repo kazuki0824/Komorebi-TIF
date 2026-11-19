@@ -151,7 +151,6 @@ class MainRootState {
                 selectedProgramForAutoReserve != null
     }
 
-    fun getVisibleTabs(): List<String> = visibleHomeTabs(backendType, false)
 }
 
 @Composable
