@@ -490,14 +490,15 @@ fun MainRootScreen(
             if (flatChannels.isNotEmpty() && startupChannelSetting != "OFF") {
                 val targetChannel = if (backendType == TifInput.BACKEND_TYPE) {
                     // ユーザーが指定した完全なTIF ID以外へ自動フォールバックしない。
-                    val wanted = if (startupChannelSetting == "LAST_WATCHED") {
-                        lastChannels.firstOrNull { it.id.startsWith("tif:") }?.id
-                    } else startupChannelSetting
-                    flatChannels.find { it.id == wanted }
+                    if (startupChannelSetting == "LAST_WATCHED") {
+                        homeViewModel.recentStartupChannelIds(backendType).firstNotNullOfOrNull { id ->
+                            flatChannels.find { it.id == id }
+                        }
+                    } else flatChannels.find { it.id == startupChannelSetting }
                 } else if (startupChannelSetting == "LAST_WATCHED") {
                     // 両backendの履歴を保持するため、直近の他backend履歴を飛ばす。
-                    lastChannels.firstNotNullOfOrNull { history ->
-                        flatChannels.find { it.id == history.id }
+                    homeViewModel.recentStartupChannelIds(backendType).firstNotNullOfOrNull { id ->
+                        flatChannels.find { it.id == id }
                     } ?: flatChannels.first()
                 } else flatChannels.find { it.id == startupChannelSetting } ?: flatChannels.first()
 
