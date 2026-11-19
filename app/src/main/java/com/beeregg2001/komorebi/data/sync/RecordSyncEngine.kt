@@ -284,14 +284,6 @@ class RecordSyncEngine @Inject constructor(
     suspend fun syncAllRecords(forceFullSync: Boolean = false) {
         ownerInitialized.await()
         if (switchingBackend || settingsRepository.backendType.first() == "TIF") return
-        // 構築未完了でも同一backendと確認でき、切替中でなければRoomのページから再開する。
-        val syncBackend = settingsRepository.backendType.first()
-        val ownerMatches = ownerPrefs.getString("backend", null) == syncBackend &&
-            !ownerPrefs.getBoolean("pending", false)
-        if (!forceFullSync && !ownerMatches) {
-            syncAllRecords(forceFullSync = true)
-            return
-        }
         val currentJob = currentCoroutineContext().job
 
         var jobToJoin: Job? = null
@@ -306,15 +298,24 @@ class RecordSyncEngine @Inject constructor(
         var isSyncSuccessful = false
 
         syncMutex.withLock {
-            // キュー待機中にTIFへ変わった場合は同期を開始しない。
-            if (switchingBackend || settingsRepository.backendType.first() == "TIF") return@withLock
+            // バックエンド切替と同じ排他を取得した後に、所有者と完全同期要否を確定する。
+            if (switchingBackend) return@withLock
+            val syncBackend = settingsRepository.backendType.first()
+            if (syncBackend == "TIF") return@withLock
+            val owned = ownerPrefs.getString("backend", null) == syncBackend &&
+                !ownerPrefs.getBoolean("pending", false)
+            val performFullSync = forceFullSync || !owned
+            if (performFullSync) {
+                dictionaryJob?.cancel()
+                dictionaryJob?.join()
+            }
             jobMutex.withLock {
                 activeSyncJob = currentJob
             }
             withContext(Dispatchers.IO) {
                 try {
                     val syncStartedAtNanos = System.nanoTime()
-                    Log.i(TAG, "Sync started. FullSync: $forceFullSync")
+                    Log.i(TAG, "Sync started. FullSync: $performFullSync")
 
                     val metaDao = db.syncMetaDao()
                     val programDao = db.recordedProgramDao()
@@ -326,7 +327,7 @@ class RecordSyncEngine @Inject constructor(
                         isInitialBuildCompleted = false
                     )
 
-                    if (forceFullSync) {
+                    if (performFullSync) {
                         // 所有者不明／切替後のデータを消去してから帰属を記録する。
                         // ページ0を永続化すれば、次回起動の途中同期を安全に再開できる。
                         currentMeta =
@@ -342,7 +343,7 @@ class RecordSyncEngine @Inject constructor(
                         }
                     }
 
-                    val isInitial = forceFullSync || !currentMeta.isInitialBuildCompleted
+                    val isInitial = performFullSync || !currentMeta.isInitialBuildCompleted
                     val baseMessage =
                         if (isInitial) "データベース構築中..." else "録画リストを更新中..."
 
@@ -358,7 +359,7 @@ class RecordSyncEngine @Inject constructor(
                     val canResumeInitialBuild =
                         currentMeta.lastSyncedPage > 0 &&
                                 !currentMeta.isInitialBuildCompleted &&
-                                !forceFullSync
+                                !performFullSync
                     var currentPage =
                         if (canResumeInitialBuild) currentMeta.lastSyncedPage + 1 else 1
                     val isResumed = canResumeInitialBuild
@@ -367,11 +368,11 @@ class RecordSyncEngine @Inject constructor(
 
                     // 省メモリ機では通常の初期構築で17081件規模のID集合を作らない。
                     // ただし孤児削除を恒久的に諦めるとサーバー側で消した録画がローカルに残り続けるため、
-                    // 明示的な完全同期 (forceFullSync) のときだけは省メモリ機でも実行する。
+                    // 明示的な完全同期 (performFullSync) のときだけは省メモリ機でも実行する。
                     val needsOrphanDeletion =
                         !isResumed &&
-                            (isInitial || forceFullSync) &&
-                            (syncProfile.name != "low" || forceFullSync)
+                            (isInitial || performFullSync) &&
+                            (syncProfile.name != "low" || performFullSync)
                     val allFetchedIds = if (needsOrphanDeletion) mutableSetOf<Int>() else null
 
                     val dictionary: Map<String, String> =
@@ -425,7 +426,7 @@ class RecordSyncEngine @Inject constructor(
                             val entities = programs.map { RecordDataMapper.toEntity(it) }
                             allFetchedIds?.addAll(entities.map { it.id })
 
-                            if (currentMeta.isInitialBuildCompleted && !forceFullSync) {
+                            if (currentMeta.isInitialBuildCompleted && !performFullSync) {
                                 val pageIds = entities.map { it.id }
                                 val localEntitiesMap =
                                     programDao.getByIds(pageIds).associateBy { it.id }
