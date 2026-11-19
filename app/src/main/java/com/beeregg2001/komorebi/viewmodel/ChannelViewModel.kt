@@ -229,9 +229,9 @@ class ChannelViewModel @Inject constructor(
 
     @RequiresApi(Build.VERSION_CODES.O)
     private suspend fun fetchChannelsInternal(requestId: Long? = null) {
-        // 明示的な再取得が進行中なら、定期取得で公開権を奪わない。
-        if (requestId == null && fetchJob?.isActive == true) return
+        // 先に中断するbackend読取を終え、定期取得の確認・採番を中断なしで行う。
         val requestBackend = settingsRepository.backendType.first()
+        if (requestId == null && fetchJob?.isActive == true) return
         val generation = backendGeneration
         // 定期取得も強制取得も、最後に開始した要求だけが結果・エラーを公開する。
         val activeRequestId = requestId ?: ++loadingRequestId
@@ -285,8 +285,9 @@ class ChannelViewModel @Inject constructor(
             }
 
             val newRows = transformToUiState(processed)
+            val currentBackend = settingsRepository.backendType.first()
             if (generation != backendGeneration || activeRequestId != loadingRequestId ||
-                settingsRepository.backendType.first() != requestBackend) return
+                currentBackend != requestBackend) return
             if (_groupedChannels.value != processed) _groupedChannels.value = processed
             if (_liveRows.value != newRows) _liveRows.value = newRows
             lastFetchedTimeMillis = System.currentTimeMillis()
@@ -295,8 +296,9 @@ class ChannelViewModel @Inject constructor(
             throw e
         } catch (e: Throwable) {
             Log.e("ChannelViewModel", "Error fetching channels", e)
+            val currentBackend = settingsRepository.backendType.first()
             if (generation == backendGeneration && activeRequestId == loadingRequestId &&
-                settingsRepository.backendType.first() == requestBackend) {
+                currentBackend == requestBackend) {
                 _connectionError.value = true
             }
         } finally {
