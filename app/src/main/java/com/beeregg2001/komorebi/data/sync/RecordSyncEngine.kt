@@ -835,13 +835,13 @@ class RecordSyncEngine @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Background dictionary generation failed", e)
         } finally {
-            // 後続同期の進捗・失敗通知を、古い辞書Jobの終了処理で上書きしない。
-            if (!syncMutex.isLocked && _syncProgress.value.error == null) {
-                _syncProgress.value = SyncProgress(
-                    isSyncing = false,
-                    isInitialBuild = false,
-                    isInitialSyncPhase = false
-                )
+            // 読取り→書込みの間に別同期が失敗しても上書きしないようStateFlowをCAS更新する。
+            while (!syncMutex.isLocked) {
+                val current = _syncProgress.value
+                if (current.isSyncing || current.error != null) break
+                if (_syncProgress.compareAndSet(current, SyncProgress(
+                        isSyncing = false, isInitialBuild = false, isInitialSyncPhase = false
+                    ))) break
             }
             dictionaryMutex.unlock()
         }
