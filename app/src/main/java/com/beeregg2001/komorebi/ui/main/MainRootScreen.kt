@@ -148,6 +148,7 @@ fun MainRootScreen(
     LaunchedEffect(backendType) {
         if (previouslyAppliedBackend != null && previouslyAppliedBackend != backendType) {
             state.selectedChannel = null
+            state.isMiniPlayerMode = false
             state.lastSelectedChannelId = null
             state.isReturningFromPlayer = false
             state.playerShowOverlay = false
