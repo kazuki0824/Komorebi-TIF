@@ -632,48 +632,44 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun updateBackendType(newType: String) = viewModelScope.launch {
-        // UIで確定した順番で要求を処理し、処理時点のDataStore値を照合する。
+        // ユーザーの確定順に処理し、DataStoreを読み直してから切替を判断する。
         backendSelectionMutex.withLock {
             withContext(Dispatchers.IO) {
-            val oldType = settingsRepository.backendType.first()
-            if (oldType == newType) return@withContext
+                val oldType = settingsRepository.backendType.first()
+                if (oldType == newType) return@withContext
 
-            // TIFへの切替前に旧backendの録画同期を停止する。
-            // 全表消去は視聴履歴・録画同期メタデータを破壊するため行わない。
-            try {
-                _backendSwitchError.value = null
-                syncEngine.switchBackend {
-                    settingsRepository.saveString(SettingsRepository.BACKEND_TYPE, newType)
-            }
-            } catch (error: kotlinx.coroutines.CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                Log.e("SettingsViewModel", "Backend switch failed", error)
-                // DataStore側だけ新backendを保存できた場合は、それが現在の設定。
-                // 旧録画を表示せず、新backendの録画を安全に全件再取得する。
-                val storedBackend = settingsRepository.backendType.first()
-                if (storedBackend != oldType) {
-                    if (storedBackend != "TIF") syncEngine.launchSyncAllRecords(forceFullSync = true)
-                    _backendSwitchError.value =
+                try {
+                    _backendSwitchError.value = null
+                    syncEngine.switchBackend {
+                        settingsRepository.saveString(SettingsRepository.BACKEND_TYPE, newType)
+                    }
+                } catch (error: kotlinx.coroutines.CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    Log.e("SettingsViewModel", "Backend switch failed", error)
+                    // Room確定だけ失敗し設定はBに切り替わった場合、Bの同期を再開する。
+                    val storedBackend = settingsRepository.backendType.first()
+                    _backendSwitchError.value = if (storedBackend != oldType) {
+                        if (storedBackend != "TIF") syncEngine.launchSyncAllRecords(forceFullSync = true)
                         "バックエンドは$storedBackend に切替済みですが録画キャッシュの更新に失敗しました。" +
-                        (if (storedBackend == "TIF") "録画は利用できません。" else "録画を再同期します。")
-            } else {
-                    _backendSwitchError.value =
+                            (if (storedBackend == "TIF") "録画は利用できません。" else "録画を再同期します。")
+                    } else {
                         "バックエンド切替に失敗しました。元の設定と録画情報を保持しました。"
-            }
-                return@withContext
-            }
-            try {
-                context.imageLoader.memoryCache?.clear()
-                context.imageLoader.diskCache?.clear()
-            } catch (e: Exception) {
-                Log.w("SettingsViewModel", "Failed to clear image cache after backend switch", e)
-            }
-            // TIF視聴アダプターは録画・予約を実装しないため、サーバー向け同期を起動しない。
-            if (newType != "TIF") {
-                syncEngine.launchSyncAllRecords(forceFullSync = true)
-                forceSyncStreamQualities()
-            }
+                    }
+                    return@withContext
+                }
+
+                try {
+                    context.imageLoader.memoryCache?.clear()
+                    context.imageLoader.diskCache?.clear()
+                } catch (error: Exception) {
+                    Log.w("SettingsViewModel", "Failed to clear image cache after backend switch", error)
+                }
+                // TIFは視聴専用。ネットワークbackendの録画のみ完全同期する。
+                if (newType != "TIF") {
+                    syncEngine.launchSyncAllRecords(forceFullSync = true)
+                    forceSyncStreamQualities()
+                }
             }
         }
     }
