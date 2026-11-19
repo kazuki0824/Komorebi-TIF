@@ -277,19 +277,24 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    private var baseballDateJob: kotlinx.coroutines.Job? = null
+
     fun updateBaseballDateOffset(offset: Int) {
         if (offset in 0..2) {
             _baseballDateOffset.value = offset
-            viewModelScope.launch {
+            baseballDateJob?.cancel()
+            baseballDateJob = viewModelScope.launch {
+                val requestedBackend = settingsRepository.backendType.first()
                 if (cachedBaseballPrograms.isNotEmpty()) {
-                    _favoriteBaseballGames.value = filterFavoriteBaseballGames(
+                    val games = filterFavoriteBaseballGames(
                         cachedBaseballPrograms,
                         favoriteBaseballTeams.value,
                         offset
                     )
-                } else {
-                    fetchAllTypeGenrePickup()
-                }
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    if (settingsRepository.backendType.first() == requestedBackend &&
+                        _baseballDateOffset.value == offset) _favoriteBaseballGames.value = games
+                } else fetchAllTypeGenrePickup()
             }
         }
     }
@@ -429,6 +434,7 @@ class HomeViewModel @Inject constructor(
                     if (lastPickupBackend != backend) {
                         lastPickupBackend = backend
                         genrePickupJob?.cancel()
+                        baseballDateJob?.cancel()
                         cachedBaseballPrograms = emptyList()
                         _genrePickupPrograms.value = emptyList()
                         _favoriteBaseballGames.value = emptyList()
