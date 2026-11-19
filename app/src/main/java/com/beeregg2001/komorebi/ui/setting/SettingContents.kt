@@ -293,6 +293,7 @@ fun ConnectionSettingsContent(
     val colors = KomorebiTheme.colors
     val context = LocalContext.current
     val tifPermissionR = remember { FocusRequester() }
+    var permissionSettingsLaunchFailed by remember { mutableStateOf(false) }
 
     // ★ 修正: ループによるフォーカスの点滅（奪い合い）を防ぐため、
     // レイアウトの安定（ダイアログの退出アニメーション等）を350msだけ静かに待ち、
@@ -371,13 +372,25 @@ fun ConnectionSettingsContent(
                         .focusProperties { left = sidebarR; up = backendIpR; down = addSmbR },
                     onClick = {
                         onClick(tifPermissionR)
-                        context.startActivity(
-                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                Uri.parse("package:${context.packageName}"))
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        )
+                        try {
+                            context.startActivity(
+                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.parse("package:${context.packageName}"))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                            permissionSettingsLaunchFailed = false
+                        } catch (error: Exception) {
+                            permissionSettingsLaunchFailed = true
+                        }
                     }
                 )
+                if (permissionSettingsLaunchFailed) {
+                    Text(
+                        "アプリ設定を開けません。端末の設定 → アプリ → Komorebi → 権限 → TV番組一覧で手動許可してください。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.textSecondary
+                    )
+                }
                 Text(
                     "初回のTV入力登録は端末標準のテレビアプリ（Live TV）またはTV入力設定で完了してください。" +
                         "登録後の再スキャンは各入力の再設定画面から行えます。" +
