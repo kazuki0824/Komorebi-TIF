@@ -140,7 +140,7 @@ fun TifLivePlayerScreen(
 
     // 操作帯を隠した場合は必ず画面本体へフォーカスを戻し、決定キーで再表示できる。
     // ボタン操作中はフォーカスを移さず、子要素の決定/左右キーを奪わない。
-    LaunchedEffect(isMiniListOpen, showOverlay) {
+    LaunchedEffect(isMiniListOpen, showOverlay, allChannels.isEmpty()) {
         if (!showOverlay || isMiniListOpen) controlHasFocus = false
         delay(60)
         runCatching {
@@ -165,7 +165,10 @@ fun TifLivePlayerScreen(
                 }
                 when (event.key) {
                     Key.DirectionCenter, Key.Enter -> {
-                        if (showOverlay) firstControlFocus.requestFocus()
+                        if (showOverlay) {
+                            if (allChannels.isEmpty()) captionControlFocus.requestFocus()
+                            else firstControlFocus.requestFocus()
+                        }
                         else onShowOverlayChange(true)
                         true
                     }
