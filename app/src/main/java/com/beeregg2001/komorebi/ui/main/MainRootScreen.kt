@@ -71,7 +71,7 @@ fun MainRootScreen(
     // =========================================================================================
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     var isAppInForeground by remember { mutableStateOf(true) }
-    var hasBeenInBackground by remember { mutableStateOf(false) }
+    var resumeGeneration by remember { mutableIntStateOf(0) }
 
     DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
@@ -79,13 +79,14 @@ fun MainRootScreen(
                 androidx.lifecycle.Lifecycle.Event.ON_STOP -> {
                     // 別のアプリを開いた、またはホーム画面に戻ってアプリが裏に回った（スリープ状態）
                     isAppInForeground = false
-                    hasBeenInBackground = true
                 }
 
                 androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
                     // アプリ画面に戻ってきた時（かつ、一度裏に回っていた場合のみ実行）
                     if (!isAppInForeground) {
                         isAppInForeground = true
+                        // ON_STOP/ON_RESUME間に再コンポーズがなくても復帰を検出する。
+                        resumeGeneration++
 
                         Log.i(
                             "KomorebiLifecycle",
@@ -147,9 +148,8 @@ fun MainRootScreen(
         } else state.toastMessage = "TV番組一覧へのアクセス許可が必要です。アプリの権限設定で許可してください。"
     }
     // OS設定から復帰した場合も権限を読み直し、チャンネルと番組表を再取得する。
-    LaunchedEffect(isAppInForeground, backendType) {
-        if (isAppInForeground && hasBeenInBackground) {
-            hasBeenInBackground = false
+    LaunchedEffect(resumeGeneration, backendType) {
+        if (resumeGeneration > 0 && isAppInForeground) {
             if (backendType == TifInput.BACKEND_TYPE) {
                 val currentlyGranted = ContextCompat.checkSelfPermission(
                     context, TifInput.READ_LISTINGS_PERMISSION
@@ -615,7 +615,7 @@ fun MainRootScreen(
     // isChannelLoadingはChannelViewModelの初期値がtrueで、取得完了時に一度だけ
     // falseになる(取得の重複起動もChannelViewModel側で抑止済み)ため、
     // この時点でチャンネル一覧・エラー状態はどちらも確定している。待つ必要はない。
-    LaunchedEffect(isChannelLoading, isHomeLoading) {
+    LaunchedEffect(isChannelLoading, isHomeLoading, isChannelError) {
         if (!isChannelLoading && !isHomeLoading) {
             if (isChannelError) {
                 state.showConnectionErrorDialog = true; state.isDataReady = false
