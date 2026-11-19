@@ -643,7 +643,18 @@ class SettingsViewModel @Inject constructor(
             throw error
         } catch (error: Exception) {
             Log.e("SettingsViewModel", "Backend switch failed", error)
-            _backendSwitchError.value = "バックエンド切替に失敗しました。録画情報は保持しました。設定を確認してください。"
+            // DataStore側だけ新backendを保存できた場合は、それが現在の設定。
+            // 旧録画を表示せず、新backendの録画を安全に全件再取得する。
+            val storedBackend = settingsRepository.backendType.first()
+            if (storedBackend != oldType) {
+                if (storedBackend != "TIF") syncEngine.launchSyncAllRecords(forceFullSync = true)
+                _backendSwitchError.value =
+                    "バックエンドは$storedBackend に切替済みですが録画キャッシュの更新に失敗しました。" +
+                    if (storedBackend == "TIF") "録画は利用できません。" else "録画を再同期します。"
+            } else {
+                _backendSwitchError.value =
+                    "バックエンド切替に失敗しました。元の設定と録画情報を保持しました。"
+            }
             return@launch
         }
         try {
