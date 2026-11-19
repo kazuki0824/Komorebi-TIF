@@ -154,7 +154,7 @@ fun MainRootScreen(
                 val currentlyGranted = ContextCompat.checkSelfPermission(
                     context, TifInput.READ_LISTINGS_PERMISSION
                 ) == PackageManager.PERMISSION_GRANTED
-                if (currentlyGranted && !listingsPermissionGranted) {
+                if (currentlyGranted != listingsPermissionGranted) {
                     channelViewModel.fetchChannels(force = true)
                     epgViewModel.refreshEpgData()
                 }
