@@ -79,6 +79,8 @@ class SettingsViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val gson = Gson()
+    private val _backendSwitchError = MutableStateFlow<String?>(null)
+    val backendSwitchError: StateFlow<String?> = _backendSwitchError.asStateFlow()
 
     private val _dynamicQualities = MutableStateFlow<List<StreamQuality>?>(null)
     // ★ 追加: EPGStationのライブ画質一覧専用のキャッシュ。EDCB/KonomiTVはライブ・録画で
@@ -632,8 +634,17 @@ class SettingsViewModel @Inject constructor(
 
         // TIFへの切替前に旧backendの録画同期を停止する。
         // 全表消去は視聴履歴・録画同期メタデータを破壊するため行わない。
-        syncEngine.switchBackend {
-            settingsRepository.saveString(SettingsRepository.BACKEND_TYPE, newType)
+        try {
+            _backendSwitchError.value = null
+            syncEngine.switchBackend {
+                settingsRepository.saveString(SettingsRepository.BACKEND_TYPE, newType)
+            }
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            Log.e("SettingsViewModel", "Backend switch failed", error)
+            _backendSwitchError.value = "バックエンド切替に失敗しました。録画情報は保持しました。設定を確認してください。"
+            return@launch
         }
         try {
             context.imageLoader.memoryCache?.clear()
