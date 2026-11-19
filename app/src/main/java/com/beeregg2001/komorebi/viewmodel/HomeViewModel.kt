@@ -1,6 +1,5 @@
 package com.beeregg2001.komorebi.viewmodel
 
-import android.content.Context
 import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresApi
@@ -36,7 +35,6 @@ import kotlinx.coroutines.ensureActive
 import java.time.LocalTime
 import java.time.OffsetDateTime
 import javax.inject.Inject
-import dagger.hilt.android.qualifiers.ApplicationContext
 
 data class BaseballGameInfo(
     val program: EpgProgram,
@@ -48,7 +46,6 @@ data class BaseballGameInfo(
 @OptIn(FlowPreview::class)
 @HiltViewModel
 class HomeViewModel @Inject constructor(
-    @ApplicationContext private val context: Context,
     private val liveProvider: LiveProvider,
     private val tifRepository: TifRepository,
     private val konomiRepository: KonomiRepository,
