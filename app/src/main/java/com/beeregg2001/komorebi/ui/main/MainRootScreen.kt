@@ -224,6 +224,7 @@ fun MainRootScreen(
                         state.isPlayerMiniListOpen = false; state.playerIsSubMenuOpen = false
                         state.isPlayerSubMenuOpen = false; state.isPlayerSceneSearchOpen = false
                         state.isMiniPlayerMode = false
+                        state.hasAppliedStartupChannel = true
                         state.selectedChannel = target; state.lastSelectedChannelId = target.id
                         homeViewModel.saveLastChannel(target); state.isReturningFromPlayer = false
                     }
@@ -471,10 +472,12 @@ fun MainRootScreen(
         isHomeLoading,
         listingsPermissionGranted,
         lastChannels,
+        state.selectedChannel,
         backendType,
         startupChannelSetting
     ) {
-        if (isSettingsInitialized && state.hasAppliedStartupTab && !state.hasAppliedStartupChannel && !isChannelLoading && !isHomeLoading &&
+        if (isSettingsInitialized && state.hasAppliedStartupTab && !state.hasAppliedStartupChannel &&
+            state.selectedChannel == null && !isChannelLoading && !isHomeLoading &&
             (backendType == TifInput.BACKEND_TYPE && !isChannelError &&
                 (listingsPermissionGranted || TifInput.inputs(context).none { !it.isPassthroughInput }) ||
                 backendType != TifInput.BACKEND_TYPE && groupedChannels.isNotEmpty())) {
