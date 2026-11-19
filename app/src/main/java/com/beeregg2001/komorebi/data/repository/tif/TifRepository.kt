@@ -237,6 +237,9 @@ class TifRepository @Inject constructor(
                 } else if (start > now && end > start && start < earliestNext) {
                     nextPosition = rows.position
                     earliestNext = start
+                    // AOSP TvContract.Programsの既定順序は開始時刻の昇順。
+                    // 最初の有効な未来番組以降を走査する必要はない。
+                    break
                 }
             }
             listOf(presentPosition, nextPosition)
