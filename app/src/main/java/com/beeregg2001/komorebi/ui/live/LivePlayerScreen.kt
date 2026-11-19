@@ -97,6 +97,7 @@ fun LivePlayerScreen(
         }
     } else if (backend == TifInput.BACKEND_TYPE) {
         val channels by channelViewModel.groupedChannels.collectAsState()
+        val subtitleSetting by settingsViewModel.liveSubtitleDefault.collectAsState()
         TifLivePlayerScreen(
             channel = channel,
             groupedChannels = channels,
@@ -104,7 +105,8 @@ fun LivePlayerScreen(
             onMiniListToggle = onMiniListToggle,
             onChannelSelect = onChannelSelect,
             showOverlay = showOverlay,
-            onShowOverlayChange = onShowOverlayChange
+            onShowOverlayChange = onShowOverlayChange,
+            initialCaptions = subtitleSetting == "ON"
         )
     } else {
         // Media3/JNIに依存するVMは非TIF枝でのみ取得する。署名上の既定引数で先に初期化しない。
