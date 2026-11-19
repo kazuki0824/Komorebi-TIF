@@ -50,7 +50,8 @@ fun TifLivePlayerScreen(
     onMiniListToggle: (Boolean) -> Unit,
     onChannelSelect: (Channel) -> Unit,
     showOverlay: Boolean,
-    onShowOverlayChange: (Boolean) -> Unit
+    onShowOverlayChange: (Boolean) -> Unit,
+    initialCaptions: Boolean
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -117,7 +118,7 @@ fun TifLivePlayerScreen(
     }
     var selectedAudioId by remember(channel.id, isStarted, retuneGeneration, sessionGeneration) { mutableStateOf<String?>(null) }
     var activeView by remember(channel.id, isStarted, retuneGeneration, sessionGeneration) { mutableStateOf<TvView?>(null) }
-    var captions by rememberSaveable { mutableStateOf(true) }
+    var captions by rememberSaveable(channel.id, initialCaptions) { mutableStateOf(initialCaptions) }
 
     val rootFocus = remember { FocusRequester() }
     val listFocus = remember { FocusRequester() }
