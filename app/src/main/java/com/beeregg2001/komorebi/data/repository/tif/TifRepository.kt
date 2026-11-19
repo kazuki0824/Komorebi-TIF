@@ -227,16 +227,14 @@ class TifRepository @Inject constructor(
             var presentPosition = -1
             var nextPosition = -1
             var latestStart = Long.MIN_VALUE
-            var earliestNext = Long.MAX_VALUE
             while (rows.moveToNext()) {
                 val start = rows.longAt(1)
                 val end = rows.longAt(2)
                 if (start <= now && end > now && start > latestStart) {
                     presentPosition = rows.position
                     latestStart = start
-                } else if (start > now && end > start && start < earliestNext) {
+                } else if (start > now && end > start) {
                     nextPosition = rows.position
-                    earliestNext = start
                     // AOSP TvContract.Programsの既定順序は開始時刻の昇順。
                     // 最初の有効な未来番組以降を走査する必要はない。
                     break
