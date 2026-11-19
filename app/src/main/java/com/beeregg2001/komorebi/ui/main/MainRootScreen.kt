@@ -138,7 +138,15 @@ fun MainRootScreen(
             epgViewModel.refreshEpgData()
         } else state.toastMessage = "TV番組一覧へのアクセス許可が必要です。アプリの権限設定で許可してください。"
     }
+    var previouslyAppliedBackend by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(backendType) {
+        if (previouslyAppliedBackend != null && previouslyAppliedBackend != backendType) {
+            state.selectedChannel = null
+            state.lastSelectedChannelId = null
+            state.isReturningFromPlayer = false
+            state.playerShowOverlay = false
+        }
+        previouslyAppliedBackend = backendType
         state.backendType = backendType
         if (backendType == TifInput.BACKEND_TYPE) {
             // 既存バックエンドから切替えた際の録画・予約オーバーレイを閉じる。
@@ -430,13 +438,15 @@ fun MainRootScreen(
         state.hasAppliedStartupTab,
         isSettingsInitialized,
         isChannelLoading,
+        isChannelError,
         isHomeLoading,
         lastChannels,
         backendType,
         startupChannelSetting
     ) {
         if (isSettingsInitialized && state.hasAppliedStartupTab && !state.hasAppliedStartupChannel && !isChannelLoading && !isHomeLoading &&
-            (backendType == TifInput.BACKEND_TYPE || groupedChannels.isNotEmpty())) {
+            (backendType == TifInput.BACKEND_TYPE && !isChannelError ||
+                backendType != TifInput.BACKEND_TYPE && groupedChannels.isNotEmpty())) {
             // 0チャンネルのTIFも完了としてホーム・スキャン導線を表示する。
             state.hasAppliedStartupChannel = true
             val flatChannels = groupedChannels.values.flatten()
