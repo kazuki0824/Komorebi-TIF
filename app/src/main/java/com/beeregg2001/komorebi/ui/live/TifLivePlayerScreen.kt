@@ -7,6 +7,9 @@ import android.media.tv.TvView
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -275,13 +278,19 @@ fun TifLivePlayerScreen(
             Row(
                 modifier = Modifier
                     .align(Alignment.TopStart)
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
                     .background(Color.Black.copy(alpha = 0.75f))
                     .onFocusChanged { controlHasFocus = it.hasFocus }
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(channel.name, color = Color.White)
+                Text(
+                    channel.name, color = Color.White,
+                    modifier = Modifier.widthIn(max = 180.dp),
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
                 Button(
                     onClick = { if (allChannels.isNotEmpty()) onMiniListToggle(true) },
                     enabled = allChannels.isNotEmpty(),
@@ -316,7 +325,13 @@ fun TifLivePlayerScreen(
                                 }
                             }
                         }
-                    ) { Text("音声: " + selection + (if (audioTracks.size > 1) "（切替）" else "")) }
+                    ) {
+                        Text(
+                            "音声: " + selection + (if (audioTracks.size > 1) "（切替）" else ""),
+                            modifier = Modifier.widthIn(max = 210.dp),
+                            maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
 
                 Button(onClick = { retuneGeneration++ }) { Text("再選局") }
