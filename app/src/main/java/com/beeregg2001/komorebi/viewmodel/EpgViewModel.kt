@@ -375,6 +375,21 @@ class EpgViewModel @OptIn(UnstableApi::class)
         refreshEpgData()
     }
 
+    /** TV入力スキャン／削除後は描画済み番組を使い回さず、公開チャンネルを再確認する。 */
+    fun refreshAfterTifInputChange() {
+        epgJob?.cancel()
+        sliceJob?.cancel()
+        searchJob?.cancel()
+        searchGeneration++
+        _searchResults.value = emptyList()
+        epgMemoryCache.clear()
+        logoMemoryCache.clear()
+        fullEpgData = emptyList()
+        fullLogoUrls = emptyList()
+        uiState = EpgUiState.Loading
+        refreshEpgData()
+    }
+
     fun refreshEpgData(channelType: String? = null) {
         epgJob?.cancel()
         epgJob = viewModelScope.launch {
