@@ -308,9 +308,8 @@ class EpgViewModel @OptIn(UnstableApi::class)
         coroutineScope {
             availableTypes.map { type ->
                 async(Dispatchers.IO) {
-                    if (!repository.hasCacheForType(type)) {
-                        repository.fetchAndCacheEpgDataSilently(start, end, type)
-                    }
+                    // Repository自身がキャッシュ／権限を判断する。入力一覧の二重列挙は不要。
+                    repository.fetchAndCacheEpgDataSilently(start, end, type)
                 }
             }.awaitAll()
         }
