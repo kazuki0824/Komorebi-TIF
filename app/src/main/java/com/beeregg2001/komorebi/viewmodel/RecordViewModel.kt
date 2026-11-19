@@ -505,12 +505,28 @@ class RecordViewModel @Inject constructor(
     }
 
     fun updateWatchHistory(program: RecordedProgram, positionSeconds: Double) {
-        viewModelScope.launch { historyRepository.saveWatchHistory(program, positionSeconds) }
+        viewModelScope.launch {
+            val backend = settingsRepository.backendType.first()
+            if (backend != "TIF") historyRepository.saveWatchHistory(program, positionSeconds, backend)
+        }
     }
 
-    /** 異なる録画バックエンドで同じ数値IDを再利用しても誤再生させない。 */
-    fun canResumeHistory(programId: Int, backend: String): Boolean =
-        syncEngine.recordCacheReady.value && historyRepository.isHistoryOwnedBy(programId, backend)
+    val recordHistoryAvailable: StateFlow<Boolean> = syncEngine.recordCacheReady
+
+    /** 履歴の出所と録画実体を確かめる。表示上限20件には依存しない。 */
+    suspend fun getResumableHistoryProgram(
+        programId: Int, backend: String
+    ): RecordedProgram? {
+        if (backend == "TIF" || settingsRepository.backendType.first() != backend ||
+            !syncEngine.recordCacheReady.value) return null
+        val generation = syncEngine.recordCacheGeneration.value
+        val saved = historyRepository.getHistoryEntityById(programId, backend) ?: return null
+        val entity = programDao.getById(programId) ?: return null
+        if (!syncEngine.recordCacheReady.value ||
+            syncEngine.recordCacheGeneration.value != generation ||
+            settingsRepository.backendType.first() != backend) return null
+        return RecordDataMapper.toDomainModel(entity).copy(playbackPosition = saved.playbackPosition)
+    }
 
     fun clearWatchHistory() {
         viewModelScope.launch {
