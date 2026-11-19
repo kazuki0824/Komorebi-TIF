@@ -183,12 +183,12 @@ class TifRepository @Inject constructor(
 
     /** 番組情報がないTISでもチャンネルを残す。権限不備だけは必ず呼出元へ伝える。 */
     private suspend fun readProgramsOrEmpty(
-        rowId: Long, start: Long, end: Long, liveNow: Long? = null
+        rowId: Long, start: Long? = null, end: Long? = null, liveNow: Long? = null
     ): List<ProgramRow> =
         try {
             currentCoroutineContext().ensureActive()
             if (liveNow != null) readLivePrograms(rowId, liveNow)
-            else readPrograms(rowId, start, end)
+            else readPrograms(rowId, requireNotNull(start), requireNotNull(end))
         } catch (error: CancellationException) {
             throw error
         } catch (error: SecurityException) {
@@ -432,18 +432,20 @@ class TifRepository @Inject constructor(
         val now = System.currentTimeMillis()
         val duplicates = tunerRows.groupingBy { it.name to it.number }.eachCount()
         val inputNames = infos.associate { it.id to TifInput.label(context, it) }
-        val duplicateLabelCounts = tunerRows.filter { (duplicates[it.name to it.number] ?: 0) > 1 }
-            .groupingBy { Triple(it.name, it.number, inputNames[it.inputId] ?: it.inputId) }.eachCount()
+        val collidingInputIds = tunerRows.groupBy {
+            Triple(it.name, it.number, inputNames[it.inputId] ?: it.inputId)
+        }.mapValues { (_, rows) -> rows.map { it.inputId }.distinct().sorted() }
         val channels = tunerRows.map { row ->
             // 別TISがEPGを公開していなくても視聴チャンネルまで消さない。
             val programs = readProgramsOrEmpty(
-                row.id, now - 24L * 60L * 60_000L, now + 6L * 60L * 60_000L, liveNow = now
+                row.id, liveNow = now
             )
             val label = inputNames[row.inputId] ?: row.inputId
             val displayName = if ((duplicates[row.name to row.number] ?: 0) > 1) {
-                val suffix = if ((duplicateLabelCounts[Triple(row.name, row.number, label)] ?: 0) > 1)
-                    " / ${row.inputId}" else ""
-                row.name + "（" + label + suffix + "）"
+                val ids = collidingInputIds[Triple(row.name, row.number, label)].orEmpty()
+                // 入力ラベルが衝突した場合は先頭に短い入力識別子を出し、末尾省略でも区別できる。
+                val prefix = if (ids.size > 1) "【入力${ids.indexOf(row.inputId) + 1}】" else ""
+                prefix + row.name + "（" + label + "）"
             } else row.name
             row.toLiveChannel(
                 programs.firstOrNull { it.start <= now && it.end > now },
