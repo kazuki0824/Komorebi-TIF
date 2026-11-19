@@ -154,7 +154,9 @@ class ChannelViewModel @Inject constructor(
                 if (observedBackend != backend) {
                     observedBackend = backend
                     backendGeneration++
+                    val wasPolling = pollingJob?.isActive == true
                     pollingJob?.cancel()
+                    progressUpdateJob?.cancel()
                     initialPollFetchJob?.cancel()
                     fetchJob?.cancel()
                     _groupedChannels.value = emptyMap()
@@ -162,7 +164,7 @@ class ChannelViewModel @Inject constructor(
                     _connectionError.value = false
                     logoCache.clear()
                     lastFetchedTimeMillis = System.currentTimeMillis()
-                    startPolling()
+                    if (wasPolling) startPolling()
                     fetchChannels(force = true)
                 }
             }
@@ -303,7 +305,11 @@ class ChannelViewModel @Inject constructor(
             while (isActive) {
                 delay(15_000L)
                 if (_groupedChannels.value.isNotEmpty() && !isPollingPaused) {
+                    val generation = backendGeneration
+                    val backend = settingsRepository.backendType.first()
                     val newRows = transformToUiState(_groupedChannels.value)
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    if (generation != backendGeneration || settingsRepository.backendType.first() != backend) continue
                     // ★ 最適化: プログレスが進行した時のみUIに反映させる
                     if (_liveRows.value != newRows) {
                         _liveRows.value = newRows
