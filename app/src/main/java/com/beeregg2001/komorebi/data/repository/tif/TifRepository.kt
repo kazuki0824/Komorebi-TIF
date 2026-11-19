@@ -394,8 +394,36 @@ class TifRepository @Inject constructor(
         programFollowing = next?.toLive(), remocon_Id = 0
     )
 
-    private fun TvInputInfo.toPassthroughChannel(): Channel {
-        val label = TifInput.label(context, this)
+    /** 入力ラベルが重複しても、表示の先頭で外部入力を区別する。 */
+    private fun passthroughChannels(infos: List<TvInputInfo>): List<Channel> {
+        val inputs = infos.filter { it.isPassthroughInput }
+        val byLabel = inputs.groupBy { TifInput.label(context, it) }
+        return inputs.map { info ->
+            val label = TifInput.label(context, info)
+            val duplicates = byLabel[label].orEmpty().sortedBy { it.id }
+            val name = if (duplicates.size > 1)
+                "【入力${duplicates.indexOfFirst { it.id == info.id } + 1}】$label" else label
+            info.toPassthroughChannel(name)
+        }
+    }
+
+    /** ライブとEPGが同じ表示名・入力識別規則を利用する。 */
+    private fun tunerDisplayNames(rows: List<ChannelRow>, infos: List<TvInputInfo>): Map<Long, String> {
+        val inputNames = infos.associate { it.id to TifInput.label(context, it) }
+        val groups = rows.groupBy { it.name to it.number }
+        return rows.associate { row ->
+            val collision = groups[row.name to row.number].orEmpty()
+            val ids = collision.map { it.inputId }.distinct().sorted()
+            val label = inputNames[row.inputId] ?: row.inputId
+            row.id to if (collision.size > 1) {
+                val prefix = if (ids.size > 1) "【入力${ids.indexOf(row.inputId) + 1}】" else ""
+                prefix + row.name + "（" + label + "）"
+            } else row.name
+        }
+    }
+
+    private fun TvInputInfo.toPassthroughChannel(displayName: String): Channel {
+        val label = displayName
         return Channel(
             id = TifInput.passthroughId(id),
             displayChannelId = label, name = label, channelNumber = label,
@@ -424,7 +452,7 @@ class TifRepository @Inject constructor(
             terrestrial = emptyList(), bs = emptyList(), cs = emptyList(),
             others = emptyList(), inputs = emptyList()
         )
-        val passthrough = infos.filter { it.isPassthroughInput }.map { it.toPassthroughChannel() }
+        val passthrough = passthroughChannels(infos)
         val tunerRows = if (hasListingsPermission()) {
             readTunerChannels(infos)
         } else {
@@ -434,22 +462,13 @@ class TifRepository @Inject constructor(
             emptyList()
         }
         val now = System.currentTimeMillis()
-        val duplicates = tunerRows.groupingBy { it.name to it.number }.eachCount()
-        val inputNames = infos.associate { it.id to TifInput.label(context, it) }
-        val collidingInputIds = tunerRows.groupBy { it.name to it.number }
-            .mapValues { (_, rows) -> rows.map { it.inputId }.distinct().sorted() }
+        val displayNames = tunerDisplayNames(tunerRows, infos)
         val channels = tunerRows.map { row ->
             // 別TISがEPGを公開していなくても視聴チャンネルまで消さない。
             val programs = readProgramsOrEmpty(
                 row.id, liveNow = now
             )
-            val label = inputNames[row.inputId] ?: row.inputId
-            val displayName = if ((duplicates[row.name to row.number] ?: 0) > 1) {
-                val ids = collidingInputIds[row.name to row.number].orEmpty()
-                // 入力ラベルが異なっても末尾省略を受けるため、別入力なら先頭で区別する。
-                val prefix = if (ids.size > 1) "【入力${ids.indexOf(row.inputId) + 1}】" else ""
-                prefix + row.name + "（" + label + "）"
-            } else row.name
+            val displayName = displayNames[row.id] ?: row.name
             row.toLiveChannel(
                 programs.firstOrNull { it.start <= now && it.end > now },
                 programs.firstOrNull { it.start > now },
@@ -470,7 +489,7 @@ class TifRepository @Inject constructor(
         throw UnsupportedOperationException("TIFはTvView.tune()によって視聴します。")
     override suspend fun getChannelLogoUrl(channelId: String): String = ""
 
-    private suspend fun toEpgWrapper(row: ChannelRow, from: Long, to: Long): EpgChannelWrapper {
+    private suspend fun toEpgWrapper(row: ChannelRow, from: Long, to: Long, displayName: String): EpgChannelWrapper {
             val id = TifInput.channelId(row.inputId, row.id)
             val programs = readProgramsOrEmpty(row.id, from, to)
             return EpgChannelWrapper(
@@ -479,7 +498,7 @@ class TifRepository @Inject constructor(
                     network_id = row.onid.toInt(), service_id = row.sid.toInt(),
                     transport_stream_id = row.tsid.toInt(), remocon_id = 0,
                     channel_number = row.number.ifBlank { row.sid.toString() },
-                    type = row.category, name = row.name, jikkyo_force = null,
+                    type = row.category, name = displayName, jikkyo_force = null,
                     is_subchannel = false, is_radiochannel = row.audioOnly, is_watchable = true
                 ),
                 programs = programs.map { program ->
@@ -508,8 +527,9 @@ class TifRepository @Inject constructor(
         if (to <= from || channelType == "INPUT") return@withContext emptyList()
         val infos = TifInput.inputs(context)
         val rows = readTunerChannels(infos)
+        val displayNames = tunerDisplayNames(rows, infos)
         rows.filter { channelType.isNullOrBlank() || it.category == channelType }
-            .map { toEpgWrapper(it, from, to) }
+            .map { toEpgWrapper(it, from, to, displayNames[it.id] ?: it.name) }
     }
 
     override suspend fun getPinnedEpgPrograms(pinnedChannelIds: String): List<EpgChannelWrapper> =
@@ -520,9 +540,11 @@ class TifRepository @Inject constructor(
             val from = now - 60 * 60_000L
             val to = from + 24 * 60 * 60_000L
             // 既存のTIF可視性・所有inputID照合を通した後、query前にrowを絞る。
-            readTunerChannels(TifInput.inputs(context))
-                .filter { TifInput.channelId(it.inputId, it.id) in wanted }
-                .map { toEpgWrapper(it, from, to) }
+            val infos = TifInput.inputs(context)
+            val rows = readTunerChannels(infos)
+            val displayNames = tunerDisplayNames(rows, infos)
+            rows.filter { TifInput.channelId(it.inputId, it.id) in wanted }
+                .map { toEpgWrapper(it, from, to, displayNames[it.id] ?: it.name) }
         }
 
     // 汎用TIFの録画対応可否と、Komorebiの録画UI実装可否は別問題。
