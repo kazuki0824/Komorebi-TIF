@@ -129,6 +129,9 @@ fun TifLivePlayerScreen(
     }
 
     BackHandler(enabled = isMiniListOpen) { onMiniListToggle(false) }
+    LaunchedEffect(isMiniListOpen, allChannels.isEmpty()) {
+        if (isMiniListOpen && allChannels.isEmpty()) onMiniListToggle(false)
+    }
 
     // 操作帯を隠した場合は必ず画面本体へフォーカスを戻し、決定キーで再表示できる。
     // ボタン操作中はフォーカスを移さず、子要素の決定/左右キーを奪わない。
@@ -279,7 +282,8 @@ fun TifLivePlayerScreen(
             ) {
                 Text(channel.name, color = Color.White)
                 Button(
-                    onClick = { onMiniListToggle(true) },
+                    onClick = { if (allChannels.isNotEmpty()) onMiniListToggle(true) },
+                    enabled = allChannels.isNotEmpty(),
                     modifier = Modifier.focusRequester(firstControlFocus)
                 ) { Text("チャンネル一覧") }
 
@@ -290,7 +294,9 @@ fun TifLivePlayerScreen(
                 if (audioTracks.isNotEmpty()) {
                     val selectedIndex = audioTracks.indexOfFirst { it.id == selectedAudioId }
                     val selection = if (selectedIndex >= 0) {
-                        audioLabel(audioTracks[selectedIndex], selectedIndex)
+                        val labels = audioTracks.mapIndexed { index, track -> audioLabel(track, index) }
+                        val base = labels[selectedIndex]
+                        if (labels.count { it == base } > 1) "$base（${selectedIndex + 1}）" else base
                     } else "選択未通知"
                     Button(
                         enabled = audioTracks.size > 1,
