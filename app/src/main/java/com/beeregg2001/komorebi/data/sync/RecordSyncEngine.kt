@@ -263,13 +263,15 @@ class RecordSyncEngine @Inject constructor(
                     }
                 }
             } catch (error: Throwable) {
-                // 保存に失敗してbackendが変わっていなければ旧録画キャッシュは有効。
-                if (settingsRepository.backendType.first() == oldBackend) {
-                    // 更新失敗時は元の公開状態を戻す。永続マーカー復旧失敗なら非公開を維持。
-                    val restored = ownerPrefs.edit()
-                        .putString("backend", previousOwner)
-                        .putBoolean("pending", false).commit()
-                    _recordCacheReady.value = restored && wasReady
+                // キャンセル時も可能な限り元の所有状態を復元する。
+                // 設定が部分保存済みならpendingを維持して旧録画を絶対に公開しない。
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                    if (settingsRepository.backendType.first() == oldBackend) {
+                        val restored = ownerPrefs.edit()
+                            .putString("backend", previousOwner)
+                            .putBoolean("pending", false).commit()
+                        _recordCacheReady.value = restored && wasReady
+                    }
                 }
                 throw error
             } finally {
