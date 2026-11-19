@@ -253,12 +253,6 @@ class EpgRepository @Inject constructor(
         }
     }
 
-    suspend fun hasCacheForType(channelType: String): Boolean {
-        val backend = settingsRepository.backendType.first()
-        if (tifListingsStatus(backend) != 0) return false
-        return memoryCache.containsKey(backend + "_" + channelType)
-    }
-
     @OptIn(UnstableApi::class)
     @RequiresApi(Build.VERSION_CODES.O)
     suspend fun fetchAndCacheEpgDataSilently(
