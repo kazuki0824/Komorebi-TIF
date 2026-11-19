@@ -209,6 +209,16 @@ class RecordSyncEngine @Inject constructor(
                     val dictionary = dictionaryJob
                     dictionary?.cancel()
                     dictionary?.join()
+                    // 録画DBはbackend固有の再取得可能なキャッシュ。
+                    // 視聴履歴や他の永続テーブルは保持し、旧録画だけを設定切替前に不可視化する。
+                    db.withTransaction {
+                        db.recordedProgramDao().clearAll()
+                        aiSeriesDictionaryDao.clearAll()
+                        db.syncMetaDao().upsert(
+                            SyncMetaEntity(id = 1, lastSyncedPage = 0, lastSyncedAt = 0L,
+                                isInitialBuildCompleted = false)
+                        )
+                    }
                     updateSetting()
                 }
             } finally {
