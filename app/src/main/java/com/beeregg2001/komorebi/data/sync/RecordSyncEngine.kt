@@ -208,6 +208,17 @@ class RecordSyncEngine @Inject constructor(
         _syncProgress.value = _syncProgress.value.copy(error = null)
     }
 
+    /** 辞書Jobが所有する進捗のみを原子的に終了させ、他同期のエラーを保持する。 */
+    private fun finishDictionaryProgress() {
+        while (true) {
+            val current = _syncProgress.value
+            if (current.error != null || syncMutex.isLocked ||
+                (current.message != "シリーズ辞書を自動生成中..." &&
+                 current.message != "シリーズ辞書を準備中...")) return
+            if (_syncProgress.compareAndSet(current, SyncProgress(isSyncing = false))) return
+        }
+    }
+
     /** 切替先が視聴専用TIFなら、録画DBと同期メタデータに一切触れない。 */
     fun launchSyncAllRecords(forceFullSync: Boolean = false) {
         if (!forceFullSync && syncMutex.isLocked) {
@@ -737,11 +748,7 @@ class RecordSyncEngine @Inject constructor(
         // 削除した(EpgStationSeriesDictionary.ktおよびこのクラスへの注入・呼び出しを削除)。
         if (settingsRepository.backendType.first() == "EPGSTATION") {
             Log.i(TAG, "EPGStation はサーバー側のシリーズ情報を使うため、辞書生成をスキップします。")
-            _syncProgress.value = SyncProgress(
-                isSyncing = false,
-                isInitialBuild = false,
-                isInitialSyncPhase = false
-            )
+            finishDictionaryProgress()
             return
         }
 
@@ -755,11 +762,7 @@ class RecordSyncEngine @Inject constructor(
                 val programDao = db.recordedProgramDao()
                 val totalUnknown = programDao.getUnknownTitlesCount()
                 if (totalUnknown == 0) {
-                    _syncProgress.value = SyncProgress(
-                        isSyncing = false,
-                        isInitialBuild = false,
-                        isInitialSyncPhase = false
-                    )
+                    finishDictionaryProgress()
                     return@withContext
                 }
 
@@ -835,14 +838,7 @@ class RecordSyncEngine @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Background dictionary generation failed", e)
         } finally {
-            // 読取り→書込みの間に別同期が失敗しても上書きしないようStateFlowをCAS更新する。
-            while (!syncMutex.isLocked) {
-                val current = _syncProgress.value
-                if (current.isSyncing || current.error != null) break
-                if (_syncProgress.compareAndSet(current, SyncProgress(
-                        isSyncing = false, isInitialBuild = false, isInitialSyncPhase = false
-                    ))) break
-            }
+            finishDictionaryProgress()
             dictionaryMutex.unlock()
         }
     }
