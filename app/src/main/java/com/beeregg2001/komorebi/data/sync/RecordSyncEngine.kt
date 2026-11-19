@@ -835,11 +835,14 @@ class RecordSyncEngine @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Background dictionary generation failed", e)
         } finally {
-            _syncProgress.value = SyncProgress(
-                isSyncing = false,
-                isInitialBuild = false,
-                isInitialSyncPhase = false
-            )
+            // 後続同期の進捗・失敗通知を、古い辞書Jobの終了処理で上書きしない。
+            if (!syncMutex.isLocked && _syncProgress.value.error == null) {
+                _syncProgress.value = SyncProgress(
+                    isSyncing = false,
+                    isInitialBuild = false,
+                    isInitialSyncPhase = false
+                )
+            }
             dictionaryMutex.unlock()
         }
     }
