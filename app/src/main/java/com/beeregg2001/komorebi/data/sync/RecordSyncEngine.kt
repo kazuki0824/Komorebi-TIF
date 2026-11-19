@@ -503,9 +503,13 @@ class RecordSyncEngine @Inject constructor(
         }
 
         if (isSyncSuccessful && !switchingBackend) {
-            dictionaryJob = engineScope.launch {
-                if (!switchingBackend && settingsRepository.backendType.first() != "TIF") {
-                    startDictionaryResolutionLoop()
+            syncMutex.withLock {
+                if (!switchingBackend && settingsRepository.backendType.first() != "TIF" &&
+                    dictionaryJob?.isActive != true) {
+                    dictionaryJob = engineScope.launch {
+                        if (!switchingBackend && settingsRepository.backendType.first() != "TIF")
+                            startDictionaryResolutionLoop()
+                    }
                 }
             }
         }
