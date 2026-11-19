@@ -433,6 +433,13 @@ class TifRepository @Inject constructor(
         )
     }
 
+    /** 既存の所有者・browsable・searchable判定を共有するEPGキャッシュ用スナップショット。 */
+    suspend fun visibleChannelIds(): Set<String> = withContext(Dispatchers.IO) {
+        if (!hasListingsPermission()) return@withContext emptySet()
+        readTunerChannels(TifInput.inputs(context))
+            .mapTo(mutableSetOf()) { TifInput.channelId(it.inputId, it.id) }
+    }
+
     /** 疎通確認用。入力・公開チャンネルだけを読み、全局EPG queryを行わない。 */
     suspend fun checkReady(): Boolean = withContext(Dispatchers.IO) {
         // OSのTV入力列挙はこのIO処理中の1回だけ行う。
