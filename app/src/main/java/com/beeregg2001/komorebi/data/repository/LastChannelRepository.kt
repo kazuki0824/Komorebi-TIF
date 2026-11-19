@@ -23,8 +23,13 @@ class LastChannelRepository @Inject constructor(
      */
     fun getLastChannels() = lastChannelDao.getLastChannels()
 
-    suspend fun getRecentForChannels(ids: List<String>): List<LastChannelEntity> =
-        if (ids.isEmpty()) emptyList() else lastChannelDao.getRecentForChannels(ids)
+    suspend fun getRecentForChannels(ids: List<String>): List<LastChannelEntity> {
+        if (ids.isEmpty()) return emptyList()
+        val available = ids.toHashSet()
+        // ソート済みの視聴履歴を選局可能な完全IDで絞ってから10件に制限。
+        return lastChannelDao.getStartupCandidates()
+            .asSequence().filter { it.channelId in available }.take(10).toList()
+    }
 
     @OptIn(UnstableApi::class)
     suspend fun saveLastChannel(entity: LastChannelEntity) {
