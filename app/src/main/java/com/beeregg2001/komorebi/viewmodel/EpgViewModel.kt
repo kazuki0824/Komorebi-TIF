@@ -377,9 +377,8 @@ class EpgViewModel @OptIn(UnstableApi::class)
     fun refreshAfterTifInputChange() {
         epgJob?.cancel()
         sliceJob?.cancel()
-        searchJob?.cancel()
-        searchGeneration++
-        _searchResults.value = emptyList()
+        clearSearch()
+        repository.invalidateTifCache()
         epgMemoryCache.clear()
         logoMemoryCache.clear()
         fullEpgData = emptyList()
