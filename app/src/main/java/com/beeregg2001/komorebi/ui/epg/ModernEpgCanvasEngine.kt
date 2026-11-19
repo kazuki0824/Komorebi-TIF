@@ -464,7 +464,12 @@ fun ModernEpgCanvasEngine_Smooth(
                     ) { Text("番組表がありません", color = colors.textPrimary) }
                 } else if (uiState is EpgUiState.Error) {
                     Box(Modifier.fillMaxSize().background(colors.background), contentAlignment = Alignment.Center) {
-                        Text("番組表を取得できません", color = colors.textPrimary)
+                        Text(
+                            if (uiState.message.contains("READ_TV_LISTINGS"))
+                                "TV番組一覧の権限がありません。Komorebiの設定から「TV番組一覧の権限設定」を開き、許可してください。"
+                            else "番組表を取得できません",
+                            color = colors.textPrimary
+                        )
                     }
                 } else if (uiState is EpgUiState.Loading || epgState.isCalculating ||
                     (uiState is EpgUiState.Success && !hasRenderedFirstFrame && !isJumping)) {
