@@ -33,6 +33,10 @@ interface LastChannelDao {
     @Query("SELECT * FROM last_watched_channel ORDER BY updatedAt DESC LIMIT 10")
     fun getLastChannels(): Flow<List<LastChannelEntity>>
 
+    // 起動時選局ではバックエンドの絞込みをLIMITより前に適用する。
+    @Query("SELECT * FROM last_watched_channel WHERE (:tif = 1 AND channelId LIKE 'tif:%') OR (:tif = 0 AND channelId NOT LIKE 'tif:%') ORDER BY updatedAt DESC LIMIT 10")
+    suspend fun getRecentForBackend(tif: Boolean): List<LastChannelEntity>
+
     @Query("DELETE FROM last_watched_channel")
     suspend fun clearAll()
 }
