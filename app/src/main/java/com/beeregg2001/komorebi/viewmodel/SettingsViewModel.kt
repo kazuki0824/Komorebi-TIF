@@ -47,6 +47,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 @Keep
 data class PostRecordingBatch(
@@ -79,6 +81,7 @@ class SettingsViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val gson = Gson()
+    private val backendSelectionMutex = Mutex()
     private val _backendSwitchError = MutableStateFlow<String?>(null)
     val backendSwitchError: StateFlow<String?> = _backendSwitchError.asStateFlow()
 
@@ -628,9 +631,12 @@ class SettingsViewModel @Inject constructor(
         settingsRepository.saveString(SettingsRepository.EPG_VISIBLE_HOURS, value)
     }
 
-    fun updateBackendType(newType: String) = viewModelScope.launch(Dispatchers.IO) {
+    fun updateBackendType(newType: String) = viewModelScope.launch {
+        // UIで確定した順番で要求を処理し、処理時点のDataStore値を照合する。
+        backendSelectionMutex.withLock {
+            withContext(Dispatchers.IO) {
         val oldType = settingsRepository.backendType.first()
-        if (oldType == newType) return@launch
+        if (oldType == newType) return@withContext
 
         // TIFへの切替前に旧backendの録画同期を停止する。
         // 全表消去は視聴履歴・録画同期メタデータを破壊するため行わない。
@@ -655,7 +661,7 @@ class SettingsViewModel @Inject constructor(
                 _backendSwitchError.value =
                     "バックエンド切替に失敗しました。元の設定と録画情報を保持しました。"
             }
-            return@launch
+            return@withContext
         }
         try {
             context.imageLoader.memoryCache?.clear()
@@ -667,6 +673,8 @@ class SettingsViewModel @Inject constructor(
         if (newType != "TIF") {
             syncEngine.launchSyncAllRecords(forceFullSync = true)
             forceSyncStreamQualities()
+        }
+            }
         }
     }
 
