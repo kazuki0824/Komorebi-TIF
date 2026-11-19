@@ -204,6 +204,7 @@ fun HomeLauncherScreen(
     val baseballDateOffset by homeViewModel.baseballDateOffset.collectAsState()
 
     val backendType by homeViewModel.backendType.collectAsState()
+    val recordHistoryAvailable by recordViewModel.recordHistoryAvailable.collectAsState()
     LaunchedEffect(backendType, groupedChannels.keys) {
         if (backendType == "TIF") {
             // 例えばATSC/DVB/IPTVだけの入力ではGRが存在しない。
@@ -920,12 +921,7 @@ fun HomeLauncherScreen(
                     when (currentTabLabel) {
                         "ホーム" -> HomeContents(
                             lastWatchedChannels = translatedLastChannels,
-                            watchHistory = if (backendType == "TIF") emptyList() else
-                                ui.watchHistory.filter { history ->
-                                    history.program.id.toIntOrNull()?.let {
-                                        recordViewModel.canResumeHistory(it, backendType)
-                                    } == true
-                                },
+                            watchHistory = if (backendType == "TIF" || !recordHistoryAvailable) emptyList() else ui.watchHistory,
                             hotChannels = ui.hotChannels,
                             upcomingReserves = if (backendType == "TIF") emptyList() else ui.upcomingReserves,
                             genrePickup = ui.genrePickup,
@@ -940,15 +936,11 @@ fun HomeLauncherScreen(
                             onHistoryClick = { historyItem ->
                                 if (backendType == "TIF") return@HomeContents
                                 val programId = historyItem.program.id.toIntOrNull() ?: return@HomeContents
-                                if (!recordViewModel.canResumeHistory(programId, backendType)) return@HomeContents
-                                // クリック時にのみ必要な値なので、composition では購読せず
-                                // ここで ViewModel の最新値を直接読み出す。
-                                val betterProgram =
-                                    recordViewModel.recentRecordings.value.find { it.id == programId }
-                                // 保存履歴だけからは現バックエンドの録画実体を確定できない。
-                                if (betterProgram != null) onProgramSelected(
-                                    betterProgram.copy(playbackPosition = historyItem.playback_position)
-                                )
+                                val requestedBackend = backendType
+                                scope.launch {
+                                    val program = recordViewModel.getResumableHistoryProgram(programId, requestedBackend)
+                                    if (program != null) onProgramSelected(program)
+                                }
                             },
                             onReserveClick = { if (backendType != "TIF") onReserveSelected(it) },
                             onProgramClick = { onEpgProgramSelected(it) },
@@ -1032,12 +1024,7 @@ fun HomeLauncherScreen(
                                 konomiIp = konomiIp,
                                 konomiPort = konomiPort,
                                 timeFormat = timeFormat,
-                                watchHistory = if (backendType == "TIF") emptyList() else
-                                    ui.watchHistory.filter { history ->
-                                        history.program.id.toIntOrNull()?.let {
-                                            recordViewModel.canResumeHistory(it, backendType)
-                                        } == true
-                                    },
+                                watchHistory = if (backendType == "TIF" || !recordHistoryAvailable) emptyList() else ui.watchHistory,
                                 aiFocusReturnTick = if (currentTabLabel == "ビデオ") aiFocusReturnTick else 0,
                                 onAiReturnConsumed = onAiReturnConsumed,
                                 isTifMode = backendType == "TIF"
