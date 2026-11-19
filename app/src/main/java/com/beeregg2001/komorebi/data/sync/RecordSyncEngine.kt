@@ -20,6 +20,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -72,10 +73,35 @@ class RecordSyncEngine @Inject constructor(
     private val _syncProgress = MutableStateFlow(SyncProgress())
     val syncProgress: StateFlow<SyncProgress> = _syncProgress.asStateFlow()
     // 切替時に旧backendの録画画面が表示されないよう、完全同期完了まで非公開にする。
-    private val _recordCacheReady = MutableStateFlow(true)
+    private val _recordCacheReady = MutableStateFlow(false)
     val recordCacheReady: StateFlow<Boolean> = _recordCacheReady.asStateFlow()
 
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Room録画キャッシュの帰属先と切替中フラグをプロセス終了後も検証する。
+    private val ownerPrefs = context.getSharedPreferences("record_cache_backend_owner", Context.MODE_PRIVATE)
+    private val ownerInitialized = CompletableDeferred<Unit>()
+
+    init {
+        engineScope.launch {
+            try {
+                val backend = settingsRepository.backendType.first()
+                val isBuilt = db.syncMetaDao().getSyncMeta()?.isInitialBuildCompleted == true
+                // 既存インストールからの一度限りの移行。従来は選択backendの録画を保存していた。
+                if (!ownerPrefs.contains("backend") && !ownerPrefs.getBoolean("pending", false) &&
+                    isBuilt && backend != "TIF") {
+                    ownerPrefs.edit().putString("backend", backend).commit()
+                }
+                _recordCacheReady.value = backend != "TIF" && isBuilt &&
+                    !ownerPrefs.getBoolean("pending", false) &&
+                    ownerPrefs.getString("backend", null) == backend
+            } catch (e: Exception) {
+                Log.e(TAG, "Unable to validate recorded-program cache ownership", e)
+                _recordCacheReady.value = false
+            } finally {
+                ownerInitialized.complete(Unit)
+            }
+        }
+    }
 
     private val syncMutex = Mutex()
     private val jobMutex = Mutex()
@@ -202,7 +228,10 @@ class RecordSyncEngine @Inject constructor(
      */
     suspend fun switchBackend(updateSetting: suspend () -> Unit) {
         backendTransitionMutex.withLock {
+            ownerInitialized.await()
             val oldBackend = settingsRepository.backendType.first()
+            val wasReady = _recordCacheReady.value
+            val previousOwner = ownerPrefs.getString("backend", null)
             switchingBackend = true
             try {
                 val active = jobMutex.withLock { activeSyncJob }
@@ -213,6 +242,10 @@ class RecordSyncEngine @Inject constructor(
                     val dictionary = dictionaryJob
                     dictionary?.cancel()
                     dictionary?.join()
+                    // 先に永続的に切替中を記録し、途中でプロセスが終了しても旧録画を公開しない。
+                    check(ownerPrefs.edit().putBoolean("pending", true).commit()) {
+                        "録画キャッシュ切替マーカーを保存できません。"
+                    }
                     _recordCacheReady.value = false
                     // DataStoreの保存に失敗した場合はRoom側もロールバックする。
                     // 録画専用キャッシュだけを無効化し、視聴履歴等は保持する。
@@ -229,7 +262,11 @@ class RecordSyncEngine @Inject constructor(
             } catch (error: Throwable) {
                 // 保存に失敗してbackendが変わっていなければ旧録画キャッシュは有効。
                 if (settingsRepository.backendType.first() == oldBackend) {
-                    _recordCacheReady.value = true
+                    // 更新失敗時は元の公開状態を戻す。永続マーカー復旧失敗なら非公開を維持。
+                    val restored = ownerPrefs.edit()
+                        .putString("backend", previousOwner)
+                        .putBoolean("pending", false).commit()
+                    _recordCacheReady.value = restored && wasReady
                 }
                 throw error
             } finally {
@@ -239,7 +276,13 @@ class RecordSyncEngine @Inject constructor(
     }
 
     suspend fun syncAllRecords(forceFullSync: Boolean = false) {
+        ownerInitialized.await()
         if (switchingBackend || settingsRepository.backendType.first() == "TIF") return
+        // 帰属不明／切替中断後のDBに差分同期してはいけない。全件で再構築する。
+        if (!forceFullSync && !_recordCacheReady.value) {
+            syncAllRecords(forceFullSync = true)
+            return
+        }
         val currentJob = currentCoroutineContext().job
 
         var jobToJoin: Job? = null
@@ -500,6 +543,11 @@ class RecordSyncEngine @Inject constructor(
                         total = 0
                     )
                     isSyncSuccessful = true
+                    val syncedBackend = settingsRepository.backendType.first()
+                    check(ownerPrefs.edit().putString("backend", syncedBackend)
+                        .putBoolean("pending", false).commit()) {
+                        "録画キャッシュのバックエンド帰属を保存できません。"
+                    }
                     _recordCacheReady.value = true
 
                 } catch (e: CancellationException) {
@@ -557,7 +605,8 @@ class RecordSyncEngine @Inject constructor(
     }
 
     suspend fun smartSync() {
-        if (switchingBackend || settingsRepository.backendType.first() == "TIF") return
+        ownerInitialized.await()
+        if (switchingBackend || !_recordCacheReady.value || settingsRepository.backendType.first() == "TIF") return
         if (!smartSyncMutex.tryLock()) {
             Log.i(TAG, "smartSync: already running. Skipping.")
             return
@@ -777,6 +826,7 @@ class RecordSyncEngine @Inject constructor(
     }
 
     suspend fun isInitialBuildCompleted(): Boolean = withContext(Dispatchers.IO) {
-        db.syncMetaDao().getSyncMeta()?.isInitialBuildCompleted == true
+        ownerInitialized.await()
+        _recordCacheReady.value && db.syncMetaDao().getSyncMeta()?.isInitialBuildCompleted == true
     }
 }
