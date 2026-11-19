@@ -250,6 +250,7 @@ fun MainRootBackground(
                         onTabChange = { state.currentTabIndex = it },
                         selectedChannel = state.selectedChannel,
                         onChannelClick = { channel, isBaseballMode ->
+                            if (channel != null) state.hasAppliedStartupChannel = true
                             state.selectedChannel = channel
                             state.isBaseballMode = isBaseballMode
                             if (channel != null) {
