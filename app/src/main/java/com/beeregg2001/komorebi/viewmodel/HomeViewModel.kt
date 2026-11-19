@@ -263,19 +263,23 @@ class HomeViewModel @Inject constructor(
             }
 
             val fetchedGenrePickup = filterGenrePickup(allPrograms, genre, timeSetting, isExcludePaid)
-            val requestedDateOffset = _baseballDateOffset.value
-            val fetchedGames = filterFavoriteBaseballGames(
-                fetchedBaseballPrograms,
-                favoriteBaseballTeams.value,
-                requestedDateOffset
-            )
-            // 前バックエンドの遅い収集結果で現在のホーム内容を上書きしない。
-            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            // 初回取得中に日付が変わった場合も、取得済み番組から新しい日付を集計する。
+            // 計算中にさらに日付が変更された場合は、現在の日付で再計算する。
+            var requestedDateOffset: Int
+            var fetchedGames: List<Pair<String, List<BaseballGameInfo>>>
+            do {
+                requestedDateOffset = _baseballDateOffset.value
+                fetchedGames = filterFavoriteBaseballGames(
+                    fetchedBaseballPrograms,
+                    favoriteBaseballTeams.value,
+                    requestedDateOffset
+                )
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            } while (_baseballDateOffset.value != requestedDateOffset)
             if (settingsRepository.backendType.first() != requestedBackend) return@launch
             cachedBaseballPrograms = fetchedBaseballPrograms
             _genrePickupPrograms.value = fetchedGenrePickup
-            // 日付変更側が先に結果を表示した場合、古い日付の集計で上書きしない。
-            if (_baseballDateOffset.value == requestedDateOffset) _favoriteBaseballGames.value = fetchedGames
+            _favoriteBaseballGames.value = fetchedGames
         }
     }
 
