@@ -252,6 +252,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
         channelName: String? = null
     ): List<UiSearchResultItem> {
         val generation = backendGeneration
+        val catalogueGeneration = searchGeneration
         return try {
             val rawResults = withContext(Dispatchers.Default) {
                 repository.searchFuturePrograms(keyword, genre, dateStr, isLiveOnly, channelName)
@@ -276,7 +277,9 @@ class EpgViewModel @OptIn(UnstableApi::class)
                     }
                 }.awaitAll()
             }
-            if (generation == backendGeneration) results else emptyList()
+            // 同backendでもTIF入力の再スキャン・削除後は旧AI検索結果を返さない。
+            if (generation == backendGeneration &&
+                catalogueGeneration == searchGeneration) results else emptyList()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
