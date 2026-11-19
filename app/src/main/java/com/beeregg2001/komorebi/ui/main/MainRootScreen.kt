@@ -94,7 +94,9 @@ fun MainRootScreen(
                         )
 
                         // 1. プロ野球タブやホーム画面のデータを最新に更新する
-                        homeViewModel.refreshHomeData()
+                        if (state.backendType == TifInput.BACKEND_TYPE)
+                            homeViewModel.refreshAfterTifInputChange()
+                        else homeViewModel.refreshHomeData()
                         channelViewModel.fetchChannels()
 
                         // 2. プレイヤー（ライブ・ビデオ・SMB）を開いたまま裏に行っていた場合、強制的にホーム画面に戻す
