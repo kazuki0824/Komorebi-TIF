@@ -432,9 +432,8 @@ class TifRepository @Inject constructor(
         val now = System.currentTimeMillis()
         val duplicates = tunerRows.groupingBy { it.name to it.number }.eachCount()
         val inputNames = infos.associate { it.id to TifInput.label(context, it) }
-        val collidingInputIds = tunerRows.groupBy {
-            Triple(it.name, it.number, inputNames[it.inputId] ?: it.inputId)
-        }.mapValues { (_, rows) -> rows.map { it.inputId }.distinct().sorted() }
+        val collidingInputIds = tunerRows.groupBy { it.name to it.number }
+            .mapValues { (_, rows) -> rows.map { it.inputId }.distinct().sorted() }
         val channels = tunerRows.map { row ->
             // 別TISがEPGを公開していなくても視聴チャンネルまで消さない。
             val programs = readProgramsOrEmpty(
@@ -442,8 +441,8 @@ class TifRepository @Inject constructor(
             )
             val label = inputNames[row.inputId] ?: row.inputId
             val displayName = if ((duplicates[row.name to row.number] ?: 0) > 1) {
-                val ids = collidingInputIds[Triple(row.name, row.number, label)].orEmpty()
-                // 入力ラベルが衝突した場合は先頭に短い入力識別子を出し、末尾省略でも区別できる。
+                val ids = collidingInputIds[row.name to row.number].orEmpty()
+                // 入力ラベルが異なっても末尾省略を受けるため、別入力なら先頭で区別する。
                 val prefix = if (ids.size > 1) "【入力${ids.indexOf(row.inputId) + 1}】" else ""
                 prefix + row.name + "（" + label + "）"
             } else row.name
