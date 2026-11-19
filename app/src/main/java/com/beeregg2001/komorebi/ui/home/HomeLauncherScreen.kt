@@ -206,18 +206,15 @@ fun HomeLauncherScreen(
     val backendType by homeViewModel.backendType.collectAsState()
     val recordHistoryAvailable by recordViewModel.recordHistoryAvailable.collectAsState()
     LaunchedEffect(backendType, groupedChannels.keys) {
-        if (backendType == "TIF") {
-            // 例えばATSC/DVB/IPTVだけの入力ではGRが存在しない。
-            // TvProviderが提供する放送チャンネルからEPGの初期種別を選ぶ。
-            val types = listOf("GR", "BS", "CS", "BS4K", "SKY", "TV")
-            val available = types.filter { it in groupedChannels.keys }
-            if (available.isNotEmpty() &&
-                epgViewModel.selectedBroadcastingType.value !in available
-            ) {
-                epgViewModel.updateBroadcastingType(available.first())
-            }
-            // HDMIなどINPUTのみの場合はEPG対象を作らず、空Successを表示する。
+        // 全backendで実際に公開された局の種別から選ぶ。共通BS等は維持する。
+        val candidateTypes = if (backendType == "TIF")
+            listOf("GR", "BS", "CS", "TV") else listOf("GR", "BS", "CS", "SKY", "BS4K")
+        val available = candidateTypes.filter { it in groupedChannels.keys }
+        if (available.isNotEmpty() &&
+            epgViewModel.selectedBroadcastingType.value !in available) {
+            epgViewModel.updateBroadcastingType(available.first())
         }
+        // HDMIのみのINPUTは番組表を持たない。
     }
     val shouldCropLogo = remember(backendType) { backendType == "KONOMITV" }
 
