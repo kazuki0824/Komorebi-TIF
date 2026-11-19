@@ -147,8 +147,9 @@ fun MainRootScreen(
     var previouslyAppliedBackend by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(backendType) {
         if (previouslyAppliedBackend != null && previouslyAppliedBackend != backendType) {
+            // 旧ライブのミニプレイヤーだけ閉じ、SMBの再生形態は維持する。
+            if (state.selectedChannel != null) state.isMiniPlayerMode = false
             state.selectedChannel = null
-            state.isMiniPlayerMode = false
             state.lastSelectedChannelId = null
             state.isReturningFromPlayer = false
             state.playerShowOverlay = false
