@@ -477,6 +477,19 @@ class HomeViewModel @Inject constructor(
         appUpdater.resetState()
     }
 
+    /** TIFの入力削除・再スキャン時は60秒の間引きを無視して旧番組を破棄する。 */
+    fun refreshAfterTifInputChange() {
+        homeRefreshJob?.cancel()
+        genrePickupJob?.cancel()
+        baseballDateJob?.cancel()
+        cachedBaseballPrograms = emptyList()
+        _genrePickupPrograms.value = emptyList()
+        _favoriteBaseballGames.value = emptyList()
+        _sharedEpgData.value = emptyList()
+        lastHomeRefreshAt = 0L
+        refreshHomeData(force = true)
+    }
+
     /**
      * ホーム画面のデータを更新する。
      *
