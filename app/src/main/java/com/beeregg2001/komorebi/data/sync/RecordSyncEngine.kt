@@ -75,6 +75,8 @@ class RecordSyncEngine @Inject constructor(
     // 切替時に旧backendの録画画面が表示されないよう、完全同期完了まで非公開にする。
     private val _recordCacheReady = MutableStateFlow(false)
     val recordCacheReady: StateFlow<Boolean> = _recordCacheReady.asStateFlow()
+    private val _recordCacheGeneration = MutableStateFlow(0L)
+    val recordCacheGeneration: StateFlow<Long> = _recordCacheGeneration.asStateFlow()
 
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     // Room録画キャッシュの帰属先と切替中フラグをプロセス終了後も検証する。
@@ -246,6 +248,7 @@ class RecordSyncEngine @Inject constructor(
                     check(ownerPrefs.edit().putBoolean("pending", true).commit()) {
                         "録画キャッシュ切替マーカーを保存できません。"
                     }
+                    _recordCacheGeneration.value++
                     _recordCacheReady.value = false
                     // DataStoreの保存に失敗した場合はRoom側もロールバックする。
                     // 録画専用キャッシュだけを無効化し、視聴履歴等は保持する。
