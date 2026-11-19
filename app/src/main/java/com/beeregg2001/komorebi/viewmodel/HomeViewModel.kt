@@ -263,17 +263,19 @@ class HomeViewModel @Inject constructor(
             }
 
             val fetchedGenrePickup = filterGenrePickup(allPrograms, genre, timeSetting, isExcludePaid)
+            val requestedDateOffset = _baseballDateOffset.value
             val fetchedGames = filterFavoriteBaseballGames(
                 fetchedBaseballPrograms,
                 favoriteBaseballTeams.value,
-                _baseballDateOffset.value
+                requestedDateOffset
             )
             // 前バックエンドの遅い収集結果で現在のホーム内容を上書きしない。
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             if (settingsRepository.backendType.first() != requestedBackend) return@launch
             cachedBaseballPrograms = fetchedBaseballPrograms
             _genrePickupPrograms.value = fetchedGenrePickup
-            _favoriteBaseballGames.value = fetchedGames
+            // 日付変更側が先に結果を表示した場合、古い日付の集計で上書きしない。
+            if (_baseballDateOffset.value == requestedDateOffset) _favoriteBaseballGames.value = fetchedGames
         }
     }
 
