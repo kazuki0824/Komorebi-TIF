@@ -202,6 +202,7 @@ class RecordSyncEngine @Inject constructor(
      */
     suspend fun switchBackend(updateSetting: suspend () -> Unit) {
         backendTransitionMutex.withLock {
+            val oldBackend = settingsRepository.backendType.first()
             switchingBackend = true
             try {
                 val active = jobMutex.withLock { activeSyncJob }
@@ -213,8 +214,8 @@ class RecordSyncEngine @Inject constructor(
                     dictionary?.cancel()
                     dictionary?.join()
                     _recordCacheReady.value = false
-                    // 録画DBはbackend固有の再取得可能なキャッシュ。
-                    // 視聴履歴や他の永続テーブルは保持し、旧録画だけを設定切替前に不可視化する。
+                    // DataStoreの保存に失敗した場合はRoom側もロールバックする。
+                    // 録画専用キャッシュだけを無効化し、視聴履歴等は保持する。
                     db.withTransaction {
                         db.recordedProgramDao().clearAll()
                         aiSeriesDictionaryDao.clearAll()
@@ -222,9 +223,15 @@ class RecordSyncEngine @Inject constructor(
                             SyncMetaEntity(id = 1, lastSyncedPage = 0, lastSyncedAt = 0L,
                                 isInitialBuildCompleted = false)
                         )
+                        updateSetting()
                     }
-                    updateSetting()
                 }
+            } catch (error: Throwable) {
+                // 保存に失敗してbackendが変わっていなければ旧録画キャッシュは有効。
+                if (settingsRepository.backendType.first() == oldBackend) {
+                    _recordCacheReady.value = true
+                }
+                throw error
             } finally {
                 switchingBackend = false
             }
