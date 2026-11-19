@@ -59,8 +59,8 @@ class HomeViewModel @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
-    suspend fun recentStartupChannelIds(backend: String): List<String> =
-        lastChannelRepository.getRecentForBackend(backend).map { it.channelId }
+    suspend fun recentStartupChannelIds(availableChannelIds: List<String>): List<String> =
+        lastChannelRepository.getRecentForChannels(availableChannelIds).map { it.channelId }
 
     val backendType: StateFlow<String> = settingsRepository.backendType
         .stateIn(viewModelScope, SharingStarted.Eagerly, "KONOMITV")
