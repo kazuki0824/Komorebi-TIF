@@ -220,7 +220,7 @@ class TifRepository @Inject constructor(
         } else -1
         val cursor = context.contentResolver.query(
             TvContract.buildProgramsUriForChannel(
-                rowId, now - 24L * 60L * 60_000L, now + 6L * 60L * 60_000L
+                rowId, now, now + 6L * 60L * 60_000L
             ), columns.toTypedArray(), null, null, null
         ) ?: error("TvProviderがライブ用program queryにnullを返しました。")
         return cursor.use { rows ->
@@ -432,13 +432,18 @@ class TifRepository @Inject constructor(
         val now = System.currentTimeMillis()
         val duplicates = tunerRows.groupingBy { it.name to it.number }.eachCount()
         val inputNames = infos.associate { it.id to TifInput.label(context, it) }
+        val duplicateLabelCounts = tunerRows.filter { (duplicates[it.name to it.number] ?: 0) > 1 }
+            .groupingBy { Triple(it.name, it.number, inputNames[it.inputId] ?: it.inputId) }.eachCount()
         val channels = tunerRows.map { row ->
             // 別TISがEPGを公開していなくても視聴チャンネルまで消さない。
             val programs = readProgramsOrEmpty(
                 row.id, now - 24L * 60L * 60_000L, now + 6L * 60L * 60_000L, liveNow = now
             )
+            val label = inputNames[row.inputId] ?: row.inputId
             val displayName = if ((duplicates[row.name to row.number] ?: 0) > 1) {
-                row.name + "（" + (inputNames[row.inputId] ?: row.inputId) + "）"
+                val suffix = if ((duplicateLabelCounts[Triple(row.name, row.number, label)] ?: 0) > 1)
+                    " / ${row.inputId}" else ""
+                row.name + "（" + label + suffix + "）"
             } else row.name
             row.toLiveChannel(
                 programs.firstOrNull { it.start <= now && it.end > now },
