@@ -148,7 +148,7 @@ fun MainRootScreen(
             channelViewModel.fetchChannels(force = true)
             listingsPermissionGranted = true
             // 権限ダイアログ中に失敗した可視EPGも同じ種別で再取得する。
-            epgViewModel.refreshEpgData()
+            epgViewModel.refreshAfterTifInputChange()
         } else state.toastMessage = "TV番組一覧へのアクセス許可が必要です。アプリの権限設定で許可してください。"
     }
     // OS設定から復帰した場合も権限を読み直し、チャンネルと番組表を再取得する。
@@ -161,7 +161,7 @@ fun MainRootScreen(
                 if (currentlyGranted != listingsPermissionGranted) channelViewModel.fetchChannels(force = true)
                 listingsPermissionGranted = currentlyGranted
                 // TISスキャン後の復帰では権限に変化がなくてもEPGを更新する。
-                epgViewModel.refreshEpgData()
+                epgViewModel.refreshAfterTifInputChange()
             }
         }
     }
