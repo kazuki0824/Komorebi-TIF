@@ -228,9 +228,13 @@ class RecordViewModel @Inject constructor(
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            syncEngine.syncProgress.map { it.isSyncing }.distinctUntilChanged()
-                .collect { isSyncing ->
-                    if (!isSyncing && syncEngine.recordCacheReady.value) {
+            combine(
+                syncEngine.syncProgress.map { it.isSyncing }.distinctUntilChanged(),
+                syncEngine.recordCacheReady
+            ) { isSyncing, ready -> !isSyncing && ready }
+                .distinctUntilChanged()
+                .collect { shouldLoad ->
+                    if (shouldLoad) {
                         val generation = syncEngine.recordCacheGeneration.value
                         val requestedBackend = settingsRepository.backendType.first()
                         val seriesList = programDao.getGroupedSeries()
