@@ -406,7 +406,7 @@ class TifRepository @Inject constructor(
     suspend fun checkReady(): Boolean = withContext(Dispatchers.IO) {
         // OSのTV入力列挙はこのIO処理中の1回だけ行う。
         val infos = TifInput.inputs(context)
-        check(infos.isNotEmpty()) { "利用可能なTV入力がありません。" }
+        if (infos.isEmpty()) return@withContext false // 未登録は再設定待ちであり障害ではない
         if (infos.any { !it.isPassthroughInput }) {
             if (!hasListingsPermission()) return@withContext false // 権限要求待ち
             readTunerChannels(infos)
@@ -416,14 +416,15 @@ class TifRepository @Inject constructor(
 
     override suspend fun getChannels(): ChannelApiResponse = withContext(Dispatchers.IO) {
         val infos = TifInput.inputs(context)
-        if (infos.isEmpty()) error("利用可能なTV入力がありません。AndroidのTV入力設定を確認してください。")
+        // TV入力未登録でもホーム／SMBは利用可能。入力はOS設定で後から追加できる。
+        if (infos.isEmpty()) return@withContext ChannelApiResponse(
+            terrestrial = emptyList(), bs = emptyList(), cs = emptyList(),
+            others = emptyList(), inputs = emptyList()
+        )
         val passthrough = infos.filter { it.isPassthroughInput }.map { it.toPassthroughChannel() }
         val tunerRows = if (hasListingsPermission()) {
             readTunerChannels(infos)
         } else {
-            if (infos.any { !it.isPassthroughInput } && passthrough.isEmpty()) {
-                error("TV番組一覧を読むにはREAD_TV_LISTINGSの許可が必要です。")
-            }
             if (infos.any { !it.isPassthroughInput }) {
                 Log.w("TifRepository", "READ_TV_LISTINGS未許可のためチューナー一覧を省略します")
             }
