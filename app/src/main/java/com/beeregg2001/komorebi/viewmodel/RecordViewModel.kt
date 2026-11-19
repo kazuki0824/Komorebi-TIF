@@ -217,7 +217,7 @@ class RecordViewModel @Inject constructor(
         loadSearchHistory()
         viewModelScope.launch {
             syncEngine.recordCacheReady.collect { ready ->
-                if (!ready) {
+                if (!ready) synchronized(syncEngine.recordPublicationLock) {
                     detailFetchJob?.cancel()
                     _programDetail.value = null
                     _groupedSeries.value = emptyMap()
@@ -243,17 +243,23 @@ class RecordViewModel @Inject constructor(
                                 epgStationIp = settingsRepository.epgStationIp.first()
                                 epgStationPort = settingsRepository.epgStationPort.first()
                                 val apiSeries = epgStationRecordRepository.getSeriesList()
-                                if (!syncEngine.recordCacheReady.value ||
-                                    syncEngine.recordCacheGeneration.value != generation ||
-                                    settingsRepository.backendType.first() != requestedBackend) return@collect
-                                if (apiSeries != null) {
-                                    epgSeriesItems = apiSeries
-                                    buildEpgSeriesAndChannelMaps(apiSeries, seriesList, channelsList)
-                                } else {
-                                    buildSeriesAndChannelMaps(seriesList, channelsList)
+                                val backendAfterFetch = settingsRepository.backendType.first()
+                                synchronized(syncEngine.recordPublicationLock) {
+                                    if (syncEngine.recordCacheReady.value &&
+                                        syncEngine.recordCacheGeneration.value == generation &&
+                                        backendAfterFetch == requestedBackend) {
+                                        if (apiSeries != null) {
+                                            epgSeriesItems = apiSeries
+                                            buildEpgSeriesAndChannelMaps(apiSeries, seriesList, channelsList)
+                                        } else buildSeriesAndChannelMaps(seriesList, channelsList)
+                                    }
                                 }
                             } else {
-                                buildSeriesAndChannelMaps(seriesList, channelsList)
+                                synchronized(syncEngine.recordPublicationLock) {
+                                    if (syncEngine.recordCacheReady.value &&
+                                        syncEngine.recordCacheGeneration.value == generation)
+                                        buildSeriesAndChannelMaps(seriesList, channelsList)
+                                }
                             }
                         }
                     }
@@ -652,7 +658,7 @@ class RecordViewModel @Inject constructor(
             }
     }
 
-    private suspend fun buildSeriesAndChannelMaps(
+    private fun buildSeriesAndChannelMaps(
         seriesList: List<SeriesProjection>,
         channelsList: List<ChannelProjection>
     ) {
