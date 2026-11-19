@@ -507,7 +507,7 @@ class HomeViewModel @Inject constructor(
                             val programIds =
                                 apiHistoryList.mapNotNull { it.program.id.toIntOrNull() }
                             val existingEntitiesMap =
-                                watchHistoryRepository.getHistoryEntitiesByIds(programIds)
+                                watchHistoryRepository.getHistoryEntitiesByIds(programIds, backend)
                                     .associateBy { it.id }
                             val entitiesToSave = apiHistoryList.mapNotNull { history ->
                                 val programId =
@@ -527,7 +527,7 @@ class HomeViewModel @Inject constructor(
                                 newEntity
                             }
                             if (entitiesToSave.isNotEmpty()) watchHistoryRepository.saveAllToLocalHistory(
-                                entitiesToSave
+                                entitiesToSave, backend
                             )
                         }
                         konomiRepository.refreshUser()
