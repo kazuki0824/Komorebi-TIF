@@ -489,24 +489,24 @@ fun MainRootScreen(
                 (listingsPermissionGranted || TifInput.inputs(context).none { !it.isPassthroughInput }) ||
                 backendType != TifInput.BACKEND_TYPE && groupedChannels.isNotEmpty())) {
             // 0チャンネルのTIFも完了としてホーム・スキャン導線を表示する。
-            state.hasAppliedStartupChannel = true
+            // suspend履歴照会前に完了フラグを立てるとキャンセル時に再試行できない。
             val flatChannels = groupedChannels.values.flatten()
             if (flatChannels.isNotEmpty() && startupChannelSetting != "OFF") {
                 val targetChannel = if (backendType == TifInput.BACKEND_TYPE) {
                     // ユーザーが指定した完全なTIF ID以外へ自動フォールバックしない。
                     if (startupChannelSetting == "LAST_WATCHED") {
-                        homeViewModel.recentStartupChannelIds(backendType).firstNotNullOfOrNull { id ->
+                        homeViewModel.recentStartupChannelIds(flatChannels.map { it.id }).firstNotNullOfOrNull { id ->
                             flatChannels.find { it.id == id }
                         }
                     } else flatChannels.find { it.id == startupChannelSetting }
                 } else if (startupChannelSetting == "LAST_WATCHED") {
                     // 両backendの履歴を保持するため、直近の他backend履歴を飛ばす。
-                    homeViewModel.recentStartupChannelIds(backendType).firstNotNullOfOrNull { id ->
+                    homeViewModel.recentStartupChannelIds(flatChannels.map { it.id }).firstNotNullOfOrNull { id ->
                         flatChannels.find { it.id == id }
                     } ?: flatChannels.first()
                 } else flatChannels.find { it.id == startupChannelSetting } ?: flatChannels.first()
 
-                if (targetChannel != null) {
+                if (targetChannel != null && !state.hasAppliedStartupChannel && state.selectedChannel == null) {
                     state.selectedChannel = targetChannel
                     state.isBaseballMode = false
                     state.lastSelectedChannelId = targetChannel.id
@@ -517,6 +517,8 @@ fun MainRootScreen(
                     if (liveIndex != -1) state.currentTabIndex = liveIndex
                 }
             }
+            // suspendから正常復帰した時だけ完了扱いにする。変更でキャンセルされたら次のeffectに委ねる。
+            state.hasAppliedStartupChannel = true
             // 未登録・0局・権限拒否でもホームと設定へ進める。
             state.isUiReady = true
         }
