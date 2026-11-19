@@ -141,6 +141,7 @@ class ChannelViewModel @Inject constructor(
     private val logoCache = java.util.concurrent.ConcurrentHashMap<String, String>()
     private var observedBackend: String? = null
     private var backendGeneration = 0L
+    private var loadingRequestId = 0L
 
     init {
         startPolling()
@@ -227,7 +228,7 @@ class ChannelViewModel @Inject constructor(
         }
 
     @RequiresApi(Build.VERSION_CODES.O)
-    private suspend fun fetchChannelsInternal() {
+    private suspend fun fetchChannelsInternal(requestId: Long? = null) {
         val requestBackend = settingsRepository.backendType.first()
         val generation = backendGeneration
         try {
@@ -294,7 +295,8 @@ class ChannelViewModel @Inject constructor(
                 _connectionError.value = true
             }
         } finally {
-            if (generation == backendGeneration) _isLoading.value = false
+            if (generation == backendGeneration && requestId != null && requestId == loadingRequestId)
+                _isLoading.value = false
         }
     }
 
@@ -341,10 +343,11 @@ class ChannelViewModel @Inject constructor(
             Log.d("ChannelViewModel", "fetchChannels: 取得中のため要求をスキップします")
             return
         }
+        val requestId = ++loadingRequestId
         _isLoading.value = true
         fetchJob?.cancel()
         fetchJob = viewModelScope.launch {
-            fetchChannelsInternal()
+            fetchChannelsInternal(requestId)
         }
     }
 
