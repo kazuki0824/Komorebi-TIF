@@ -59,6 +59,31 @@ class EpgRepository @Inject constructor(
     private val tifRepository: TifRepository
 ) {
     private val memoryCache = ConcurrentHashMap<String, List<EpgChannelWrapper>>()
+    // メモリ番組表の収録時間範囲。短いホーム取得で7日分の検索母集団を上書きしない。
+    private val coverage = ConcurrentHashMap<String, Pair<Long, Long>>()
+
+    fun invalidateTifCache() {
+        synchronized(coverage) {
+            memoryCache.keys.filter { it.startsWith("TIF_") }.forEach {
+                memoryCache.remove(it)
+                coverage.remove(it)
+            }
+        }
+    }
+
+    private fun cacheEpg(
+        cacheKey: String, backend: String, start: Long, end: Long,
+        channels: List<EpgChannelWrapper>
+    ) {
+        synchronized(coverage) {
+            val old = coverage[cacheKey]
+            if (backend != TifInput.BACKEND_TYPE || old == null ||
+                end - start >= old.second - old.first) {
+                memoryCache[cacheKey] = channels
+                coverage[cacheKey] = start to end
+            }
+        }
+    }
 
     // ==========================================
     // ★ 高速ファイルキャッシュ処理
@@ -251,7 +276,11 @@ class EpgRepository @Inject constructor(
     ) {
         val requestBackend = settingsRepository.backendType.first()
         val cacheKey = requestBackend + "_" + channelType
-        if (requestBackend != TifInput.BACKEND_TYPE && memoryCache.containsKey(cacheKey)) return
+        if (requestBackend == TifInput.BACKEND_TYPE) {
+            val old = coverage[cacheKey]
+            if (old != null && old.first <= startTime.toInstant().toEpochMilli() &&
+                old.second >= endTime.toInstant().toEpochMilli()) return
+        } else if (memoryCache.containsKey(cacheKey)) return
 
         var isFreshCacheAvailable = false
 
@@ -289,11 +318,10 @@ class EpgRepository @Inject constructor(
                 channelType = channelType
             )
             if (settingsRepository.backendType.first() != requestBackend) return
-            // TIFアダプターは同じ入力一覧スナップショットで公開局だけを返す。
-            memoryCache[cacheKey] = channels
-
-            // ★修正: ファイルへ保存する
-            saveToFileCache(cacheKey, channels)
+            // 7日分キャッシュをホームの3日取得で縮めない。
+            cacheEpg(cacheKey, requestBackend, startTime.toInstant().toEpochMilli(),
+                endTime.toInstant().toEpochMilli(), channels)
+            if (requestBackend != TifInput.BACKEND_TYPE) saveToFileCache(cacheKey, channels)
 
         } catch (e: Exception) {
             if (e is CancellationException) throw e
@@ -311,9 +339,9 @@ class EpgRepository @Inject constructor(
         val requestBackend = settingsRepository.backendType.first()
         val cacheKey = requestBackend + "_" + channelType
         if (settingsRepository.backendType.first() != requestBackend) return@flow
-        // TIFはスキャンや入力削除で番組の公開集合が変わる。旧キャッシュを先に出さない。
-        if (requestBackend == TifInput.BACKEND_TYPE) memoryCache.remove(cacheKey)
-        memoryCache[cacheKey]?.let { emit(Result.success(it)) }
+        // TIF番組は取得時の可視性を確認した結果のみ表示する。旧メモリは先出ししない。
+        if (requestBackend != TifInput.BACKEND_TYPE)
+            memoryCache[cacheKey]?.let { emit(Result.success(it)) }
 
         if (memoryCache[cacheKey] == null) {
             // ★修正: DBではなくファイルから読み込む
@@ -342,11 +370,11 @@ class EpgRepository @Inject constructor(
             // TIFアダプターが公開・所有者条件を確認した取得結果を正本とする。
             val published = channels
             if (settingsRepository.backendType.first() != requestBackend) return@flow
-            memoryCache[cacheKey] = published
+            cacheEpg(cacheKey, requestBackend, startTime.toInstant().toEpochMilli(),
+                endTime.toInstant().toEpochMilli(), published)
             emit(Result.success(published))
 
-            CoroutineScope(Dispatchers.IO).launch {
-                // ★修正: ファイルへ保存する
+            if (requestBackend != TifInput.BACKEND_TYPE) CoroutineScope(Dispatchers.IO).launch {
                 saveToFileCache(cacheKey, published)
             }
         } catch (e: Exception) {
