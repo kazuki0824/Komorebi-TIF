@@ -376,6 +376,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
     /** TV入力スキャン／削除後は描画済み番組を使い回さず、公開チャンネルを再確認する。 */
     fun refreshAfterTifInputChange() {
         epgJob?.cancel()
+        preloadJob?.cancel()
         sliceJob?.cancel()
         clearSearch()
         repository.invalidateTifCache()
