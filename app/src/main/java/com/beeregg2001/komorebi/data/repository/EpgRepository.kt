@@ -77,11 +77,33 @@ class EpgRepository @Inject constructor(
     ) {
         synchronized(coverage) {
             val old = coverage[cacheKey]
-            if (backend != TifInput.BACKEND_TYPE || old == null ||
-                end - start >= old.second - old.first) {
+            if (backend != TifInput.BACKEND_TYPE || old == null) {
                 memoryCache[cacheKey] = channels
                 coverage[cacheKey] = start to end
+            } else if (start <= old.first && end >= old.second) {
+                // 新しい取得が既存範囲を完全に覆う場合は置換する。
+                memoryCache[cacheKey] = channels
+                coverage[cacheKey] = start to end
+            } else if (end > old.second || start < old.first) {
+                // 日付を跨いで未来側が伸びた場合は新しい番組を追加し、
+                // ホームの短期取得で検索用の既存7日分を失わないようにする。
+                val existing = memoryCache[cacheKey].orEmpty().associateBy { it.channel.id }
+                val latest = channels.associateBy { it.channel.id }
+                memoryCache[cacheKey] = (existing.keys + latest.keys).mapNotNull { id ->
+                    val oldRow = existing[id]
+                    val newRow = latest[id]
+                    when {
+                        oldRow == null -> newRow
+                        newRow == null -> oldRow
+                        else -> newRow.copy(
+                            programs = (oldRow.programs + newRow.programs)
+                                .distinctBy { it.id }.sortedBy { it.start_time }
+                        )
+                    }
+                }
+                coverage[cacheKey] = minOf(start, old.first) to maxOf(end, old.second)
             }
+            // 要求期間が既存範囲内なら短い結果による縮小を行わない。
         }
     }
 
@@ -340,8 +362,12 @@ class EpgRepository @Inject constructor(
         val cacheKey = requestBackend + "_" + channelType
         if (settingsRepository.backendType.first() != requestBackend) return@flow
         // TIF番組は取得時の可視性を確認した結果のみ表示する。旧メモリは先出ししない。
+        var emittedSuccess = false
         if (requestBackend != TifInput.BACKEND_TYPE)
-            memoryCache[cacheKey]?.let { emit(Result.success(it)) }
+            memoryCache[cacheKey]?.let {
+                emit(Result.success(it))
+                emittedSuccess = true
+            }
 
         if (memoryCache[cacheKey] == null) {
             // ★修正: DBではなくファイルから読み込む
@@ -351,6 +377,7 @@ class EpgRepository @Inject constructor(
                 if (settingsRepository.backendType.first() != requestBackend) return@flow
                 memoryCache[cacheKey] = cachedData
                 emit(Result.success(cachedData))
+                emittedSuccess = true
             }
         }
 
@@ -380,7 +407,8 @@ class EpgRepository @Inject constructor(
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             Log.e("EPG", "Fetch Error: $startTime to $endTime", e)
-            if (memoryCache[cacheKey] == null) emit(Result.failure(e))
+            // TIFは旧メモリキャッシュを成功送信しない。既存値の有無と関係なく失敗を通知する。
+            if (!emittedSuccess) emit(Result.failure(e))
         }
     }
 
