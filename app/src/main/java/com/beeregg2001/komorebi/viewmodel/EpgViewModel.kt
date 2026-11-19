@@ -347,13 +347,16 @@ class EpgViewModel @OptIn(UnstableApi::class)
                     _isPreloading.value = true
                     hasInitialFetched = false
                     observedBackend = backend
+                    // 既存のBS等は維持し、切替先の対象外（TIF専用TV等）だけ修正する。
+                    val available = preloadTypesFor(backend)
+                    if (type !in available) _selectedBroadcastingType.value = available.first()
                 }
                 mirakurunIp = mIp
                 mirakurunPort = mPort
 
                 if (isInit && !hasInitialFetched) {
                     hasInitialFetched = true
-                    viewModelScope.launch { refreshEpgData(type) }
+                    viewModelScope.launch { refreshEpgData(_selectedBroadcastingType.value) }
 
                     preloadJob = viewModelScope.launch {
                         delay(10000)
@@ -362,7 +365,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
                     }
 
                 } else if (isInit && hasInitialFetched) {
-                    refreshEpgData(type)
+                    refreshEpgData(_selectedBroadcastingType.value)
                 }
             }.collectLatest { }
         }
