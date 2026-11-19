@@ -458,8 +458,12 @@ fun MainRootScreen(
 
     LaunchedEffect(Unit) {
         if (!state.hasAppliedStartupTab) {
+            // DataStore値確定前のKonomiTV用indexをTIFのタブ一覧へ流用しない。
+            val confirmedBackend = settingsViewModel.confirmedBackendType.first() ?: backendType
+            val confirmedTabs = visibleHomeTabs(confirmedBackend, favoriteBaseballTeams.isNotEmpty())
             val tab = settingsViewModel.getStartupTabOnce()
-            val index = tabs.indexOf(tab)
+            val index = confirmedTabs.indexOf(tab)
+            state.backendType = confirmedBackend
             state.currentTabIndex = if (index != -1) index else 0
             channelViewModel.fetchChannels()
             state.hasAppliedStartupTab = true
