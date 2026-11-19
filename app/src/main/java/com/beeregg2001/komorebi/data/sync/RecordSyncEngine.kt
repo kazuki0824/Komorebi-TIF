@@ -617,14 +617,16 @@ class RecordSyncEngine @Inject constructor(
             }
 
             if (isSyncSuccessful) {
-                if (!switchingBackend && !dictionaryMutex.isLocked) {
-                    dictionaryJob = engineScope.launch {
-                        if (!switchingBackend && settingsRepository.backendType.first() != "TIF") {
-                            startDictionaryResolutionLoop()
+                syncMutex.withLock {
+                    if (!switchingBackend && settingsRepository.backendType.first() != "TIF" &&
+                        dictionaryJob?.isActive != true) {
+                        dictionaryJob = engineScope.launch {
+                            if (!switchingBackend && settingsRepository.backendType.first() != "TIF")
+                                startDictionaryResolutionLoop()
                         }
+                    } else {
+                        Log.i(TAG, "smartSync: dictionary already running or backend switching.")
                     }
-                } else {
-                    Log.i(TAG, "smartSync: dictionary already running, skipping launch.")
                 }
             }
 
