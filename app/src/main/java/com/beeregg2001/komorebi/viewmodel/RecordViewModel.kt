@@ -231,13 +231,21 @@ class RecordViewModel @Inject constructor(
             syncEngine.syncProgress.map { it.isSyncing }.distinctUntilChanged()
                 .collect { isSyncing ->
                     if (!isSyncing && syncEngine.recordCacheReady.value) {
+                        val generation = syncEngine.recordCacheGeneration.value
+                        val requestedBackend = settingsRepository.backendType.first()
                         val seriesList = programDao.getGroupedSeries()
                         val channelsList = programDao.getDistinctChannels()
-                        if (settingsRepository.backendType.first() == "EPGSTATION" || seriesList.isNotEmpty() || channelsList.isNotEmpty()) {
-                            if (settingsRepository.backendType.first() == "EPGSTATION") {
+                        if (syncEngine.recordCacheReady.value &&
+                            syncEngine.recordCacheGeneration.value == generation &&
+                            settingsRepository.backendType.first() == requestedBackend &&
+                            (requestedBackend == "EPGSTATION" || seriesList.isNotEmpty() || channelsList.isNotEmpty())) {
+                            if (requestedBackend == "EPGSTATION") {
                                 epgStationIp = settingsRepository.epgStationIp.first()
                                 epgStationPort = settingsRepository.epgStationPort.first()
                                 val apiSeries = epgStationRecordRepository.getSeriesList()
+                                if (!syncEngine.recordCacheReady.value ||
+                                    syncEngine.recordCacheGeneration.value != generation ||
+                                    settingsRepository.backendType.first() != requestedBackend) return@collect
                                 if (apiSeries != null) {
                                     epgSeriesItems = apiSeries
                                     buildEpgSeriesAndChannelMaps(apiSeries, seriesList, channelsList)
