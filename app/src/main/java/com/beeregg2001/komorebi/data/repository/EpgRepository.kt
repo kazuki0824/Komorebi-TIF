@@ -270,26 +270,43 @@ class EpgRepository @Inject constructor(
         while (true) {
             val original = synchronized(coverage) {
                 if (tifCacheRevision.get() != expectedRevision) null
-                else Triple(memoryCache[cacheKey], tifChannelCoverage[cacheKey],
-                    tifRetryRanges[cacheKey])
+                else listOf(
+                    memoryCache[cacheKey],
+                    tifChannelCoverage[cacheKey],
+                    tifRetryRanges[cacheKey],
+                    tifCatalogSequence[cacheKey]
+                )
             } ?: return@withContext null
-            val previousChannels = original.first
-            val oldCoverage = original.second.orEmpty()
-            val oldRetry = original.third.orEmpty()
+            @Suppress("UNCHECKED_CAST")
+            val previousChannels = original[0] as? List<EpgChannelWrapper>
+            @Suppress("UNCHECKED_CAST")
+            val oldCoverage = (original[1] as? Map<String, List<TifCoverageWindow>>).orEmpty()
+            @Suppress("UNCHECKED_CAST")
+            val oldRetry = (original[2] as? Map<String, List<TifRetryWindow>>).orEmpty()
+            val catalogSequence = original[3] as? Long ?: 0L
             val previousById = previousChannels.orEmpty().associateBy { it.channel.id }
+            val incomingById = channels.associateBy { it.channel.id }
+            // 古い照会結果では公開局集合・局名を巻き戻さない。
+            val visibleChannels = if (requestSequence < catalogSequence)
+                previousChannels.orEmpty() else channels
             val updatedCoverage = mutableMapOf<String, List<TifCoverageWindow>>()
-            val updatedRetry = mutableMapOf<String, List<Pair<Long, Long>>>()
+            val updatedRetry = mutableMapOf<String, List<TifRetryWindow>>()
 
-            val merged = channels.map { fresh ->
+            val merged = visibleChannels.map { selected ->
+                val fresh = incomingById[selected.channel.id] ?: selected
                 val id = fresh.channel.id
                 val previous = previousById[id]
                 val windows = oldCoverage[id].orEmpty().filter { it.to > cutoff }
                     .map { it.copy(from = maxOf(it.from, cutoff)) }
-                val retry = oldRetry[id].orEmpty().filter { it.second > cutoff }
+                val retry = oldRetry[id].orEmpty().filter { it.to > cutoff }
+                    .map { it.copy(from = maxOf(it.from, cutoff)) }
                 val protected = windows.filter { it.sequence > requestSequence }
                     .map { it.from to it.to }
-                val writable = if (id in failedIds) emptyList()
-                    else subtractWindows(start, end, protected)
+                val newerFailures = retry.filter { it.sequence > requestSequence }
+                    .map { it.from to it.to }
+                // 成功の旧応答でも新しい失敗の再試行義務を消してはならない。
+                val writable = if (id in failedIds || id !in incomingById) emptyList()
+                    else subtractWindows(start, end, protected + newerFailures)
 
                 val oldPrograms = previous?.programs.orEmpty().filter {
                     time(it.end_time, Long.MIN_VALUE) > cutoff
@@ -323,24 +340,41 @@ class EpgRepository @Inject constructor(
                         } else acc.add(window)
                         acc
                     }
-                updatedRetry[id] = if (id in failedIds) {
-                    retry + (start to end)
-                } else retry.flatMap {
-                    subtractWindows(it.first, it.second, listOf(start to end))
+                val retryWrite = subtractWindows(start, end, protected + newerFailures)
+                val remainingRetry = retry.flatMap { item ->
+                    if (item.sequence > requestSequence) listOf(item)
+                    else subtractWindows(item.from, item.to,
+                        if (id in failedIds) retryWrite else writable).map {
+                        TifRetryWindow(it.first, it.second, item.sequence)
+                    }
                 }
+                val newFailures = if (id in failedIds)
+                    retryWrite.map { TifRetryWindow(it.first, it.second, requestSequence) }
+                    else emptyList()
+                updatedRetry[id] = normalizeRetryWindows(remainingRetry + newFailures)
 
-                fresh.copy(programs = combined)
+                selected.copy(programs = combined)
             }
             val accepted = synchronized(coverage) {
                 when {
                     tifCacheRevision.get() != expectedRevision -> -1
                     memoryCache[cacheKey] !== previousChannels ||
-                        tifChannelCoverage[cacheKey] !== original.second ||
-                        tifRetryRanges[cacheKey] !== original.third -> 0
+                        tifChannelCoverage[cacheKey] !== original[1] ||
+                        tifRetryRanges[cacheKey] !== original[2] ||
+                        tifCatalogSequence[cacheKey] != original[3] -> 0
                     else -> {
                         memoryCache[cacheKey] = merged
                         tifChannelCoverage[cacheKey] = updatedCoverage
                         tifRetryRanges[cacheKey] = updatedRetry
+                        if (requestSequence >= catalogSequence) {
+                            tifCatalogSequence[cacheKey] = requestSequence
+                        }
+                        if (merged.isEmpty() && requestSequence >= catalogSequence) {
+                            // 0局もこの範囲の正常な取得成功として再利用可能にする。
+                            coverage[cacheKey] = start to end
+                        } else if (merged.isNotEmpty()) {
+                            coverage.remove(cacheKey)
+                        }
                         tifPublishedAt[cacheKey] = android.os.SystemClock.elapsedRealtime()
                         1
                     }
