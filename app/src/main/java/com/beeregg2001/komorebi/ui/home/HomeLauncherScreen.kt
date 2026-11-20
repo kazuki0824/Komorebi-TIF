@@ -207,6 +207,37 @@ fun HomeLauncherScreen(
     val baseballDateOffset by homeViewModel.baseballDateOffset.collectAsState()
 
     val backendType by homeViewModel.backendType.collectAsState()
+    val ownedHistory by homeViewModel.ownedWatchHistory.collectAsState()
+    val displayedHistory = if (ownedHistory.first == backendType) ownedHistory.second
+        else emptyList()
+    val cancelPendingHistory: () -> Unit = {
+        historySelectionJob?.cancel()
+        historySelectionGeneration++
+    }
+    LaunchedEffect(backendType) { cancelPendingHistory() }
+    val playVerifiedHistory: (KonomiHistoryProgram) -> Unit = { historyItem ->
+        val programId = historyItem.program.id.toIntOrNull()
+        if (backendType != "TIF" && ownedHistory.first == backendType &&
+            programId != null && homeViewModel.backendType.value == backendType) {
+            cancelPendingHistory()
+            val requestId = historySelectionGeneration
+            val requestedBackend = backendType
+            historySelectionJob = scope.launch {
+                val program = recordViewModel.getResumableHistoryProgram(programId, requestedBackend)
+                if (requestId == historySelectionGeneration &&
+                    homeViewModel.backendType.value == requestedBackend &&
+                    homeViewModel.ownedWatchHistory.value.first == requestedBackend) {
+                    if (program != null) onProgramSelected(program)
+                    else recordViewModel.historyResumeError.value?.let { reason ->
+                        android.widget.Toast.makeText(
+                            scopeContext, reason, android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        recordViewModel.clearHistoryResumeError()
+                    }
+                }
+            }
+        }
+    }
     // 帰属付き視聴履歴は録画一覧キャッシュの構築途中も再生候補として表示する。
     // TIFでは録画機能自体がないので非表示を維持する。
     LaunchedEffect(backendType, groupedChannels.keys) {
@@ -916,7 +947,7 @@ fun HomeLauncherScreen(
                     when (currentTabLabel) {
                         "ホーム" -> HomeContents(
                             lastWatchedChannels = translatedLastChannels,
-                            watchHistory = if (backendType == "TIF") emptyList() else ui.watchHistory,
+                            watchHistory = if (backendType == "TIF") emptyList() else displayedHistory,
                             hotChannels = ui.hotChannels,
                             upcomingReserves = if (backendType == "TIF") emptyList() else ui.upcomingReserves,
                             genrePickup = ui.genrePickup,
@@ -928,26 +959,7 @@ fun HomeLauncherScreen(
                             onChannelClick = {
                                 if (it != null) onChannelClick(it, false)
                             },
-                            onHistoryClick = { historyItem ->
-                                if (backendType == "TIF") return@HomeContents
-                                val programId = historyItem.program.id.toIntOrNull() ?: return@HomeContents
-                                val requestedBackend = backendType
-                                // 最後にクリックしたカードだけが再生・エラーを確定できる。
-                                historySelectionJob?.cancel()
-                                val requestId = ++historySelectionGeneration
-                                historySelectionJob = scope.launch {
-                                    val program = recordViewModel.getResumableHistoryProgram(programId, requestedBackend)
-                                    if (requestId != historySelectionGeneration ||
-                                        requestedBackend != backendType) return@launch
-                                    if (program != null) onProgramSelected(program)
-                                    else recordViewModel.historyResumeError.value?.let { reason ->
-                                        android.widget.Toast.makeText(
-                                            scopeContext, reason, android.widget.Toast.LENGTH_LONG
-                                        ).show()
-                                        recordViewModel.clearHistoryResumeError()
-                                    }
-                                }
-                            },
+                            onHistoryClick = playVerifiedHistory,
                             onReserveClick = { if (backendType != "TIF") onReserveSelected(it) },
                             onProgramClick = { onEpgProgramSelected(it) },
                             onNavigateToTab = { targetIndex ->
@@ -1015,7 +1027,11 @@ fun HomeLauncherScreen(
                         "ビデオ" -> {
                             VideoTabContent(
                                 recordViewModel = recordViewModel,
-                                onProgramClick = { onProgramSelected(it) },
+                                onProgramClick = {
+                                    cancelPendingHistory()
+                                    onProgramSelected(it)
+                                },
+                                onHistoryClick = playVerifiedHistory,
                                 onShowAllRecordings = onShowAllRecordings,
                                 onShowSeriesList = onShowSeriesList,
                                 onShowSmbLibrary = onShowSmbLibrary,
@@ -1030,7 +1046,7 @@ fun HomeLauncherScreen(
                                 konomiIp = konomiIp,
                                 konomiPort = konomiPort,
                                 timeFormat = timeFormat,
-                                watchHistory = if (backendType == "TIF") emptyList() else ui.watchHistory,
+                                watchHistory = if (backendType == "TIF") emptyList() else displayedHistory,
                                 aiFocusReturnTick = if (currentTabLabel == "ビデオ") aiFocusReturnTick else 0,
                                 onAiReturnConsumed = onAiReturnConsumed,
                                 isTifMode = backendType == "TIF"
