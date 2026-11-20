@@ -253,7 +253,10 @@ fun MainRootBackground(
                         onTabChange = { state.currentTabIndex = it },
                         selectedChannel = state.selectedChannel,
                         onChannelClick = { channel, isBaseballMode ->
-                            if (channel != null) state.hasAppliedStartupChannel = true
+                            if (channel != null) {
+                                recordedSelectionEpoch.intValue++
+                                state.hasAppliedStartupChannel = true
+                            }
                             state.selectedChannel = channel
                             state.isBaseballMode = isBaseballMode
                             if (channel != null) {
@@ -318,6 +321,7 @@ fun MainRootBackground(
                             val channel =
                                 groupedChannels.values.flatten().find { ch -> ch.id == channelId }
                             if (channel != null) {
+                                recordedSelectionEpoch.intValue++
                                 state.selectedChannel = channel
                                 state.isBaseballMode = false
                                 state.lastSelectedChannelId = channelId
