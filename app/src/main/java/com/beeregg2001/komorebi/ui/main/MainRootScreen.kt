@@ -947,6 +947,7 @@ fun MainRootScreen(
 
             MainRootDialogs(
                 state = state,
+                recordedSelectionEpoch = recordedSelectionEpoch,
                 channelViewModel = channelViewModel,
                 epgViewModel = epgViewModel,
                 homeViewModel = homeViewModel,
