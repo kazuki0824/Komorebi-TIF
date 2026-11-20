@@ -404,20 +404,23 @@ class EpgViewModel @OptIn(UnstableApi::class)
             val start = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
             val end = now.plusDays(7)
 
-            // ★ 修正: メモリキャッシュがあれば即座にUIへ反映（Loadingスピナーすら出さない）
-            if (epgMemoryCache.containsKey(typeToFetch)) {
-                fullEpgData = epgMemoryCache[typeToFetch]!!
+            // 成功を維持できるのは同じ種別のデータを表示した場合だけ。
+            // 前の放送種別のSuccessを新種別の取得失敗へ流用しない。
+            var hasShownRequestedType = false
+            val cachedForType = epgMemoryCache[typeToFetch]
+            if (cachedForType != null) {
+                fullEpgData = cachedForType
                 fullLogoUrls = logoMemoryCache[typeToFetch] ?: emptyList()
                 sliceAndEmitEpgData()
+                hasShownRequestedType = true
             } else {
-                if (uiState !is EpgUiState.Success) {
-                    uiState = EpgUiState.Loading
-                }
+                uiState = EpgUiState.Loading
             }
 
             // キャッシュ表示後も、裏側でRoomから最新情報を取得してキャッシュを更新する
             repository.getEpgDataStream(start, end, typeToFetch).collect { result ->
                 result.onSuccess { data ->
+                    hasShownRequestedType = true
                     fullEpgData = data
                     epgMemoryCache[typeToFetch] = data
                     // ★ 時刻解析メモが無制限に膨らまないよう、元データ更新時に破棄する
@@ -432,7 +435,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
                     _isInitialLoadComplete.value = true
                     _isPreloading.value = false
                 }.onFailure { e ->
-                    if (uiState !is EpgUiState.Success) {
+                    if (!hasShownRequestedType) {
                         uiState = EpgUiState.Error(e.message ?: "Unknown Error")
                         _isInitialLoadComplete.value = true
                     }
