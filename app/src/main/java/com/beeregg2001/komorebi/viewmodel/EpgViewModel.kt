@@ -320,7 +320,8 @@ class EpgViewModel @OptIn(UnstableApi::class)
     private suspend fun preloadEpgDataForSearchNow(availableTypes: List<String>) {
         val backend = settingsRepository.backendType.first()
         val now = OffsetDateTime.now()
-        val start = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
+        val start = if (backend == "TIF") getTvDayStart(now)
+            else now.withHour(0).withMinute(0).withSecond(0).withNano(0)
         val end = epgRangeEnd(now, backend)
         coroutineScope {
             availableTypes.map { type ->
@@ -430,8 +431,10 @@ class EpgViewModel @OptIn(UnstableApi::class)
         epgJob = viewModelScope.launch {
             val typeToFetch = requestedType
             val now = OffsetDateTime.now()
-            val start = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
-            val end = epgRangeEnd(now, settingsRepository.backendType.first())
+            val requestBackend = settingsRepository.backendType.first()
+            val start = if (requestBackend == "TIF") getTvDayStart(now)
+                else now.withHour(0).withMinute(0).withSecond(0).withNano(0)
+            val end = epgRangeEnd(now, requestBackend)
 
             // 成功を維持できるのは同じ種別のデータを表示した場合だけ。
             // 前の放送種別のSuccessを新種別の取得失敗へ流用しない。
