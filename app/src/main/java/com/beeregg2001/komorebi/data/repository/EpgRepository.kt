@@ -750,6 +750,18 @@ class EpgRepository @Inject constructor(
             if (settingsRepository.backendType.first() != requestBackend ||
                 (requestBackend == TifInput.BACKEND_TYPE &&
                  requestRevision != tifCacheRevision.get())) return@flow
+            // 検索キャッシュの保持期限より前の期間はキャッシュへ保存しない。
+            // 同種別の現在番組キャッシュを代用すると、要求した過去期間と食い違う。
+            if (requestBackend == TifInput.BACKEND_TYPE &&
+                endTime.toInstant().toEpochMilli() <=
+                    System.currentTimeMillis() - 24L * 60L * 60L * 1000L) {
+                val allFailed = snapshot != null && snapshot.channels.isNotEmpty() &&
+                    snapshot.failedChannelIds.size == snapshot.channels.size
+                if (allFailed) emit(Result.failure(
+                    IllegalStateException("TV番組表の全局照会に失敗しました。")
+                )) else emit(Result.success(channels))
+                return@flow
+            }
             val published = cacheEpg(cacheKey, requestBackend,
                 startTime.toInstant().toEpochMilli(), endTime.toInstant().toEpochMilli(),
                 channels, requestRevision, fetched?.sequence ?: 0L, snapshot?.failedChannelIds.orEmpty())
