@@ -512,20 +512,51 @@ class RecordViewModel @Inject constructor(
     }
 
     val recordHistoryAvailable: StateFlow<Boolean> = syncEngine.recordCacheReady
+    private val _historyResumeError = MutableStateFlow<String?>(null)
+    val historyResumeError: StateFlow<String?> = _historyResumeError.asStateFlow()
+
+    fun clearHistoryResumeError() { _historyResumeError.value = null }
 
     /** 履歴の出所と録画実体を確かめる。表示上限20件には依存しない。 */
     suspend fun getResumableHistoryProgram(
         programId: Int, backend: String
     ): RecordedProgram? {
+        _historyResumeError.value = null
         if (backend == "TIF" || settingsRepository.backendType.first() != backend ||
-            !syncEngine.recordCacheReady.value) return null
+            !syncEngine.recordCacheReady.value) {
+            _historyResumeError.value = "録画履歴の取得元が現在のバックエンドと一致しません。"
+            return null
+        }
         val generation = syncEngine.recordCacheGeneration.value
-        val saved = historyRepository.getHistoryEntityById(programId, backend) ?: return null
-        val entity = programDao.getById(programId) ?: return null
+        val saved = historyRepository.getHistoryEntityById(programId, backend)
+        if (saved == null) {
+            _historyResumeError.value = "視聴履歴が見つかりません。"
+            return null
+        }
+        val entity = programDao.getById(programId)
+        // 同じバックエンドの履歴と確認できれば、Roomに未同期でも元サーバーの
+        // 詳細APIで実体を確認する。IDが他backendの録画を指す推測再生はしない。
+        val remote = if (entity == null) {
+            try {
+                recordProvider.getRecordedProgram(programId).getOrNull()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        } else null
         if (!syncEngine.recordCacheReady.value ||
             syncEngine.recordCacheGeneration.value != generation ||
-            settingsRepository.backendType.first() != backend) return null
-        return RecordDataMapper.toDomainModel(entity).copy(playbackPosition = saved.playbackPosition)
+            settingsRepository.backendType.first() != backend) {
+            _historyResumeError.value = "バックエンドが変更されたため、履歴からの再生を中止しました。"
+            return null
+        }
+        val program = if (entity != null) RecordDataMapper.toDomainModel(entity) else remote
+        if (program == null || program.id != programId) {
+            _historyResumeError.value = "録画詳細を取得できません。接続先と録画の状態を確認してください。"
+            return null
+        }
+        return program.copy(playbackPosition = saved.playbackPosition)
     }
 
     fun clearWatchHistory() {
