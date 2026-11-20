@@ -258,8 +258,10 @@ fun HomeLauncherScreen(
                     if (backendType == "TIF") displayFlatChannels.find { it.id == savedChannel.id } else null
                 backendType == "TIF" -> null // 前バックエンドの履歴をTIFへ流用しない
                 else -> displayFlatChannels.find {
-                    it.networkId == savedChannel.networkId && it.serviceId == savedChannel.serviceId
-                } // 今選局できない局や別backendの履歴は表示件数に含めない
+                    // 現backendが公開する完全なIDで照合する。
+                    // 共通ONID/SIDだけでは別backendの履歴を取り違える。
+                    it.id == savedChannel.id
+                }
             }
         }.take(10)
     }
