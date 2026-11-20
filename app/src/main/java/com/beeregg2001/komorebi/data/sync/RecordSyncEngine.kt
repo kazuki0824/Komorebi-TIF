@@ -39,6 +39,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -71,6 +72,7 @@ class RecordSyncEngine @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     private val _syncProgress = MutableStateFlow(SyncProgress())
+    private val syncProgressEpoch = AtomicLong(0L)
     val syncProgress: StateFlow<SyncProgress> = _syncProgress.asStateFlow()
     // 切替時に旧backendの録画画面が表示されないよう、完全同期完了まで非公開にする。
     private val _recordCacheReady = MutableStateFlow(false)
@@ -208,15 +210,19 @@ class RecordSyncEngine @Inject constructor(
         _syncProgress.value = _syncProgress.value.copy(error = null)
     }
 
-    /** 辞書Jobが所有する進捗のみを原子的に終了させ、他同期のエラーを保持する。 */
-    private fun finishDictionaryProgress() {
-        while (true) {
+    // 辞書Jobは自身の起動時の同期世代とメッセージの両方が一致するときだけ進捗を変更する。
+    private fun updateDictionaryProgress(epoch: Long, transform: (SyncProgress) -> SyncProgress) {
+        while (syncProgressEpoch.get() == epoch) {
             val current = _syncProgress.value
-            if (current.error != null || syncMutex.isLocked ||
+            if (current.error != null ||
                 (current.message != "シリーズ辞書を自動生成中..." &&
                  current.message != "シリーズ辞書を準備中...")) return
-            if (_syncProgress.compareAndSet(current, SyncProgress(isSyncing = false))) return
+            if (_syncProgress.compareAndSet(current, transform(current))) return
         }
+    }
+
+    private fun finishDictionaryProgress(epoch: Long) {
+        updateDictionaryProgress(epoch) { SyncProgress(isSyncing = false) }
     }
 
     /** 切替先が視聴専用TIFなら、録画DBと同期メタデータに一切触れない。 */
@@ -313,6 +319,8 @@ class RecordSyncEngine @Inject constructor(
             if (switchingBackend) return@withLock
             val syncBackend = settingsRepository.backendType.first()
             if (syncBackend == "TIF") return@withLock
+            // 古い辞書Jobの遅延応答は、新しい同期の進捗を変更できない。
+            syncProgressEpoch.incrementAndGet()
             val owned = ownerPrefs.getString("backend", null) == syncBackend &&
                 !ownerPrefs.getBoolean("pending", false)
             val performFullSync = forceFullSync || !owned
@@ -737,6 +745,7 @@ class RecordSyncEngine @Inject constructor(
     }
 
     private suspend fun startDictionaryResolutionLoop() {
+        val epoch = syncProgressEpoch.get()
         if (switchingBackend || settingsRepository.backendType.first() == "TIF") return
         // EPGStationは同期時点でサーバー側のシリーズ情報(recorded[].series等)を直接
         // seriesNameへ採用済み(EpgStationDataMapper参照)であり、このループが処理対象とする
@@ -748,7 +757,7 @@ class RecordSyncEngine @Inject constructor(
         // 削除した(EpgStationSeriesDictionary.ktおよびこのクラスへの注入・呼び出しを削除)。
         if (settingsRepository.backendType.first() == "EPGSTATION") {
             Log.i(TAG, "EPGStation はサーバー側のシリーズ情報を使うため、辞書生成をスキップします。")
-            finishDictionaryProgress()
+            finishDictionaryProgress(epoch)
             return
         }
 
@@ -762,18 +771,18 @@ class RecordSyncEngine @Inject constructor(
                 val programDao = db.recordedProgramDao()
                 val totalUnknown = programDao.getUnknownTitlesCount()
                 if (totalUnknown == 0) {
-                    finishDictionaryProgress()
+                    finishDictionaryProgress(epoch)
                     return@withContext
                 }
 
-                _syncProgress.value = SyncProgress(
-                    isSyncing = true,
-                    isInitialBuild = false,
-                    isInitialSyncPhase = false,
-                    message = "シリーズ辞書を自動生成中...",
-                    current = 0,
-                    total = totalUnknown
-                )
+                updateDictionaryProgress(epoch) {
+                    SyncProgress(
+                        isSyncing = true,
+                        message = "シリーズ辞書を自動生成中...",
+                        current = 0,
+                        total = totalUnknown
+                    )
+                }
 
                 var processedCount = 0
                 val chunkSize = 100
@@ -808,7 +817,7 @@ class RecordSyncEngine @Inject constructor(
                         val finalSeriesName = resolvedBaseTitles[baseTitle] ?: baseTitle
                         processedCount++
                         if (processedCount % 100 == 0 || processedCount == totalUnknown) {
-                            _syncProgress.value = _syncProgress.value.copy(current = processedCount)
+                            updateDictionaryProgress(epoch) { it.copy(current = processedCount) }
                         }
                         AiSeriesDictionaryEntity(
                             originalTitle = title,
@@ -838,7 +847,7 @@ class RecordSyncEngine @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Background dictionary generation failed", e)
         } finally {
-            finishDictionaryProgress()
+            finishDictionaryProgress(epoch)
             dictionaryMutex.unlock()
         }
     }
