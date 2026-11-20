@@ -199,13 +199,16 @@ fun HomeLauncherScreen(
     val ticketManager = rememberHomeFocusTicketManager()
     val scope = rememberCoroutineScope()
     val scopeContext = androidx.compose.ui.platform.LocalContext.current
+    var historySelectionJob by remember { mutableStateOf<Job?>(null) }
+    var historySelectionGeneration by remember { mutableIntStateOf(0) }
 
     val favoriteBaseballTeams by homeViewModel.favoriteBaseballTeams.collectAsState()
     val favoriteBaseballGames by homeViewModel.favoriteBaseballGames.collectAsState()
     val baseballDateOffset by homeViewModel.baseballDateOffset.collectAsState()
 
     val backendType by homeViewModel.backendType.collectAsState()
-    val recordHistoryAvailable by recordViewModel.recordHistoryAvailable.collectAsState()
+    // 帰属付き視聴履歴は録画一覧キャッシュの構築途中も再生候補として表示する。
+    // TIFでは録画機能自体がないので非表示を維持する。
     LaunchedEffect(backendType, groupedChannels.keys) {
         // 全backendで実際に公開された局の種別から選ぶ。共通BS等は維持する。
         val candidateTypes = if (backendType == "TIF")
@@ -250,20 +253,12 @@ fun HomeLauncherScreen(
     val displayFlatChannels = remember(groupedChannels) { groupedChannels.values.flatten() }
 
     val translatedLastChannels = remember(ui.lastChannels, displayFlatChannels, backendType) {
-        ui.lastChannels.mapNotNull { savedChannel ->
-            when {
-                // TIFは入力IDを含むchannel.idが正本。同じONID/SIDの別TISやHDMIへすり替えない。
-                // 入力が削除された場合も、古いカードから別入力を誤選局させない。
-                savedChannel.id.startsWith("tif:") ->
-                    if (backendType == "TIF") displayFlatChannels.find { it.id == savedChannel.id } else null
-                backendType == "TIF" -> null // 前バックエンドの履歴をTIFへ流用しない
-                else -> displayFlatChannels.find {
-                    // 現backendが公開する完全なIDで照合する。
-                    // 共通ONID/SIDだけでは別backendの履歴を取り違える。
-                    it.id == savedChannel.id
-                }
-            }
-        }.take(10)
+        val visibleById = displayFlatChannels.associateBy { it.id }
+        ui.lastChannels.asSequence().mapNotNull { saved ->
+            // 現backendが公開する完全IDだけを採用し、他TISへのすり替えを防ぐ。
+            if ((backendType == "TIF") != saved.id.startsWith("tif:")) null
+            else visibleById[saved.id]
+        }.take(10).toList()
     }
 
     LaunchedEffect(tabs.size) {
@@ -921,7 +916,7 @@ fun HomeLauncherScreen(
                     when (currentTabLabel) {
                         "ホーム" -> HomeContents(
                             lastWatchedChannels = translatedLastChannels,
-                            watchHistory = if (backendType == "TIF" || !recordHistoryAvailable) emptyList() else ui.watchHistory,
+                            watchHistory = if (backendType == "TIF") emptyList() else ui.watchHistory,
                             hotChannels = ui.hotChannels,
                             upcomingReserves = if (backendType == "TIF") emptyList() else ui.upcomingReserves,
                             genrePickup = ui.genrePickup,
@@ -937,8 +932,13 @@ fun HomeLauncherScreen(
                                 if (backendType == "TIF") return@HomeContents
                                 val programId = historyItem.program.id.toIntOrNull() ?: return@HomeContents
                                 val requestedBackend = backendType
-                                scope.launch {
+                                // 最後にクリックしたカードだけが再生・エラーを確定できる。
+                                historySelectionJob?.cancel()
+                                val requestId = ++historySelectionGeneration
+                                historySelectionJob = scope.launch {
                                     val program = recordViewModel.getResumableHistoryProgram(programId, requestedBackend)
+                                    if (requestId != historySelectionGeneration ||
+                                        requestedBackend != backendType) return@launch
                                     if (program != null) onProgramSelected(program)
                                     else recordViewModel.historyResumeError.value?.let { reason ->
                                         android.widget.Toast.makeText(
@@ -1030,7 +1030,7 @@ fun HomeLauncherScreen(
                                 konomiIp = konomiIp,
                                 konomiPort = konomiPort,
                                 timeFormat = timeFormat,
-                                watchHistory = if (backendType == "TIF" || !recordHistoryAvailable) emptyList() else ui.watchHistory,
+                                watchHistory = if (backendType == "TIF") emptyList() else ui.watchHistory,
                                 aiFocusReturnTick = if (currentTabLabel == "ビデオ") aiFocusReturnTick else 0,
                                 onAiReturnConsumed = onAiReturnConsumed,
                                 isTifMode = backendType == "TIF"
