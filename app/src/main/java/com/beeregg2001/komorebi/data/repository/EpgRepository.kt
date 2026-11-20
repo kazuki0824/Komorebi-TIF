@@ -61,9 +61,12 @@ class EpgRepository @Inject constructor(
     private val memoryCache = ConcurrentHashMap<String, List<EpgChannelWrapper>>()
     // メモリ番組表の収録時間範囲。短いホーム取得で7日分の検索母集団を上書きしない。
     private val coverage = ConcurrentHashMap<String, Pair<Long, Long>>()
+    // スキャン中の旧要求が遅れて戻っても新しい公開局キャッシュを復活させない。
+    private val tifCacheRevision = java.util.concurrent.atomic.AtomicLong(0L)
 
     fun invalidateTifCache() {
         synchronized(coverage) {
+            tifCacheRevision.incrementAndGet()
             memoryCache.keys.filter { it.startsWith("TIF_") }.forEach {
                 memoryCache.remove(it)
                 coverage.remove(it)
@@ -78,9 +81,11 @@ class EpgRepository @Inject constructor(
      */
     private fun cacheEpg(
         cacheKey: String, backend: String, start: Long, end: Long,
-        channels: List<EpgChannelWrapper>
+        channels: List<EpgChannelWrapper>, expectedRevision: Long
     ) {
         synchronized(coverage) {
+            if (backend == TifInput.BACKEND_TYPE &&
+                tifCacheRevision.get() != expectedRevision) return
             if (backend != TifInput.BACKEND_TYPE) {
                 memoryCache[cacheKey] = channels
                 coverage[cacheKey] = start to end
@@ -313,6 +318,7 @@ class EpgRepository @Inject constructor(
     ) {
         val requestBackend = settingsRepository.backendType.first()
         val cacheKey = requestBackend + "_" + channelType
+        val requestRevision = tifCacheRevision.get()
         if (requestBackend == TifInput.BACKEND_TYPE) {
             val old = coverage[cacheKey]
             if (old != null && old.first <= startTime.toInstant().toEpochMilli() &&
@@ -354,10 +360,11 @@ class EpgRepository @Inject constructor(
                 endTime = endStr,
                 channelType = channelType
             )
-            if (settingsRepository.backendType.first() != requestBackend) return
-            // 7日分キャッシュをホームの3日取得で縮めない。
+            if (settingsRepository.backendType.first() != requestBackend ||
+                (requestBackend == TifInput.BACKEND_TYPE &&
+                 requestRevision != tifCacheRevision.get())) return
             cacheEpg(cacheKey, requestBackend, startTime.toInstant().toEpochMilli(),
-                endTime.toInstant().toEpochMilli(), channels)
+                endTime.toInstant().toEpochMilli(), channels, requestRevision)
             if (requestBackend != TifInput.BACKEND_TYPE) saveToFileCache(cacheKey, channels)
 
         } catch (e: Exception) {
@@ -375,6 +382,7 @@ class EpgRepository @Inject constructor(
     ): Flow<Result<List<EpgChannelWrapper>>> = flow {
         val requestBackend = settingsRepository.backendType.first()
         val cacheKey = requestBackend + "_" + channelType
+        val requestRevision = tifCacheRevision.get()
         if (settingsRepository.backendType.first() != requestBackend) return@flow
         // TIF番組は取得時の可視性を確認した結果のみ表示する。旧メモリは先出ししない。
         var emittedSuccess = false
@@ -408,12 +416,16 @@ class EpgRepository @Inject constructor(
                 channelType = channelType
             )
 
-            if (settingsRepository.backendType.first() != requestBackend) return@flow
+            if (settingsRepository.backendType.first() != requestBackend ||
+                (requestBackend == TifInput.BACKEND_TYPE &&
+                 requestRevision != tifCacheRevision.get())) return@flow
             // TIFアダプターが公開・所有者条件を確認した取得結果を正本とする。
             val published = channels
             if (settingsRepository.backendType.first() != requestBackend) return@flow
             cacheEpg(cacheKey, requestBackend, startTime.toInstant().toEpochMilli(),
-                endTime.toInstant().toEpochMilli(), published)
+                endTime.toInstant().toEpochMilli(), published, requestRevision)
+            if (requestBackend == TifInput.BACKEND_TYPE &&
+                requestRevision != tifCacheRevision.get()) return@flow
             emit(Result.success(published))
 
             if (requestBackend != TifInput.BACKEND_TYPE) CoroutineScope(Dispatchers.IO).launch {
