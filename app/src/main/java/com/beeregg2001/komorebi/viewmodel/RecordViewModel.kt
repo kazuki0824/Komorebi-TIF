@@ -522,8 +522,7 @@ class RecordViewModel @Inject constructor(
         programId: Int, backend: String
     ): RecordedProgram? {
         _historyResumeError.value = null
-        if (backend == "TIF" || settingsRepository.backendType.first() != backend ||
-            !syncEngine.recordCacheReady.value) {
+        if (backend == "TIF" || settingsRepository.backendType.first() != backend) {
             _historyResumeError.value = "録画履歴の取得元が現在のバックエンドと一致しません。"
             return null
         }
@@ -533,7 +532,8 @@ class RecordViewModel @Inject constructor(
             _historyResumeError.value = "視聴履歴が見つかりません。"
             return null
         }
-        val entity = programDao.getById(programId)
+        val entity = if (syncEngine.recordCacheReady.value)
+            programDao.getById(programId) else null
         // 同じバックエンドの履歴と確認できれば、Roomに未同期でも元サーバーの
         // 詳細APIで実体を確認する。IDが他backendの録画を指す推測再生はしない。
         val remote = if (entity == null) {
@@ -545,9 +545,9 @@ class RecordViewModel @Inject constructor(
                 null
             }
         } else null
-        if (!syncEngine.recordCacheReady.value ||
-            syncEngine.recordCacheGeneration.value != generation ||
-            settingsRepository.backendType.first() != backend) {
+        if (syncEngine.recordCacheGeneration.value != generation ||
+            settingsRepository.backendType.first() != backend ||
+            (entity != null && !syncEngine.recordCacheReady.value)) {
             _historyResumeError.value = "バックエンドが変更されたため、履歴からの再生を中止しました。"
             return null
         }
