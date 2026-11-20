@@ -70,7 +70,10 @@ class EpgRepository @Inject constructor(
     // 重複取得の新旧判定も区間単位とし、狭い新取得で広い旧取得を捨てない。
     private data class TifCoverageWindow(val from: Long, val to: Long, val sequence: Long)
     private val tifChannelCoverage = mutableMapOf<String, Map<String, List<TifCoverageWindow>>>()
-    private val tifRetryRanges = mutableMapOf<String, Map<String, List<Pair<Long, Long>>>>()
+    private data class TifRetryWindow(val from: Long, val to: Long, val sequence: Long)
+    private val tifRetryRanges = mutableMapOf<String, Map<String, List<TifRetryWindow>>>()
+    // 放送種別の公開局一覧も実際の照会開始順で更新する。
+    private val tifCatalogSequence = mutableMapOf<String, Long>()
     // 入力更新直後の表示・先読みが、公開直後の同一結果を再照会しないための短い共有窓。
     private val tifPublishedAt = mutableMapOf<String, Long>()
 
@@ -91,17 +94,35 @@ class EpgRepository @Inject constructor(
         return pieces
     }
 
+    private fun normalizeRetryWindows(windows: List<TifRetryWindow>): List<TifRetryWindow> {
+        val result = mutableListOf<TifRetryWindow>()
+        windows.sortedWith(compareBy<TifRetryWindow> { it.from }.thenBy { it.to })
+            .forEach { current ->
+                val last = result.lastOrNull()
+                if (last != null && last.sequence == current.sequence &&
+                    last.to >= current.from) {
+                    result[result.lastIndex] = last.copy(to = maxOf(last.to, current.to))
+                } else result.add(current)
+            }
+        return result
+    }
+
     private fun tifRangeCovered(key: String, from: Long, to: Long): Boolean =
         synchronized(coverage) {
             val rows = memoryCache[key] ?: return@synchronized false
-            if (rows.isEmpty()) return@synchronized false
+            // 公開局0件も正常な取得結果。短時間の表示・先読み重複を避ける。
+            if (rows.isEmpty()) {
+                val emptyRange = coverage[key]
+                return@synchronized emptyRange != null &&
+                    emptyRange.first <= from && emptyRange.second >= to
+            }
             val byId = tifChannelCoverage[key] ?: return@synchronized false
             val pending = tifRetryRanges[key].orEmpty()
             rows.all { row ->
                 val id = row.channel.id
                 subtractWindows(from, to, byId[id].orEmpty().map { it.from to it.to })
                     .isEmpty() &&
-                    pending[id].orEmpty().none { it.first < to && it.second > from }
+                    pending[id].orEmpty().none { it.from < to && it.to > from }
             }
         }
     // 同じ取得元・種別・期間・入力世代の問い合わせは共有する。
@@ -112,9 +133,15 @@ class EpgRepository @Inject constructor(
         val channelType: String,
         val start: Long,
         val end: Long,
+        // 順序は呼出元ではなく、共有する実際のTvProvider照会に付与する。
+        val sequence: Long,
         val task: Deferred<TifRepository.EpgSnapshot>,
         var waiters: Int = 0,
         var completedAt: Long? = null
+    )
+    private data class TifFetchResult(
+        val snapshot: TifRepository.EpgSnapshot,
+        val sequence: Long
     )
     private val tifFetchLock = Any()
     private val tifInFlight = mutableListOf<TifInFlight>()
@@ -129,6 +156,7 @@ class EpgRepository @Inject constructor(
                     coverage.remove(it)
                     tifChannelCoverage.remove(it)
                     tifRetryRanges.remove(it)
+                    tifCatalogSequence.remove(it)
                     tifPublishedAt.remove(it)
                 }
             }
@@ -142,7 +170,7 @@ class EpgRepository @Inject constructor(
 
     private suspend fun fetchTifSnapshot(
         startTime: String, endTime: String, channelType: String, revision: Long
-    ): TifRepository.EpgSnapshot {
+    ): TifFetchResult {
         val from = OffsetDateTime.parse(startTime).toInstant().toEpochMilli()
         val to = OffsetDateTime.parse(endTime).toInstant().toEpochMilli()
         // より広い取得が進行中なら、それを共有して要求区間へ切り詰める。
@@ -162,7 +190,10 @@ class EpgRepository @Inject constructor(
                 val deferred = tifFetchScope.async(start = CoroutineStart.LAZY) {
                     tifRepository.getEpgSnapshot(startTime, endTime, channelType)
                 }
-                val next = TifInFlight(revision, channelType, from, to, deferred)
+                val next = TifInFlight(
+                    revision, channelType, from, to,
+                    tifRequestSequence.incrementAndGet(), deferred
+                )
                 tifInFlight.add(next)
                 deferred.invokeOnCompletion { cause ->
                     synchronized(tifFetchLock) {
@@ -178,7 +209,8 @@ class EpgRepository @Inject constructor(
         }
         try {
             val snapshot = entry.task.await()
-            if (entry.start == from && entry.end == to) return snapshot
+            if (entry.start == from && entry.end == to)
+                return TifFetchResult(snapshot, entry.sequence)
             val narrowed = withContext(Dispatchers.Default) {
             snapshot.channels.map { channel ->
                 channel.copy(programs = channel.programs.filter { program ->
@@ -192,7 +224,7 @@ class EpgRepository @Inject constructor(
                 })
             }
         }
-            return snapshot.copy(channels = narrowed)
+            return TifFetchResult(snapshot.copy(channels = narrowed), entry.sequence)
         } finally {
             val abandoned = synchronized(tifFetchLock) {
                 entry.waiters--
@@ -522,7 +554,6 @@ class EpgRepository @Inject constructor(
         val requestBackend = settingsRepository.backendType.first()
         val cacheKey = requestBackend + "_" + channelType
         val requestRevision = tifCacheRevision.get()
-        val requestSequence = tifRequestSequence.incrementAndGet()
         if (requestBackend == TifInput.BACKEND_TYPE) {
             if (tifRangeCovered(cacheKey, startTime.toInstant().toEpochMilli(),
                     endTime.toInstant().toEpochMilli())) return
@@ -557,9 +588,10 @@ class EpgRepository @Inject constructor(
             val startStr = startTime.format(formatter)
             val endStr = endTime.format(formatter)
 
-            val snapshot = if (requestBackend == TifInput.BACKEND_TYPE)
+            val fetched = if (requestBackend == TifInput.BACKEND_TYPE)
                 fetchTifSnapshot(startStr, endStr, channelType, requestRevision)
             else null
+            val snapshot = fetched?.snapshot
             val channels = snapshot?.channels ?: epgProvider.getEpgProgramsForBackend(
                 backend = requestBackend,
                 startTime = startStr,
@@ -571,7 +603,7 @@ class EpgRepository @Inject constructor(
                  requestRevision != tifCacheRevision.get())) return
             cacheEpg(cacheKey, requestBackend, startTime.toInstant().toEpochMilli(),
                 endTime.toInstant().toEpochMilli(), channels, requestRevision,
-                requestSequence, snapshot?.failedChannelIds.orEmpty())
+                fetched?.sequence ?: 0L, snapshot?.failedChannelIds.orEmpty())
             if (requestBackend != TifInput.BACKEND_TYPE) saveToFileCache(cacheKey, channels)
 
         } catch (e: Exception) {
@@ -590,7 +622,6 @@ class EpgRepository @Inject constructor(
         val requestBackend = settingsRepository.backendType.first()
         val cacheKey = requestBackend + "_" + channelType
         val requestRevision = tifCacheRevision.get()
-        val requestSequence = tifRequestSequence.incrementAndGet()
         if (settingsRepository.backendType.first() != requestBackend) return@flow
         // TIF番組は取得時の可視性を確認した結果のみ表示する。旧メモリは先出ししない。
         var emittedSuccess = false
@@ -633,9 +664,10 @@ class EpgRepository @Inject constructor(
                     }
                 }
             }
-            val snapshot = if (requestBackend == TifInput.BACKEND_TYPE)
+            val fetched = if (requestBackend == TifInput.BACKEND_TYPE)
                 fetchTifSnapshot(startStr, endStr, channelType, requestRevision)
             else null
+            val snapshot = fetched?.snapshot
             val channels = snapshot?.channels ?: epgProvider.getEpgProgramsForBackend(
                 backend = requestBackend,
                 startTime = startStr,
@@ -676,7 +708,7 @@ class EpgRepository @Inject constructor(
             }
             val published = cacheEpg(cacheKey, requestBackend,
                 startTime.toInstant().toEpochMilli(), endTime.toInstant().toEpochMilli(),
-                channels, requestRevision, requestSequence, snapshot?.failedChannelIds.orEmpty())
+                channels, requestRevision, fetched?.sequence ?: 0L, snapshot?.failedChannelIds.orEmpty())
                 ?: return@flow
             if (settingsRepository.backendType.first() != requestBackend ||
                 (requestBackend == TifInput.BACKEND_TYPE &&
