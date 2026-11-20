@@ -70,7 +70,15 @@ class EpgRepository @Inject constructor(
     // 同じ取得元・種別・期間・入力世代の問い合わせは共有する。
     // 呼出元の画面がキャンセルされても、検索用の取得は失われない。
     private val tifFetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val tifInFlight = ConcurrentHashMap<String, Deferred<TifRepository.EpgSnapshot>>()
+    private data class TifInFlight(
+        val revision: Long,
+        val channelType: String,
+        val start: Long,
+        val end: Long,
+        val task: Deferred<TifRepository.EpgSnapshot>
+    )
+    private val tifFetchLock = Any()
+    private val tifInFlight = mutableListOf<TifInFlight>()
 
     fun invalidateTifCache() {
         synchronized(coverage) {
@@ -86,21 +94,43 @@ class EpgRepository @Inject constructor(
     private suspend fun fetchTifSnapshot(
         startTime: String, endTime: String, channelType: String, revision: Long
     ): TifRepository.EpgSnapshot {
-        val key = "$revision|$channelType|$startTime|$endTime"
-        val candidate = tifFetchScope.async(start = CoroutineStart.LAZY) {
-            tifRepository.getEpgSnapshot(startTime, endTime, channelType)
-        }
-        val existing = tifInFlight.putIfAbsent(key, candidate)
-        val task = if (existing != null) {
-            candidate.cancel()
-            existing
-        } else {
-            candidate.also { deferred ->
-                deferred.invokeOnCompletion { tifInFlight.remove(key, deferred) }
+        val from = OffsetDateTime.parse(startTime).toInstant().toEpochMilli()
+        val to = OffsetDateTime.parse(endTime).toInstant().toEpochMilli()
+        // より広い取得が進行中なら、それを共有して要求区間へ切り詰める。
+        // 狭い取得では広い要求を満たせないため、その逆方向の流用はしない。
+        val entry = synchronized(tifFetchLock) {
+            tifInFlight.firstOrNull {
+                it.revision == revision && it.channelType == channelType &&
+                    it.start <= from && it.end >= to
+            } ?: run {
+                val deferred = tifFetchScope.async(start = CoroutineStart.LAZY) {
+                    tifRepository.getEpgSnapshot(startTime, endTime, channelType)
+                }
+                val next = TifInFlight(revision, channelType, from, to, deferred)
+                tifInFlight.add(next)
+                deferred.invokeOnCompletion {
+                    synchronized(tifFetchLock) { tifInFlight.remove(next) }
+                }
                 deferred.start()
+                next
             }
         }
-        return task.await()
+        val snapshot = entry.task.await()
+        if (entry.start == from && entry.end == to) return snapshot
+        val narrowed = withContext(Dispatchers.Default) {
+            snapshot.channels.map { channel ->
+                channel.copy(programs = channel.programs.filter { program ->
+                    val programStart = runCatching {
+                        OffsetDateTime.parse(program.start_time).toInstant().toEpochMilli()
+                    }.getOrDefault(Long.MAX_VALUE)
+                    val programEnd = runCatching {
+                        OffsetDateTime.parse(program.end_time).toInstant().toEpochMilli()
+                    }.getOrDefault(Long.MIN_VALUE)
+                    programEnd > from && programStart < to
+                })
+            }
+        }
+        return snapshot.copy(channels = narrowed)
     }
 
     /**
