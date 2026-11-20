@@ -259,7 +259,7 @@ fun HomeLauncherScreen(
                 backendType == "TIF" -> null // 前バックエンドの履歴をTIFへ流用しない
                 else -> displayFlatChannels.find {
                     it.networkId == savedChannel.networkId && it.serviceId == savedChannel.serviceId
-                } ?: savedChannel // 従来のネットワーク履歴挙動は維持
+                } // 今選局できない局や別backendの履歴は表示件数に含めない
             }
         }.take(10)
     }
