@@ -71,39 +71,54 @@ class EpgRepository @Inject constructor(
         }
     }
 
+    /**
+     * TIFは検索用の連続した取得区間のみを保持する。
+     * 再取得区間の旧番組を破棄して新番組で置換し、区間外の番組だけを引き継ぐ。
+     * 離れた取得区間を連続と偽装せず、過去分は1日を超えて蓄積しない。
+     */
     private fun cacheEpg(
         cacheKey: String, backend: String, start: Long, end: Long,
         channels: List<EpgChannelWrapper>
     ) {
         synchronized(coverage) {
-            val old = coverage[cacheKey]
-            if (backend != TifInput.BACKEND_TYPE || old == null) {
+            if (backend != TifInput.BACKEND_TYPE) {
                 memoryCache[cacheKey] = channels
                 coverage[cacheKey] = start to end
-            } else if (start <= old.first && end >= old.second) {
-                // 新しい取得が既存範囲を完全に覆う場合は置換する。
-                memoryCache[cacheKey] = channels
-                coverage[cacheKey] = start to end
-            } else if (end > old.second || start < old.first) {
-                // 日付を跨いで未来側が伸びた場合は新しい番組を追加し、
-                // ホームの短期取得で検索用の既存7日分を失わないようにする。
-                val existing = memoryCache[cacheKey].orEmpty().associateBy { it.channel.id }
-                val latest = channels.associateBy { it.channel.id }
-                memoryCache[cacheKey] = (existing.keys + latest.keys).mapNotNull { id ->
-                    val oldRow = existing[id]
-                    val newRow = latest[id]
-                    when {
-                        oldRow == null -> newRow
-                        newRow == null -> oldRow
-                        else -> newRow.copy(
-                            programs = (oldRow.programs + newRow.programs)
-                                .distinctBy { it.id }.sortedBy { it.start_time }
-                        )
-                    }
-                }
-                coverage[cacheKey] = minOf(start, old.first) to maxOf(end, old.second)
+                return
             }
-            // 要求期間が既存範囲内なら短い結果による縮小を行わない。
+
+            val cutoff = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
+            if (end <= cutoff) return
+
+            val old = coverage[cacheKey]
+            val disjoint = old == null || end < old.first || start > old.second
+            val oldById = if (disjoint) emptyMap() else
+                memoryCache[cacheKey].orEmpty().associateBy { it.channel.id }
+
+            fun endMillis(value: String): Long =
+                runCatching { OffsetDateTime.parse(value).toInstant().toEpochMilli() }
+                    .getOrDefault(Long.MIN_VALUE)
+
+            fun startMillis(value: String): Long =
+                runCatching { OffsetDateTime.parse(value).toInstant().toEpochMilli() }
+                    .getOrDefault(Long.MIN_VALUE)
+
+            val merged = channels.map { fresh ->
+                val previous = oldById[fresh.channel.id]
+                val untouched = previous?.programs.orEmpty().filter { program ->
+                    val programStart = startMillis(program.start_time)
+                    val programEnd = endMillis(program.end_time)
+                    programEnd > cutoff && (programEnd <= start || programStart >= end)
+                }
+                fresh.copy(programs = (fresh.programs + untouched)
+                    .distinctBy { it.id }
+                    .filter { endMillis(it.end_time) > cutoff }
+                    .sortedBy { it.start_time })
+            }
+            memoryCache[cacheKey] = merged
+            val from = if (disjoint) start else minOf(old!!.first, start)
+            val to = if (disjoint) end else maxOf(old!!.second, end)
+            coverage[cacheKey] = maxOf(from, cutoff) to to
         }
     }
 
