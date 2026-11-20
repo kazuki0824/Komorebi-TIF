@@ -143,15 +143,15 @@ class EpgRepository @Inject constructor(
             val old = snapshot.first
             val previousChannels = snapshot.second
             val disjoint = old == null || end < old.first || start > old.second
-            val oldById = if (disjoint) emptyMap() else
-                previousChannels.orEmpty().associateBy { it.channel.id }
+            val oldById = previousChannels.orEmpty().associateBy { it.channel.id }
 
             val merged = channels.map { fresh ->
                 val previous = oldById[fresh.channel.id]
                 if (fresh.channel.id in failedIds && previous != null) {
                     previous
                 } else {
-                    val untouched = previous?.programs.orEmpty().filter { program ->
+                    val untouched = (if (disjoint) emptyList() else previous?.programs.orEmpty())
+                        .filter { program ->
                         val programStart = startMillis(program.start_time)
                         val programEnd = endMillis(program.end_time)
                         programEnd > cutoff && (programEnd <= start || programStart >= end)
