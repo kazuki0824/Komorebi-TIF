@@ -243,6 +243,7 @@ fun MainRootScreen(
                     val target = channelViewModel.groupedChannels.value.values.flatten()
                         .find { it.id == action.channelId }
                     if (target != null) {
+                        recordedSelectionEpoch.intValue++
                         state.selectedProgram = null; state.selectedSmbItem = null
                         state.isPlayerMiniListOpen = false; state.playerIsSubMenuOpen = false
                         state.isPlayerSubMenuOpen = false; state.isPlayerSceneSearchOpen = false
@@ -540,6 +541,7 @@ fun MainRootScreen(
                 } else flatChannels.find { it.id == startupChannelSetting } ?: flatChannels.first()
 
                 if (targetChannel != null && !state.hasAppliedStartupChannel && state.selectedChannel == null) {
+                    recordedSelectionEpoch.intValue++
                     state.selectedChannel = targetChannel
                     state.isBaseballMode = false
                     state.lastSelectedChannelId = targetChannel.id
@@ -826,6 +828,7 @@ fun MainRootScreen(
                                     isSubMenuOpen = state.playerIsSubMenuOpen,
                                     onSubMenuToggle = { state.playerIsSubMenuOpen = it },
                                     onChannelSelect = { newChannel ->
+                                        recordedSelectionEpoch.intValue++
                                         state.selectedChannel =
                                             newChannel; state.lastSelectedChannelId = newChannel.id
                                         state.lastSelectedProgramId =
