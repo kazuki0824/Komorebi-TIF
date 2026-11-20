@@ -319,16 +319,16 @@ class RecordSyncEngine @Inject constructor(
             if (switchingBackend) return@withLock
             val syncBackend = settingsRepository.backendType.first()
             if (syncBackend == "TIF") return@withLock
-            // 古い辞書Jobの遅延応答は、新しい同期の進捗を変更できない。
-            syncProgressEpoch.incrementAndGet()
             val owned = ownerPrefs.getString("backend", null) == syncBackend &&
                 !ownerPrefs.getBoolean("pending", false)
             val performFullSync = forceFullSync || !owned
-            // 通常同期でも旧世代の辞書処理を終了させてから新世代を公開する。
-            // 旧辞書が生存したままだと新辞書を起動できず、「準備中」が残る。
+            // 通常同期でも旧辞書処理の終了を待ってから新世代へ進む。
+            // join中に同期自体がキャンセルされた場合は旧辞書の終了通知を妨げない。
             dictionaryJob?.cancel()
             dictionaryJob?.join()
             dictionaryJob = null
+            // 旧辞書の終了後に世代を進め、以降の旧応答を進捗へ反映させない。
+            syncProgressEpoch.incrementAndGet()
             jobMutex.withLock {
                 activeSyncJob = currentJob
             }
