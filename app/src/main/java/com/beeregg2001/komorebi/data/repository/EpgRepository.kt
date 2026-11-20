@@ -120,22 +120,24 @@ class EpgRepository @Inject constructor(
     private val tifInFlight = mutableListOf<TifInFlight>()
 
     fun invalidateTifCache() {
+        // 新しい旧世代照会が割り込めないよう、世代更新と共有照会の取り外しを一括で行う。
         val abandoned = synchronized(tifFetchLock) {
+            synchronized(coverage) {
+                tifCacheRevision.incrementAndGet()
+                memoryCache.keys.filter { it.startsWith("TIF_") }.forEach {
+                    memoryCache.remove(it)
+                    coverage.remove(it)
+                    tifChannelCoverage.remove(it)
+                    tifRetryRanges.remove(it)
+                    tifPublishedAt.remove(it)
+                }
+            }
             val tasks = tifInFlight.map { it.task }
             tifInFlight.clear()
             tasks
         }
+        // 完了通知の再入を避け、ロック解放後に実際のJobを取り消す。
         abandoned.forEach { it.cancel() }
-        synchronized(coverage) {
-            tifCacheRevision.incrementAndGet()
-            memoryCache.keys.filter { it.startsWith("TIF_") }.forEach {
-                memoryCache.remove(it)
-                coverage.remove(it)
-                tifChannelCoverage.remove(it)
-                tifRetryRanges.remove(it)
-                tifPublishedAt.remove(it)
-            }
-        }
     }
 
     private suspend fun fetchTifSnapshot(
@@ -146,6 +148,9 @@ class EpgRepository @Inject constructor(
         // より広い取得が進行中なら、それを共有して要求区間へ切り詰める。
         // 狭い取得では広い要求を満たせないため、その逆方向の流用はしない。
         val entry = synchronized(tifFetchLock) {
+            if (revision != tifCacheRevision.get()) {
+                throw CancellationException("TIF入力世代が更新されました。")
+            }
             val now = android.os.SystemClock.elapsedRealtime()
             tifInFlight.removeAll {
                 it.waiters == 0 && it.completedAt?.let { at -> now - at > 1500 } == true
