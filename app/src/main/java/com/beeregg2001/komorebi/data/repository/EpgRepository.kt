@@ -758,29 +758,30 @@ class EpgRepository @Inject constructor(
                 (requestBackend == TifInput.BACKEND_TYPE &&
                  requestRevision != tifCacheRevision.get())) return@flow
             if (requestBackend == TifInput.BACKEND_TYPE) {
-                // 公開と同じMutexで局集合と新旧判定を同時に採取する。
-                // emitは購読側で中断し得るため、このMutexを保持して呼ばない。
                 val from = startTime.toInstant().toEpochMilli()
                 val to = endTime.toInstant().toEpochMilli()
-                val current = tifPublicationMutex.withLock {
-                    synchronized(coverage) {
-                        if (requestRevision != tifCacheRevision.get()) null
-                        else {
-                            val visible = memoryCache[cacheKey] ?: published
-                            val newer = (tifCatalogSequence[cacheKey] ?: 0L) >
-                                (fetched?.sequence ?: 0L)
-                            val newerSuccess = newer &&
-                                (visible.isEmpty() || tifRangeCovered(cacheKey, from, to))
-                            visible to newerSuccess
-                        }
-                    }
-                } ?: return@flow
-                val (visible, newerSuccessfulEmpty) = current
                 val allFailed = snapshot != null &&
                     snapshot.channels.isNotEmpty() &&
                     snapshot.failedChannelIds.size == snapshot.channels.size
-                if (allFailed) {
-                    val hasCurrentProgram = visible.any { row ->
+                var delivery: Result<List<EpgChannelWrapper>>? = null
+                // 時刻解析などの計算中に別照会が公開した場合は、判定を
+                // 古い局一覧から最新の局一覧へやり直す。
+                while (delivery == null) {
+                    val current = tifPublicationMutex.withLock {
+                        synchronized(coverage) {
+                            if (requestRevision != tifCacheRevision.get()) null
+                            else {
+                                val visible = memoryCache[cacheKey] ?: published
+                                val catalogSequence = tifCatalogSequence[cacheKey] ?: 0L
+                                val newer = catalogSequence > (fetched?.sequence ?: 0L)
+                                val newerSuccess = newer &&
+                                    (visible.isEmpty() || tifRangeCovered(cacheKey, from, to))
+                                Triple(visible, catalogSequence, newerSuccess)
+                            }
+                        }
+                    } ?: return@flow
+                    val (visible, catalogSequence, newerSuccessfulEmpty) = current
+                    val hasCurrentProgram = if (!allFailed) false else visible.any { row ->
                         row.programs.any { program ->
                             val begins = runCatching {
                                 OffsetDateTime.parse(program.start_time).toInstant().toEpochMilli()
@@ -791,20 +792,34 @@ class EpgRepository @Inject constructor(
                             ends > from && begins < to
                         }
                     }
-                    if (!hasCurrentProgram && !newerSuccessfulEmpty) {
-                        synchronized(tifFetchLock) {
-                            tifInFlight.removeAll {
-                                it.revision == requestRevision &&
-                                    it.channelType == channelType &&
-                                    it.start == from && it.end == to && it.waiters == 0
-                            }
+                    val candidate = if (allFailed && !hasCurrentProgram && !newerSuccessfulEmpty)
+                        Result.failure(IllegalStateException("TV番組表の全局照会に失敗しました。"))
+                    else Result.success(visible)
+
+                    // キャッシュ更新と同じMutexで判定対象の世代・リスト参照・
+                    // 局一覧の発行順を再検査する。違えば最新値で再計算する。
+                    val stillCurrent = tifPublicationMutex.withLock {
+                        synchronized(coverage) {
+                            if (requestRevision != tifCacheRevision.get()) return@flow
+                            memoryCache[cacheKey] === visible &&
+                                (tifCatalogSequence[cacheKey] ?: 0L) == catalogSequence
                         }
-                        throw IllegalStateException("TV番組表の全局照会に失敗しました。")
+                    }
+                    if (stillCurrent) delivery = candidate
+                }
+                // 全局失敗も正常0局も、検証した同じ一覧で通知を確定する。
+                // Flow.emitは購読側で中断するため、Mutexを保持しない。
+                if (delivery.isFailure) {
+                    synchronized(tifFetchLock) {
+                        tifInFlight.removeAll {
+                            it.revision == requestRevision &&
+                                it.channelType == channelType &&
+                                it.start == from && it.end == to && it.waiters == 0
+                        }
                     }
                 }
-                // キャッシュ無効化は別の排他を使うため、送出直前に世代を照合。
                 if (requestRevision != tifCacheRevision.get()) return@flow
-                emit(Result.success(visible))
+                emit(delivery)
             } else {
                 emit(Result.success(published))
                 CoroutineScope(Dispatchers.IO).launch {
