@@ -170,8 +170,17 @@ fun MainRootScreen(
     var previouslyAppliedBackend by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(backendType) {
         if (previouslyAppliedBackend != null && previouslyAppliedBackend != backendType) {
-            // バックエンドに依存するライブ再生だけ閉じ、SMBの再生形態は維持する。
-            if (state.selectedChannel != null) state.isMiniPlayerMode = false
+            // どの切替先でも旧backendのライブ／録画プレイヤーを解放する。
+            // SMBはbackendを持たないため選択・ミニプレイヤーを維持する。
+            if (state.selectedChannel != null ||
+                (state.selectedProgram != null && state.selectedSmbItem == null)) {
+                state.isMiniPlayerMode = false
+            }
+            if (state.selectedSmbItem == null) {
+                state.selectedProgram = null
+                state.lastSelectedProgramId = null
+                state.isReturningFromPlayer = false
+            }
             state.selectedChannel = null
             state.lastSelectedChannelId = null
             state.isReturningFromPlayer = false
