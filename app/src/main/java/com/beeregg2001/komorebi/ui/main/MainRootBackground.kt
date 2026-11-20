@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableIntState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -36,6 +37,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun MainRootBackground(
     state: MainRootState,
+    recordedSelectionEpoch: MutableIntState,
     channelViewModel: ChannelViewModel,
     homeViewModel: HomeViewModel,
     epgViewModel: EpgViewModel,
@@ -237,6 +239,7 @@ fun MainRootBackground(
                 else -> {
                     HomeLauncherScreen(
                         channelViewModel = channelViewModel,
+                        recordedSelectionEpoch = recordedSelectionEpoch,
                         homeViewModel = homeViewModel,
                         epgViewModel = epgViewModel,
                         recordViewModel = recordViewModel,
@@ -264,6 +267,7 @@ fun MainRootBackground(
                         selectedProgram = state.selectedProgram,
                         onProgramSelected = { program ->
                             if (program != null) {
+                                recordedSelectionEpoch.intValue++
                                 val isAnalyzed = program.recordedVideo.hasKeyFrames?: true
                                 if (!isAnalyzed) return@HomeLauncherScreen
                                 val history =
@@ -272,6 +276,24 @@ fun MainRootBackground(
                                 state.initialPlaybackPositionMs =
                                     if (history != null && history.playback_position > 5.0 && (duration <= 0.0 || history.playback_position < (duration - 10.0))) {
                                         (history.playback_position * 1000).toLong()
+                                    } else 0L
+                                state.selectedProgram = program
+                                state.lastSelectedProgramId = program.id.toString()
+                                state.lastSelectedChannelId = null
+                                state.showPlayerControls = true
+                                state.isReturningFromPlayer = false
+                                state.isMiniPlayerMode = false
+                            }
+                        },
+                        onVerifiedHistorySelected = { program, verifiedPositionSeconds ->
+                            val isAnalyzed = program.recordedVideo.hasKeyFrames ?: true
+                            if (isAnalyzed) {
+                                recordedSelectionEpoch.intValue++
+                                val duration = program.recordedVideo.duration
+                                state.initialPlaybackPositionMs =
+                                    if (verifiedPositionSeconds > 5.0 &&
+                                        (duration <= 0.0 || verifiedPositionSeconds < duration - 10.0)) {
+                                        (verifiedPositionSeconds * 1000).toLong()
                                     } else 0L
                                 state.selectedProgram = program
                                 state.lastSelectedProgramId = program.id.toString()
