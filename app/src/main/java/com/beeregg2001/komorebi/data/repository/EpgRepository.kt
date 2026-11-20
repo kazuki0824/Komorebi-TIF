@@ -71,6 +71,8 @@ class EpgRepository @Inject constructor(
     private data class TifCoverageWindow(val from: Long, val to: Long, val sequence: Long)
     private val tifChannelCoverage = mutableMapOf<String, Map<String, List<TifCoverageWindow>>>()
     private val tifRetryRanges = mutableMapOf<String, Map<String, List<Pair<Long, Long>>>>()
+    // 入力更新直後の表示・先読みが、公開直後の同一結果を再照会しないための短い共有窓。
+    private val tifPublishedAt = mutableMapOf<String, Long>()
 
     private fun subtractWindows(
         from: Long, to: Long, blocked: List<Pair<Long, Long>>
@@ -130,6 +132,7 @@ class EpgRepository @Inject constructor(
                 coverage.remove(it)
                 tifChannelCoverage.remove(it)
                 tifRetryRanges.remove(it)
+                tifPublishedAt.remove(it)
             }
         }
     }
@@ -151,8 +154,8 @@ class EpgRepository @Inject constructor(
                 }
                 val next = TifInFlight(revision, channelType, from, to, deferred)
                 tifInFlight.add(next)
-                deferred.invokeOnCompletion {
-                    synchronized(tifFetchLock) { tifInFlight.remove(next) }
+                deferred.invokeOnCompletion { cause ->
+                    if (cause != null) synchronized(tifFetchLock) { tifInFlight.remove(next) }
                 }
                 deferred.start()
                 next
@@ -293,11 +296,21 @@ class EpgRepository @Inject constructor(
                         memoryCache[cacheKey] = merged
                         tifChannelCoverage[cacheKey] = updatedCoverage
                         tifRetryRanges[cacheKey] = updatedRetry
+                        tifPublishedAt[cacheKey] = android.os.SystemClock.elapsedRealtime()
                         1
                     }
                 }
             }
-            if (accepted == 1) return@withContext merged
+            if (accepted == 1) {
+                // 取得結果がキャッシュへ反映された段階で、完了済み共有照会を解放する。
+                synchronized(tifFetchLock) {
+                    tifInFlight.removeAll {
+                        it.revision == expectedRevision && it.channelType == cacheKey.removePrefix("TIF_") &&
+                            it.start == start && it.end == end && it.task.isCompleted
+                    }
+                }
+                return@withContext merged
+            }
             if (accepted == -1) return@withContext null
         }
         @Suppress("UNREACHABLE_CODE")
@@ -591,6 +604,22 @@ class EpgRepository @Inject constructor(
             val startStr = startTime.format(formatter)
             val endStr = endTime.format(formatter)
 
+            if (requestBackend == TifInput.BACKEND_TYPE) {
+                val recent = synchronized(coverage) {
+                    val last = tifPublishedAt[cacheKey] ?: Long.MIN_VALUE
+                    android.os.SystemClock.elapsedRealtime() - last in 0..1500 &&
+                        tifRangeCovered(cacheKey, startTime.toInstant().toEpochMilli(),
+                            endTime.toInstant().toEpochMilli())
+                }
+                if (recent) {
+                    val cached = memoryCache[cacheKey]
+                    if (cached != null && settingsRepository.backendType.first() == requestBackend &&
+                        requestRevision == tifCacheRevision.get()) {
+                        emit(Result.success(cached))
+                        return@flow
+                    }
+                }
+            }
             val snapshot = if (requestBackend == TifInput.BACKEND_TYPE)
                 fetchTifSnapshot(startStr, endStr, channelType, requestRevision)
             else null
