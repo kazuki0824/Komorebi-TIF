@@ -198,6 +198,7 @@ fun HomeLauncherScreen(
 
     val ticketManager = rememberHomeFocusTicketManager()
     val scope = rememberCoroutineScope()
+    val scopeContext = androidx.compose.ui.platform.LocalContext.current
 
     val favoriteBaseballTeams by homeViewModel.favoriteBaseballTeams.collectAsState()
     val favoriteBaseballGames by homeViewModel.favoriteBaseballGames.collectAsState()
@@ -260,7 +261,7 @@ fun HomeLauncherScreen(
                     it.networkId == savedChannel.networkId && it.serviceId == savedChannel.serviceId
                 } ?: savedChannel // 従来のネットワーク履歴挙動は維持
             }
-        }
+        }.take(10)
     }
 
     LaunchedEffect(tabs.size) {
@@ -937,6 +938,12 @@ fun HomeLauncherScreen(
                                 scope.launch {
                                     val program = recordViewModel.getResumableHistoryProgram(programId, requestedBackend)
                                     if (program != null) onProgramSelected(program)
+                                    else recordViewModel.historyResumeError.value?.let { reason ->
+                                        android.widget.Toast.makeText(
+                                            scopeContext, reason, android.widget.Toast.LENGTH_LONG
+                                        ).show()
+                                        recordViewModel.clearHistoryResumeError()
+                                    }
                                 }
                             },
                             onReserveClick = { if (backendType != "TIF") onReserveSelected(it) },
