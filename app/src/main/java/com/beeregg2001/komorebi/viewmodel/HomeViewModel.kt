@@ -101,9 +101,16 @@ class HomeViewModel @Inject constructor(
         _isFallbackTriggered.value = false
     }
 
+    /** 履歴と実際の取得元backendを同じemissionで公開する。 */
+    val ownedWatchHistory: StateFlow<Pair<String?, List<KonomiHistoryProgram>>> =
+        watchHistoryRepository.getOwnedLocalWatchHistory()
+            .map { (backend, entities) ->
+                backend to entities.map { KonomiDataMapper.toUiModel(it) }
+            }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null to emptyList())
+
     val watchHistory: StateFlow<List<KonomiHistoryProgram>> =
-        watchHistoryRepository.getLocalWatchHistory()
-            .map { entities -> entities.map { KonomiDataMapper.toUiModel(it) } }
+        ownedWatchHistory.map { it.second }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val lastWatchedChannelFlow: StateFlow<List<Channel>> = watchHistoryRepository.getLastChannels()
