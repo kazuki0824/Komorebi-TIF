@@ -19,6 +19,10 @@ import com.google.gson.reflect.TypeToken
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -59,10 +63,14 @@ class EpgRepository @Inject constructor(
     private val tifRepository: TifRepository
 ) {
     private val memoryCache = ConcurrentHashMap<String, List<EpgChannelWrapper>>()
-    // メモリ番組表の収録時間範囲。短いホーム取得で7日分の検索母集団を上書きしない。
     private val coverage = ConcurrentHashMap<String, Pair<Long, Long>>()
-    // スキャン中の旧要求が遅れて戻っても新しい公開局キャッシュを復活させない。
     private val tifCacheRevision = java.util.concurrent.atomic.AtomicLong(0L)
+    private val tifRequestSequence = java.util.concurrent.atomic.AtomicLong(0L)
+    private val appliedTifRequests = mutableMapOf<String, Long>()
+    // 同じ取得元・種別・期間・入力世代の問い合わせは共有する。
+    // 呼出元の画面がキャンセルされても、検索用の取得は失われない。
+    private val tifFetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val tifInFlight = ConcurrentHashMap<String, Deferred<TifRepository.EpgSnapshot>>()
 
     fun invalidateTifCache() {
         synchronized(coverage) {
@@ -70,61 +78,115 @@ class EpgRepository @Inject constructor(
             memoryCache.keys.filter { it.startsWith("TIF_") }.forEach {
                 memoryCache.remove(it)
                 coverage.remove(it)
+                appliedTifRequests.remove(it)
             }
         }
     }
 
+    private suspend fun fetchTifSnapshot(
+        startTime: String, endTime: String, channelType: String, revision: Long
+    ): TifRepository.EpgSnapshot {
+        val key = "$revision|$channelType|$startTime|$endTime"
+        val candidate = tifFetchScope.async(start = CoroutineStart.LAZY) {
+            tifRepository.getEpgSnapshot(startTime, endTime, channelType)
+        }
+        val existing = tifInFlight.putIfAbsent(key, candidate)
+        val task = if (existing != null) {
+            candidate.cancel()
+            existing
+        } else {
+            candidate.also {
+                it.invokeOnCompletion { tifInFlight.remove(key, it) }
+                it.start()
+            }
+        }
+        return task.await()
+    }
+
     /**
-     * TIFは検索用の連続した取得区間のみを保持する。
-     * 再取得区間の旧番組を破棄して新番組で置換し、区間外の番組だけを引き継ぐ。
-     * 離れた取得区間を連続と偽装せず、過去分は1日を超えて蓄積しない。
+     * 取得順序と入力世代を確認し、旧スナップショットによる逆戻りを防ぐ。
+     * 番組の走査・日時解析・結合はDefaultで実行し、短い公開操作だけをロックする。
+     * 失敗した局は旧番組を保持し、失敗した取得期間を被覆済みと記録しない。
      */
-    private fun cacheEpg(
+    private suspend fun cacheEpg(
         cacheKey: String, backend: String, start: Long, end: Long,
-        channels: List<EpgChannelWrapper>, expectedRevision: Long
-    ) {
-        synchronized(coverage) {
-            if (backend == TifInput.BACKEND_TYPE &&
-                tifCacheRevision.get() != expectedRevision) return
-            if (backend != TifInput.BACKEND_TYPE) {
+        channels: List<EpgChannelWrapper>, expectedRevision: Long,
+        requestSequence: Long = 0L, failedIds: Set<String> = emptySet()
+    ): List<EpgChannelWrapper>? = withContext(Dispatchers.Default) {
+        if (backend != TifInput.BACKEND_TYPE) {
+            synchronized(coverage) {
                 memoryCache[cacheKey] = channels
                 coverage[cacheKey] = start to end
-                return
             }
+            return@withContext channels
+        }
 
-            val cutoff = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
-            if (end <= cutoff) return
+        val cutoff = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
+        if (end <= cutoff) return@withContext channels
 
-            val old = coverage[cacheKey]
+        fun endMillis(value: String): Long =
+            runCatching { OffsetDateTime.parse(value).toInstant().toEpochMilli() }
+                .getOrDefault(Long.MIN_VALUE)
+        fun startMillis(value: String): Long =
+            runCatching { OffsetDateTime.parse(value).toInstant().toEpochMilli() }
+                .getOrDefault(Long.MIN_VALUE)
+
+        while (true) {
+            val snapshot = synchronized(coverage) {
+                if (tifCacheRevision.get() != expectedRevision ||
+                    (appliedTifRequests[cacheKey] ?: 0L) > requestSequence) {
+                    null
+                } else {
+                    Pair(coverage[cacheKey], memoryCache[cacheKey])
+                }
+            } ?: return@withContext null
+            val old = snapshot.first
+            val previousChannels = snapshot.second
             val disjoint = old == null || end < old.first || start > old.second
             val oldById = if (disjoint) emptyMap() else
-                memoryCache[cacheKey].orEmpty().associateBy { it.channel.id }
-
-            fun endMillis(value: String): Long =
-                runCatching { OffsetDateTime.parse(value).toInstant().toEpochMilli() }
-                    .getOrDefault(Long.MIN_VALUE)
-
-            fun startMillis(value: String): Long =
-                runCatching { OffsetDateTime.parse(value).toInstant().toEpochMilli() }
-                    .getOrDefault(Long.MIN_VALUE)
+                previousChannels.orEmpty().associateBy { it.channel.id }
 
             val merged = channels.map { fresh ->
                 val previous = oldById[fresh.channel.id]
-                val untouched = previous?.programs.orEmpty().filter { program ->
-                    val programStart = startMillis(program.start_time)
-                    val programEnd = endMillis(program.end_time)
-                    programEnd > cutoff && (programEnd <= start || programStart >= end)
+                if (fresh.channel.id in failedIds && previous != null) {
+                    previous
+                } else {
+                    val untouched = previous?.programs.orEmpty().filter { program ->
+                        val programStart = startMillis(program.start_time)
+                        val programEnd = endMillis(program.end_time)
+                        programEnd > cutoff && (programEnd <= start || programStart >= end)
+                    }
+                    fresh.copy(programs = (fresh.programs + untouched)
+                        .distinctBy { it.id }
+                        .filter { endMillis(it.end_time) > cutoff }
+                        .sortedBy { it.start_time })
                 }
-                fresh.copy(programs = (fresh.programs + untouched)
-                    .distinctBy { it.id }
-                    .filter { endMillis(it.end_time) > cutoff }
-                    .sortedBy { it.start_time })
             }
-            memoryCache[cacheKey] = merged
-            val from = if (disjoint) start else minOf(old!!.first, start)
-            val to = if (disjoint) end else maxOf(old!!.second, end)
-            coverage[cacheKey] = maxOf(from, cutoff) to to
+            val nextCoverage = if (failedIds.isNotEmpty()) null else {
+                val from = if (disjoint) start else minOf(old!!.first, start)
+                val to = if (disjoint) end else maxOf(old!!.second, end)
+                maxOf(from, cutoff) to to
+            }
+            val committed = synchronized(coverage) {
+                when {
+                    tifCacheRevision.get() != expectedRevision ||
+                        (appliedTifRequests[cacheKey] ?: 0L) > requestSequence -> -1
+                    memoryCache[cacheKey] !== previousChannels ||
+                        coverage[cacheKey] != old -> 0
+                    else -> {
+                        memoryCache[cacheKey] = merged
+                        if (nextCoverage == null) coverage.remove(cacheKey)
+                        else coverage[cacheKey] = nextCoverage
+                        appliedTifRequests[cacheKey] = requestSequence
+                        1
+                    }
+                }
+            }
+            if (committed == 1) return@withContext merged
+            if (committed == -1) return@withContext null
         }
+        @Suppress("UNREACHABLE_CODE")
+        null
     }
 
     // ==========================================
@@ -319,6 +381,7 @@ class EpgRepository @Inject constructor(
         val requestBackend = settingsRepository.backendType.first()
         val cacheKey = requestBackend + "_" + channelType
         val requestRevision = tifCacheRevision.get()
+        val requestSequence = tifRequestSequence.incrementAndGet()
         if (requestBackend == TifInput.BACKEND_TYPE) {
             val old = coverage[cacheKey]
             if (old != null && old.first <= startTime.toInstant().toEpochMilli() &&
@@ -354,7 +417,10 @@ class EpgRepository @Inject constructor(
             val startStr = startTime.format(formatter)
             val endStr = endTime.format(formatter)
 
-            val channels = epgProvider.getEpgProgramsForBackend(
+            val snapshot = if (requestBackend == TifInput.BACKEND_TYPE)
+                fetchTifSnapshot(startStr, endStr, channelType, requestRevision)
+            else null
+            val channels = snapshot?.channels ?: epgProvider.getEpgProgramsForBackend(
                 backend = requestBackend,
                 startTime = startStr,
                 endTime = endStr,
@@ -364,7 +430,8 @@ class EpgRepository @Inject constructor(
                 (requestBackend == TifInput.BACKEND_TYPE &&
                  requestRevision != tifCacheRevision.get())) return
             cacheEpg(cacheKey, requestBackend, startTime.toInstant().toEpochMilli(),
-                endTime.toInstant().toEpochMilli(), channels, requestRevision)
+                endTime.toInstant().toEpochMilli(), channels, requestRevision,
+                requestSequence, snapshot?.failedChannelIds.orEmpty())
             if (requestBackend != TifInput.BACKEND_TYPE) saveToFileCache(cacheKey, channels)
 
         } catch (e: Exception) {
@@ -383,6 +450,7 @@ class EpgRepository @Inject constructor(
         val requestBackend = settingsRepository.backendType.first()
         val cacheKey = requestBackend + "_" + channelType
         val requestRevision = tifCacheRevision.get()
+        val requestSequence = tifRequestSequence.incrementAndGet()
         if (settingsRepository.backendType.first() != requestBackend) return@flow
         // TIF番組は取得時の可視性を確認した結果のみ表示する。旧メモリは先出ししない。
         var emittedSuccess = false
@@ -409,7 +477,10 @@ class EpgRepository @Inject constructor(
             val startStr = startTime.format(formatter)
             val endStr = endTime.format(formatter)
 
-            val channels = epgProvider.getEpgProgramsForBackend(
+            val snapshot = if (requestBackend == TifInput.BACKEND_TYPE)
+                fetchTifSnapshot(startStr, endStr, channelType, requestRevision)
+            else null
+            val channels = snapshot?.channels ?: epgProvider.getEpgProgramsForBackend(
                 backend = requestBackend,
                 startTime = startStr,
                 endTime = endStr,
@@ -419,13 +490,13 @@ class EpgRepository @Inject constructor(
             if (settingsRepository.backendType.first() != requestBackend ||
                 (requestBackend == TifInput.BACKEND_TYPE &&
                  requestRevision != tifCacheRevision.get())) return@flow
-            // TIFアダプターが公開・所有者条件を確認した取得結果を正本とする。
-            val published = channels
-            if (settingsRepository.backendType.first() != requestBackend) return@flow
-            cacheEpg(cacheKey, requestBackend, startTime.toInstant().toEpochMilli(),
-                endTime.toInstant().toEpochMilli(), published, requestRevision)
-            if (requestBackend == TifInput.BACKEND_TYPE &&
-                requestRevision != tifCacheRevision.get()) return@flow
+            val published = cacheEpg(cacheKey, requestBackend,
+                startTime.toInstant().toEpochMilli(), endTime.toInstant().toEpochMilli(),
+                channels, requestRevision, requestSequence, snapshot?.failedChannelIds.orEmpty())
+                ?: return@flow
+            if (settingsRepository.backendType.first() != requestBackend ||
+                (requestBackend == TifInput.BACKEND_TYPE &&
+                 requestRevision != tifCacheRevision.get())) return@flow
             emit(Result.success(published))
 
             if (requestBackend != TifInput.BACKEND_TYPE) CoroutineScope(Dispatchers.IO).launch {
