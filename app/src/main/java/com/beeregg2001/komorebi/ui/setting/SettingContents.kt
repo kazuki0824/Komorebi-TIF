@@ -3,6 +3,10 @@
 package com.beeregg2001.komorebi.ui.setting
 
 import android.os.Build
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import androidx.compose.ui.platform.LocalContext
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -283,9 +287,13 @@ fun ConnectionSettingsContent(
     cfIdR: FocusRequester,
     cfSecretR: FocusRequester,
     sidebarR: FocusRequester,
+    onSetupTif: () -> Unit,
     onClick: (FocusRequester) -> Unit
 ) {
     val colors = KomorebiTheme.colors
+    val context = LocalContext.current
+    val tifPermissionR = remember { FocusRequester() }
+    var permissionSettingsLaunchFailed by remember { mutableStateOf(false) }
 
     // ★ 修正: ループによるフォーカスの点滅（奪い合い）を防ぐため、
     // レイアウトの安定（ダイアログの退出アニメーション等）を350msだけ静かに待ち、
@@ -326,6 +334,7 @@ fun ConnectionSettingsContent(
             val backendLabel = when (backendType) {
                 "EDCB" -> "EDCB (EpgTimerSrv)"
                 "EPGSTATION" -> "EPGStation"
+                "TIF" -> "TV Input Framework"
                 "MIRAKURUN_ONLY" -> "Mirakurun (録画なし)"
                 else -> "KonomiTV"
             }
@@ -344,6 +353,54 @@ fun ConnectionSettingsContent(
                 onClick = { onClick(backendTypeR); onSelectBackend() }
             )
 
+            if (backendType == "TIF") {
+                SettingItem(
+                    title = "TV入力の再設定・スキャン",
+                    value = "初回登録済みの入力から選ぶ",
+                    icon = Icons.Default.Tv,
+                    modifier = Modifier
+                        .focusRequester(backendIpR)
+                        .focusProperties { left = sidebarR; up = backendTypeR; down = tifPermissionR },
+                    onClick = { onClick(backendIpR); onSetupTif() }
+                )
+                SettingItem(
+                    title = "TV番組一覧の権限設定",
+                    value = "Androidのアプリ設定を開く",
+                    icon = Icons.Default.Settings,
+                    modifier = Modifier
+                        .focusRequester(tifPermissionR)
+                        .focusProperties { left = sidebarR; up = backendIpR; down = addSmbR },
+                    onClick = {
+                        onClick(tifPermissionR)
+                        try {
+                            context.startActivity(
+                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.parse("package:${context.packageName}"))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                            permissionSettingsLaunchFailed = false
+                        } catch (error: Exception) {
+                            permissionSettingsLaunchFailed = true
+                        }
+                    }
+                )
+                if (permissionSettingsLaunchFailed) {
+                    Text(
+                        "アプリ設定を開けません。端末の設定 → アプリ → Komorebi → 権限 → TV番組一覧で手動許可してください。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.textSecondary
+                    )
+                }
+                Text(
+                    "初回のTV入力登録は端末標準のテレビアプリ（Live TV）またはTV入力設定で完了してください。" +
+                        "登録後の再スキャンは各入力の再設定画面から行えます。" +
+                        "チューナー番組が表示されない場合はAndroidのアプリ設定でTV番組一覧（READ_TV_LISTINGS）の権限を許可してください。" +
+                        "IP/ポートは不要です。" +
+                        "録画・予約はこのKomorebiバックエンドでは未対応です。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.textSecondary
+                )
+            } else {
             val currentIp = when (backendType) {
                 "EDCB" -> edcbIp
                 "EPGSTATION" -> epgStationIp
@@ -412,6 +469,7 @@ fun ConnectionSettingsContent(
             if (currentIp.isBlank() || currentPort.isBlank()) {
                 ValidationErrorText("メインシステムのIPアドレスまたはポート番号が未設定です。\n番組情報の取得や録画機能が正常に動作しません。")
             }
+            }
         }
 
         if (backendType == "EDCB") {
@@ -432,8 +490,8 @@ fun ConnectionSettingsContent(
             }
         }
 
-        val hasOverride = prefSrc == "MIRAKURUN" || (prefSrc == "EDCB" && backendType != "EDCB")
-        if (backendType != "MIRAKURUN_ONLY") {
+        val hasOverride = backendType != "TIF" && (prefSrc == "MIRAKURUN" || (prefSrc == "EDCB" && backendType != "EDCB"))
+        if (backendType != "MIRAKURUN_ONLY" && backendType != "TIF") {
             SettingsSection("ライブ視聴ソースの優先設定") {
                 val srcLabel = when {
                     prefSrc == "MIRAKURUN" -> "Mirakurun を優先"
@@ -527,7 +585,7 @@ fun ConnectionSettingsContent(
                     .focusRequester(addSmbR)
                     .focusProperties {
                         left = sidebarR
-                        up = if (hasOverride) overridePortR else prefSrcR
+                        up = if (backendType == "TIF") tifPermissionR else if (hasOverride) overridePortR else prefSrcR
                         down =
                             if (smbServerList.isEmpty()) cfIdR else smbItemRs.firstOrNull()
                                 ?: cfIdR
@@ -822,6 +880,7 @@ fun HomeDisplaySettingsContent(
     themeSeason: String,
     genre: String,
     excludePaid: String,
+    isTifBackend: Boolean,
     pickupTime: String,
     startupTab: String,
     modeR: FocusRequester,
@@ -954,7 +1013,7 @@ fun HomeDisplaySettingsContent(
                 onClick = { onClick(timeR); onTime() })
             SettingItem(
                 AppStrings.SETTINGS_ITEM_EXCLUDE_PAID,
-                excludePaid,
+                if (isTifBackend) "TIFでは非対応（料金区分情報がありません）" else excludePaid,
                 Icons.Default.Lock,
                 modifier = Modifier
                     .focusRequester(exPaidR)
@@ -963,7 +1022,10 @@ fun HomeDisplaySettingsContent(
                         up = timeR
                         down = FocusRequester.Cancel
                     },
-                onClick = { onClick(exPaidR); onExPaid() })
+                onClick = {
+                    onClick(exPaidR)
+                    if (!isTifBackend) onExPaid()
+                })
         }
     }
 }

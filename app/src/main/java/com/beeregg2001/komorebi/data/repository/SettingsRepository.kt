@@ -128,6 +128,7 @@ class SettingsRepository @Inject constructor(
 
                 "EDCB" -> !preferences[EDCB_IP].isNullOrBlank()
                 "EPGSTATION" -> !preferences[EPGSTATION_IP].isNullOrBlank()
+                "TIF" -> true // IP不要。実際のTIS検出と権限はTifRepositoryで検査する。
                 "MIRAKURUN_ONLY" -> !preferences[MIRAKURUN_IP].isNullOrBlank()
                 else -> false
             }

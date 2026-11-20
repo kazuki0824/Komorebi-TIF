@@ -2,6 +2,9 @@ package com.beeregg2001.komorebi.di
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
+import com.beeregg2001.komorebi.data.local.dao.BackendWatchHistoryDao
 import com.beeregg2001.komorebi.data.local.AppDatabase
 import com.beeregg2001.komorebi.data.local.dao.AiSeriesDictionaryDao
 import com.beeregg2001.komorebi.data.local.dao.LastChannelDao
@@ -19,6 +22,11 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
+    private val migrate15To16 = object : Migration(15, 16) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS `backend_watch_history` (`backend` TEXT NOT NULL, `recordId` INTEGER NOT NULL, `payloadJson` TEXT NOT NULL, `watchedAt` INTEGER NOT NULL, PRIMARY KEY(`backend`, `recordId`))")
+        }
+    }
 
     @Provides
     @Singleton
@@ -26,9 +34,14 @@ object DatabaseModule {
         @ApplicationContext context: Context
     ): AppDatabase {
         return Room.databaseBuilder(context, AppDatabase::class.java, "komorebi.db")
+            .addMigrations(migrate15To16)
             .fallbackToDestructiveMigration(dropAllTables = true)
             .build()
     }
+
+    @Provides
+    fun provideBackendWatchHistoryDao(database: AppDatabase): BackendWatchHistoryDao =
+        database.backendWatchHistoryDao()
 
     @Provides
     fun provideWatchHistoryDao(database: AppDatabase): WatchHistoryDao {

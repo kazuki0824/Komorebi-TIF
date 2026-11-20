@@ -317,6 +317,12 @@ fun VideoPlayerScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val backendType by settingsViewModel.backendType.collectAsState()
+    // 開始済み再生セッションの出所は、途中の設定切替では書き換えない。
+    val confirmedPlaybackBackend by settingsViewModel.confirmedBackendType.collectAsState(initial = null)
+    var sessionBackend by remember(program.id, smbItem) { mutableStateOf<String?>(null) }
+    if (smbItem == null && sessionBackend == null && confirmedPlaybackBackend != null) {
+        sessionBackend = confirmedPlaybackBackend
+    }
     val edcbPlayMethod by settingsViewModel.edcbRecordPlayMethod.collectAsState()
     val isEdcbDirect = (backendType == "EDCB" && edcbPlayMethod == "DIRECT")
     // ★ 追加: KonomiTVのoriginal画質(MPEG-2直接再生)も、EDCB直接再生と同じくExoPlayerの
@@ -345,7 +351,9 @@ fun VideoPlayerScreen(
             if (smbItem == null) {
                 val posMs =
                     if (isOffsetBasedStream || isEdcbDirect || isKonomiOriginal) vs.playbackOffsetMs + player.currentPosition else player.currentPosition
-                videoPlayerViewModel.updateWatchHistory(program, posMs / 1000.0)
+                sessionBackend?.let { backend ->
+                    videoPlayerViewModel.updateWatchHistory(program, posMs / 1000.0, backend)
+                }
             }
         },
         cfAccessHeaders = cfAccessHeaders,

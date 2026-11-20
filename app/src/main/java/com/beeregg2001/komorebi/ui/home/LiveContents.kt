@@ -28,6 +28,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
+import android.content.pm.PackageManager
+import com.beeregg2001.komorebi.data.repository.tif.TifInput
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -85,6 +88,8 @@ fun LiveContent(
     settingsViewModel: SettingsViewModel = hiltViewModel()
 ) {
     val liveRows by channelViewModel.liveRows.collectAsState()
+    val isChannelLoading by channelViewModel.isLoading.collectAsState()
+    val context = LocalContext.current
     val listState = rememberLazyListState()
 
     val rowStates = remember { mutableStateMapOf<String, LazyListState>() }
@@ -206,7 +211,26 @@ fun LiveContent(
     Box(modifier = Modifier.fillMaxSize()) {
         if (liveRows.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = colors.textPrimary.copy(alpha = 0.5f))
+                if (isChannelLoading) {
+                    CircularProgressIndicator(color = colors.textPrimary.copy(alpha = 0.5f))
+                } else {
+                    val message = if (backendType != TifInput.BACKEND_TYPE) {
+                        "表示できるチャンネルがありません。"
+                    } else {
+                        val inputs = TifInput.inputs(context)
+                        when {
+                            inputs.isEmpty() ->
+                                "TV入力がありません。端末のTV入力設定から登録してください。"
+                            inputs.any { !it.isPassthroughInput } &&
+                                context.checkSelfPermission(TifInput.READ_LISTINGS_PERMISSION) !=
+                                    PackageManager.PERMISSION_GRANTED ->
+                                "TV番組一覧の権限がありません。Komorebiの設定からAndroidのアプリ設定を開いて許可してください。"
+                            else ->
+                                "表示できるチャンネルがありません。端末のTV入力設定からスキャンしてください。"
+                        }
+                    }
+                    Text(message, color = colors.textPrimary)
+                }
             }
         } else {
             // ★ 修正: フルスクリーン再生中に上下左右をCancelする指定を削除した。

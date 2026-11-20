@@ -14,6 +14,8 @@ import com.beeregg2001.komorebi.data.repository.epgstation.EpgStationEpgReposito
 import com.beeregg2001.komorebi.data.repository.epgstation.EpgStationLiveRepository
 import com.beeregg2001.komorebi.data.repository.epgstation.EpgStationRecordRepository
 import com.beeregg2001.komorebi.data.repository.epgstation.EpgStationReserveRepository
+import com.beeregg2001.komorebi.data.repository.tif.TifInput
+import com.beeregg2001.komorebi.data.repository.tif.TifRepository
 import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -26,6 +28,7 @@ import javax.inject.Singleton
 class DtvProviderProxy @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val konomiRepository: KonomiRepository,
+    private val tifRepository: TifRepository,
     private val epgStationLiveRepository: EpgStationLiveRepository,
     private val epgStationRecordRepository: EpgStationRecordRepository,
     private val epgStationReserveRepository: EpgStationReserveRepository,
@@ -39,18 +42,22 @@ class DtvProviderProxy @Inject constructor(
 
     // --- ルーティングロジック（インターフェースごとに特化） ---
 
-    private suspend fun getLiveProvider(): LiveProvider {
-        return when (settingsRepository.backendType.first()) {
-            "EDCB" -> edcbLiveRepository
-            "EPGSTATION" -> epgStationLiveRepository
-            else -> konomiRepository
-        }
+    /** 1要求の開始時に確定したbackendを、取得・エラー処理・ロゴで共用する。 */
+    private fun liveProviderFor(backend: String): LiveProvider = when (backend) {
+        "EDCB" -> edcbLiveRepository
+        "EPGSTATION" -> epgStationLiveRepository
+        TifInput.BACKEND_TYPE -> tifRepository
+        else -> konomiRepository
     }
+
+    private suspend fun getLiveProvider(): LiveProvider =
+        liveProviderFor(settingsRepository.backendType.first())
 
     private suspend fun getRecordProvider(): RecordProvider {
         return when (settingsRepository.backendType.first()) {
             "EDCB" -> edcbRecordRepository
             "EPGSTATION" -> epgStationRecordRepository
+            TifInput.BACKEND_TYPE -> tifRepository
             else -> konomiRepository
         }
     }
@@ -59,29 +66,44 @@ class DtvProviderProxy @Inject constructor(
         return when (settingsRepository.backendType.first()) {
             "EDCB" -> edcbReserveRepository
             "EPGSTATION" -> epgStationReserveRepository
+            TifInput.BACKEND_TYPE -> tifRepository
             else -> konomiRepository
         }
     }
 
-    private suspend fun getEpgProvider(): EpgProvider {
-        return when (settingsRepository.backendType.first()) {
-            "EDCB" -> edcbEpgRepository
-            "EPGSTATION" -> epgStationEpgRepository
-            else -> konomiRepository
-        }
+    private fun epgProviderFor(backend: String): EpgProvider = when (backend) {
+        "EDCB" -> edcbEpgRepository
+        "EPGSTATION" -> epgStationEpgRepository
+        TifInput.BACKEND_TYPE -> tifRepository
+        else -> konomiRepository
     }
+
+    private suspend fun getEpgProvider(): EpgProvider =
+        epgProviderFor(settingsRepository.backendType.first())
+
+    /** ディスク待機中の設定変更に左右されず、指定backendのEPGを取得する。 */
+    suspend fun getEpgProgramsForBackend(
+        backend: String, startTime: String?, endTime: String?, channelType: String?
+    ): List<EpgChannelWrapper> =
+        epgProviderFor(backend).getEpgPrograms(startTime, endTime, channelType)
 
     // ========================================================================
     // LiveProvider (ライブ視聴関連)
     // ========================================================================
 
     override suspend fun getChannels(): ChannelApiResponse {
+        val backend = settingsRepository.backendType.first()
+        val provider = liveProviderFor(backend)
         return try {
-            getLiveProvider().getChannels()
+            provider.getChannels()
         } catch (e: NotImplementedError) {
+            if (backend == TifInput.BACKEND_TYPE) throw e
             Log.w("DtvProviderProxy", "getChannels is not implemented in active backend. Skipping.")
             ChannelApiResponse()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
+            if (backend == TifInput.BACKEND_TYPE) throw e
             Log.e("DtvProviderProxy", "Error fetching channels. Skipping.", e)
             ChannelApiResponse()
         }
@@ -118,11 +140,7 @@ class DtvProviderProxy @Inject constructor(
             val backend = settingsRepository.backendType.first()
             ChannelLogoUrlCache.get(backend, channelId)?.let { return it }
 
-            val provider = when (backend) {
-                "EDCB" -> edcbLiveRepository
-                "EPGSTATION" -> epgStationLiveRepository
-                else -> konomiRepository
-            }
+            val provider = liveProviderFor(backend)
             provider.getChannelLogoUrl(channelId).also {
                 ChannelLogoUrlCache.put(backend, channelId, it)
             }

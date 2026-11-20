@@ -191,8 +191,9 @@ class RecordViewModel @Inject constructor(
         detailFetchJob?.cancel()
         detailFetchJob = viewModelScope.launch(Dispatchers.IO) {
             delay(300)
+            if (!syncEngine.recordCacheReady.value) return@launch
             recordProvider.getRecordedProgram(videoId).onSuccess {
-                _programDetail.value = it
+                if (syncEngine.recordCacheReady.value) _programDetail.value = it
             }.onFailure { Log.e(TAG, "Failed to fetch program detail", it) }
         }
     }
@@ -201,8 +202,11 @@ class RecordViewModel @Inject constructor(
         _programDetail.value = null
     }
 
-    val recentRecordings: StateFlow<List<RecordedProgram>> = programDao.getRecentRecordingsFlow()
-        .map { entities -> entities.map { RecordDataMapper.toDomainModel(it) } }
+    val recentRecordings: StateFlow<List<RecordedProgram>> = combine(
+        programDao.getRecentRecordingsFlow(), syncEngine.recordCacheReady
+    ) { entities, ready ->
+        if (ready) entities.map { RecordDataMapper.toDomainModel(it) } else emptyList()
+    }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
@@ -211,26 +215,55 @@ class RecordViewModel @Inject constructor(
 
     init {
         loadSearchHistory()
+        viewModelScope.launch {
+            syncEngine.recordCacheReady.collect { ready ->
+                if (!ready) synchronized(syncEngine.recordPublicationLock) {
+                    detailFetchJob?.cancel()
+                    _programDetail.value = null
+                    _groupedSeries.value = emptyMap()
+                    _groupedChannels.value = emptyMap()
+                    epgSeriesItems = emptyList()
+                }
+            }
+        }
 
         viewModelScope.launch(Dispatchers.IO) {
-            syncEngine.syncProgress.map { it.isSyncing }.distinctUntilChanged()
-                .collect { isSyncing ->
-                    if (!isSyncing) {
+            combine(
+                syncEngine.syncProgress.map { it.isSyncing }.distinctUntilChanged(),
+                syncEngine.recordCacheReady
+            ) { isSyncing, ready -> !isSyncing && ready }
+                .distinctUntilChanged()
+                .collect { shouldLoad ->
+                    if (shouldLoad) {
+                        val generation = syncEngine.recordCacheGeneration.value
+                        val requestedBackend = settingsRepository.backendType.first()
                         val seriesList = programDao.getGroupedSeries()
                         val channelsList = programDao.getDistinctChannels()
-                        if (settingsRepository.backendType.first() == "EPGSTATION" || seriesList.isNotEmpty() || channelsList.isNotEmpty()) {
-                            if (settingsRepository.backendType.first() == "EPGSTATION") {
+                        if (syncEngine.recordCacheReady.value &&
+                            syncEngine.recordCacheGeneration.value == generation &&
+                            settingsRepository.backendType.first() == requestedBackend &&
+                            (requestedBackend == "EPGSTATION" || seriesList.isNotEmpty() || channelsList.isNotEmpty())) {
+                            if (requestedBackend == "EPGSTATION") {
                                 epgStationIp = settingsRepository.epgStationIp.first()
                                 epgStationPort = settingsRepository.epgStationPort.first()
                                 val apiSeries = epgStationRecordRepository.getSeriesList()
-                                if (apiSeries != null) {
-                                    epgSeriesItems = apiSeries
-                                    buildEpgSeriesAndChannelMaps(apiSeries, seriesList, channelsList)
-                                } else {
-                                    buildSeriesAndChannelMaps(seriesList, channelsList)
+                                val backendAfterFetch = settingsRepository.backendType.first()
+                                synchronized(syncEngine.recordPublicationLock) {
+                                    if (syncEngine.recordCacheReady.value &&
+                                        syncEngine.recordCacheGeneration.value == generation &&
+                                        backendAfterFetch == requestedBackend) {
+                                        if (apiSeries != null) {
+                                            epgSeriesItems = apiSeries
+                                            buildEpgSeriesAndChannelMaps(apiSeries, seriesList, channelsList)
+                                        } else buildSeriesAndChannelMaps(seriesList, channelsList)
+                                    }
                                 }
                             } else {
-                                buildSeriesAndChannelMaps(seriesList, channelsList)
+                                synchronized(syncEngine.recordPublicationLock) {
+                                    if (syncEngine.recordCacheReady.value &&
+                                        syncEngine.recordCacheGeneration.value == generation)
+                                        buildSeriesAndChannelMaps(seriesList, channelsList)
+                                }
                             }
                         }
                     }
@@ -247,9 +280,14 @@ class RecordViewModel @Inject constructor(
             // 起動直後に走らせると、Room への書き込みのたびに録画一覧の Flow が
             // 発火し、ホーム画面の初回描画と CPU / ディスクを奪い合って
             // 「起動直後だけ操作が極端に重い」状態を作っていた。
-            val alreadyBuilt = syncEngine.isInitialBuildCompleted()
-            delay(if (alreadyBuilt) 6000L else 1500L)
-            syncEngine.launchSyncAllRecords()
+            // TIFには録画セッションがない。空録画一覧を初期DB構築成功と誤認しない。
+            if (settingsRepository.backendType.first() != "TIF") {
+                val alreadyBuilt = syncEngine.isInitialBuildCompleted()
+                delay(if (alreadyBuilt) 6000L else 1500L)
+                if (settingsRepository.backendType.first() != "TIF") {
+                    syncEngine.launchSyncAllRecords()
+                }
+            }
         }
     }
 
@@ -280,9 +318,12 @@ class RecordViewModel @Inject constructor(
         _sortOrder
     ) { partialState, type, order ->
         partialState.copy(sortType = type, sortOrder = order)
-    }.flatMapLatest { state ->
-        flow {
-            emit(PagingData.empty())
+    }.combine(syncEngine.recordCacheReady) { state, ready ->
+        state to ready
+    }.flatMapLatest { (state, ready) ->
+        if (!ready) flowOf(PagingData.empty<RecordedProgram>())
+        else flow {
+            emit(PagingData.empty<RecordedProgram>())
             delay(50)
 
             val pager = Pager(
@@ -464,7 +505,58 @@ class RecordViewModel @Inject constructor(
     }
 
     fun updateWatchHistory(program: RecordedProgram, positionSeconds: Double) {
-        viewModelScope.launch { historyRepository.saveWatchHistory(program, positionSeconds) }
+        viewModelScope.launch {
+            val backend = settingsRepository.backendType.first()
+            if (backend != "TIF") historyRepository.saveWatchHistory(program, positionSeconds, backend)
+        }
+    }
+
+    val recordHistoryAvailable: StateFlow<Boolean> = syncEngine.recordCacheReady
+    private val _historyResumeError = MutableStateFlow<String?>(null)
+    val historyResumeError: StateFlow<String?> = _historyResumeError.asStateFlow()
+
+    fun clearHistoryResumeError() { _historyResumeError.value = null }
+
+    /** 履歴の出所と録画実体を確かめる。表示上限20件には依存しない。 */
+    suspend fun getResumableHistoryProgram(
+        programId: Int, backend: String
+    ): RecordedProgram? {
+        _historyResumeError.value = null
+        if (backend == "TIF" || settingsRepository.backendType.first() != backend) {
+            _historyResumeError.value = "録画履歴の取得元が現在のバックエンドと一致しません。"
+            return null
+        }
+        val generation = syncEngine.recordCacheGeneration.value
+        val saved = historyRepository.getHistoryEntityById(programId, backend)
+        if (saved == null) {
+            _historyResumeError.value = "視聴履歴が見つかりません。"
+            return null
+        }
+        val entity = if (syncEngine.recordCacheReady.value)
+            programDao.getById(programId) else null
+        // 同じバックエンドの履歴と確認できれば、Roomに未同期でも元サーバーの
+        // 詳細APIで実体を確認する。IDが他backendの録画を指す推測再生はしない。
+        val remote = if (entity == null) {
+            try {
+                recordProvider.getRecordedProgram(programId).getOrNull()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        } else null
+        if (syncEngine.recordCacheGeneration.value != generation ||
+            settingsRepository.backendType.first() != backend ||
+            (entity != null && !syncEngine.recordCacheReady.value)) {
+            _historyResumeError.value = "バックエンドが変更されたため、履歴からの再生を中止しました。"
+            return null
+        }
+        val program = if (entity != null) RecordDataMapper.toDomainModel(entity) else remote
+        if (program == null || program.id != programId) {
+            _historyResumeError.value = "録画詳細を取得できません。接続先と録画の状態を確認してください。"
+            return null
+        }
+        return program.copy(playbackPosition = saved.playbackPosition)
     }
 
     fun clearWatchHistory() {
@@ -621,7 +713,7 @@ class RecordViewModel @Inject constructor(
             }
     }
 
-    private suspend fun buildSeriesAndChannelMaps(
+    private fun buildSeriesAndChannelMaps(
         seriesList: List<SeriesProjection>,
         channelsList: List<ChannelProjection>
     ) {
