@@ -66,7 +66,42 @@ class EpgRepository @Inject constructor(
     private val coverage = ConcurrentHashMap<String, Pair<Long, Long>>()
     private val tifCacheRevision = java.util.concurrent.atomic.AtomicLong(0L)
     private val tifRequestSequence = java.util.concurrent.atomic.AtomicLong(0L)
-    private val appliedTifRequests = mutableMapOf<String, Long>()
+    // TIFの取得済み範囲は放送種別一括ではなく、局ごとに保持する。
+    // 重複取得の新旧判定も区間単位とし、狭い新取得で広い旧取得を捨てない。
+    private data class TifCoverageWindow(val from: Long, val to: Long, val sequence: Long)
+    private val tifChannelCoverage = mutableMapOf<String, Map<String, List<TifCoverageWindow>>>()
+    private val tifRetryRanges = mutableMapOf<String, Map<String, List<Pair<Long, Long>>>>()
+
+    private fun subtractWindows(
+        from: Long, to: Long, blocked: List<Pair<Long, Long>>
+    ): List<Pair<Long, Long>> {
+        if (from >= to) return emptyList()
+        var pieces = listOf(from to to)
+        blocked.forEach { (blockFrom, blockTo) ->
+            pieces = pieces.flatMap { (left, right) ->
+                if (blockTo <= left || blockFrom >= right) listOf(left to right)
+                else buildList {
+                    if (left < blockFrom) add(left to minOf(right, blockFrom))
+                    if (blockTo < right) add(maxOf(left, blockTo) to right)
+                }
+            }
+        }
+        return pieces
+    }
+
+    private fun tifRangeCovered(key: String, from: Long, to: Long): Boolean =
+        synchronized(coverage) {
+            val rows = memoryCache[key] ?: return@synchronized false
+            if (rows.isEmpty()) return@synchronized false
+            val byId = tifChannelCoverage[key] ?: return@synchronized false
+            val pending = tifRetryRanges[key].orEmpty()
+            rows.all { row ->
+                val id = row.channel.id
+                subtractWindows(from, to, byId[id].orEmpty().map { it.from to it.to })
+                    .isEmpty() &&
+                    pending[id].orEmpty().none { it.first < to && it.second > from }
+            }
+        }
     // 同じ取得元・種別・期間・入力世代の問い合わせは共有する。
     // 呼出元の画面がキャンセルされても、検索用の取得は失われない。
     private val tifFetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -93,7 +128,8 @@ class EpgRepository @Inject constructor(
             memoryCache.keys.filter { it.startsWith("TIF_") }.forEach {
                 memoryCache.remove(it)
                 coverage.remove(it)
-                appliedTifRequests.remove(it)
+                tifChannelCoverage.remove(it)
+                tifRetryRanges.remove(it)
             }
         }
     }
@@ -154,9 +190,9 @@ class EpgRepository @Inject constructor(
     }
 
     /**
-     * 取得順序と入力世代を確認し、旧スナップショットによる逆戻りを防ぐ。
-     * 番組の走査・日時解析・結合はDefaultで実行し、短い公開操作だけをロックする。
-     * 失敗した局は旧番組を保持し、失敗した取得期間を被覆済みと記録しない。
+     * 成功した局・期間だけを置き換え、失敗局の旧番組と取得済み範囲を保持する。
+     * 重複する区間は照会発行順で判定し、後から返った旧応答で巻き戻さない。
+     * 不足する区間は古い広域照会から補完できる。
      */
     private suspend fun cacheEpg(
         cacheKey: String, backend: String, start: Long, end: Long,
@@ -174,70 +210,95 @@ class EpgRepository @Inject constructor(
         val cutoff = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
         if (end <= cutoff) return@withContext channels
 
-        fun endMillis(value: String): Long =
+        fun time(value: String, invalid: Long): Long =
             runCatching { OffsetDateTime.parse(value).toInstant().toEpochMilli() }
-                .getOrDefault(Long.MIN_VALUE)
-        fun startMillis(value: String): Long =
-            runCatching { OffsetDateTime.parse(value).toInstant().toEpochMilli() }
-                .getOrDefault(Long.MIN_VALUE)
+                .getOrDefault(invalid)
+        fun intersects(program: EpgProgram, ranges: List<Pair<Long, Long>>): Boolean {
+            val from = time(program.start_time, Long.MAX_VALUE)
+            val to = time(program.end_time, Long.MIN_VALUE)
+            return ranges.any { (left, right) -> to > left && from < right }
+        }
 
         while (true) {
-            val snapshot = synchronized(coverage) {
-                if (tifCacheRevision.get() != expectedRevision) {
-                    null
-                } else if ((appliedTifRequests[cacheKey] ?: 0L) > requestSequence) {
-                    // 古い応答は上書きせず、最新の公開済み結果を呼出元へ返す。
-                    return@withContext memoryCache[cacheKey]
-                } else {
-                    Pair(coverage[cacheKey], memoryCache[cacheKey])
-                }
+            val original = synchronized(coverage) {
+                if (tifCacheRevision.get() != expectedRevision) null
+                else Triple(memoryCache[cacheKey], tifChannelCoverage[cacheKey],
+                    tifRetryRanges[cacheKey])
             } ?: return@withContext null
-            val old = snapshot.first
-            val previousChannels = snapshot.second
-            val disjoint = old == null || end < old.first || start > old.second
-            val oldById = previousChannels.orEmpty().associateBy { it.channel.id }
+            val previousChannels = original.first
+            val oldCoverage = original.second.orEmpty()
+            val oldRetry = original.third.orEmpty()
+            val previousById = previousChannels.orEmpty().associateBy { it.channel.id }
+            val updatedCoverage = mutableMapOf<String, List<TifCoverageWindow>>()
+            val updatedRetry = mutableMapOf<String, List<Pair<Long, Long>>>()
 
             val merged = channels.map { fresh ->
-                val previous = oldById[fresh.channel.id]
-                if (fresh.channel.id in failedIds && previous != null) {
-                    previous
-                } else {
-                    val untouched = (if (disjoint) emptyList() else previous?.programs.orEmpty())
-                        .filter { program ->
-                        val programStart = startMillis(program.start_time)
-                        val programEnd = endMillis(program.end_time)
-                        programEnd > cutoff && (programEnd <= start || programStart >= end)
-                    }
-                    fresh.copy(programs = (fresh.programs + untouched)
-                        .distinctBy { it.id }
-                        .filter { endMillis(it.end_time) > cutoff }
-                        .sortedBy { it.start_time })
+                val id = fresh.channel.id
+                val previous = previousById[id]
+                val windows = oldCoverage[id].orEmpty().filter { it.to > cutoff }
+                    .map { it.copy(from = maxOf(it.from, cutoff)) }
+                val retry = oldRetry[id].orEmpty().filter { it.second > cutoff }
+                val protected = windows.filter { it.sequence > requestSequence }
+                    .map { it.from to it.to }
+                val writable = if (id in failedIds) emptyList()
+                    else subtractWindows(start, end, protected)
+
+                val oldPrograms = previous?.programs.orEmpty().filter {
+                    time(it.end_time, Long.MIN_VALUE) > cutoff
                 }
+                val oldKept = oldPrograms.filter {
+                    !intersects(it, writable) || intersects(it, protected)
+                }
+                val freshKept = fresh.programs.filter {
+                    time(it.end_time, Long.MIN_VALUE) > cutoff &&
+                        intersects(it, writable) && !intersects(it, protected)
+                }
+                // 新しい取得の番組が優先。同じIDが保護区間にある場合は旧値を採る。
+                val protectedIds = oldKept.filter { intersects(it, protected) }
+                    .mapTo(mutableSetOf()) { it.id }
+                val combined = (freshKept.filter { it.id !in protectedIds } + oldKept)
+                    .distinctBy { it.id }.sortedBy { it.start_time }
+
+                val remaining = windows.flatMap { window ->
+                    subtractWindows(window.from, window.to, writable)
+                        .map { TifCoverageWindow(it.first, it.second, window.sequence) }
+                }
+                val added = writable.map {
+                    TifCoverageWindow(it.first, it.second, requestSequence)
+                }
+                updatedCoverage[id] = (remaining + added).sortedBy { it.from }
+                    .fold(mutableListOf<TifCoverageWindow>()) { acc, window ->
+                        val last = acc.lastOrNull()
+                        if (last != null && last.sequence == window.sequence &&
+                            last.to >= window.from) {
+                            acc[acc.lastIndex] = last.copy(to = maxOf(last.to, window.to))
+                        } else acc.add(window)
+                        acc
+                    }
+                updatedRetry[id] = if (id in failedIds) {
+                    retry + (start to end)
+                } else retry.flatMap {
+                    subtractWindows(it.first, it.second, listOf(start to end))
+                }
+
+                fresh.copy(programs = combined)
             }
-            val nextCoverage = if (failedIds.isNotEmpty()) null else {
-                val from = if (disjoint) start else minOf(old!!.first, start)
-                val to = if (disjoint) end else maxOf(old!!.second, end)
-                maxOf(from, cutoff) to to
-            }
-            val committed = synchronized(coverage) {
+            val accepted = synchronized(coverage) {
                 when {
-                    tifCacheRevision.get() != expectedRevision ||
-                        (appliedTifRequests[cacheKey] ?: 0L) > requestSequence -> -1
+                    tifCacheRevision.get() != expectedRevision -> -1
                     memoryCache[cacheKey] !== previousChannels ||
-                        coverage[cacheKey] != old -> 0
+                        tifChannelCoverage[cacheKey] !== original.second ||
+                        tifRetryRanges[cacheKey] !== original.third -> 0
                     else -> {
                         memoryCache[cacheKey] = merged
-                        if (nextCoverage == null) coverage.remove(cacheKey)
-                        else coverage[cacheKey] = nextCoverage
-                        appliedTifRequests[cacheKey] = requestSequence
+                        tifChannelCoverage[cacheKey] = updatedCoverage
+                        tifRetryRanges[cacheKey] = updatedRetry
                         1
                     }
                 }
             }
-            if (committed == 1) return@withContext merged
-            if (committed == -1) return@withContext synchronized(coverage) {
-                if (tifCacheRevision.get() != expectedRevision) null else memoryCache[cacheKey]
-            }
+            if (accepted == 1) return@withContext merged
+            if (accepted == -1) return@withContext null
         }
         @Suppress("UNREACHABLE_CODE")
         null
@@ -437,9 +498,8 @@ class EpgRepository @Inject constructor(
         val requestRevision = tifCacheRevision.get()
         val requestSequence = tifRequestSequence.incrementAndGet()
         if (requestBackend == TifInput.BACKEND_TYPE) {
-            val old = coverage[cacheKey]
-            if (old != null && old.first <= startTime.toInstant().toEpochMilli() &&
-                old.second >= endTime.toInstant().toEpochMilli()) return
+            if (tifRangeCovered(cacheKey, startTime.toInstant().toEpochMilli(),
+                    endTime.toInstant().toEpochMilli())) return
         } else if (memoryCache.containsKey(cacheKey)) return
 
         var isFreshCacheAvailable = false
