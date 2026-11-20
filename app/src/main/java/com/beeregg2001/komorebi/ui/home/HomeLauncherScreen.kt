@@ -223,7 +223,9 @@ fun HomeLauncherScreen(
         val programId = historyItem.program.id.toIntOrNull()
         if (cardBackend != "TIF" && cardBackend == backendType &&
             programId != null && homeViewModel.backendType.value == cardBackend &&
-            homeViewModel.ownedWatchHistory.value.first == cardBackend) {
+            homeViewModel.ownedWatchHistory.value.first == cardBackend &&
+            // 最新の履歴に同じIDがあるだけでは不十分。旧カードの実体を拒否する。
+            homeViewModel.ownedWatchHistory.value.second.any { it === historyItem }) {
             cancelPendingHistory()
             val requestId = historySelectionGeneration
             val selectionEpoch = recordedSelectionEpoch.intValue
