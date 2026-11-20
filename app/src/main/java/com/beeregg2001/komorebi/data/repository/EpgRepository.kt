@@ -751,7 +751,14 @@ class EpgRepository @Inject constructor(
                         ends > from && begins < to
                     }
                 }
-                if (!hasCurrentProgram) {
+                // Aより後に開始した実照会Bが要求範囲を正常に取得していれば、
+                // 0局・0番組という正常結果をAの遅延失敗でエラーへ戻さない。
+                // Bの成功が一部期間だけなら、未取得期間の失敗は隠さない。
+                val newerSuccessfulEmpty = synchronized(coverage) {
+                    (tifCatalogSequence[cacheKey] ?: 0L) > (fetched?.sequence ?: 0L) &&
+                        tifRangeCovered(cacheKey, from, to)
+                }
+                if (!hasCurrentProgram && !newerSuccessfulEmpty) {
                     // 失敗した共有照会を次回の再試行に流用しない。
                     synchronized(tifFetchLock) {
                         tifInFlight.removeAll {
