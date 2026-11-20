@@ -73,6 +73,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
     private val logoMemoryCache = mutableMapOf<String, List<String>>()
 
     private var fullEpgData: List<EpgChannelWrapper> = emptyList()
+    private var displayedBroadcastingType: String = "GR"
     private var fullLogoUrls: List<String> = emptyList()
     private var currentTargetTime: OffsetDateTime = OffsetDateTime.now()
 
@@ -305,7 +306,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
     private suspend fun preloadEpgDataForSearchNow(availableTypes: List<String>) {
         val now = OffsetDateTime.now()
         val start = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
-        val end = now.plusDays(7)
+        val end = start.plusDays(7)
         coroutineScope {
             availableTypes.map { type ->
                 async(Dispatchers.IO) {
@@ -389,25 +390,26 @@ class EpgViewModel @OptIn(UnstableApi::class)
         fullLogoUrls = emptyList()
         uiState = EpgUiState.Loading
         refreshEpgData()
-        // 番組検索は全種別の7日間を母集団とする。入力変更後も再構築する。
-        val currentlyDisplayedType = _selectedBroadcastingType.value
+        // 全種別の検索用取得を維持する。表示用と同一期間の照会はRepositoryで共有し、
+        // 途中の放送種別変更で検索母集団が欠けないようにする。
         preloadJob = viewModelScope.launch {
             if (settingsRepository.backendType.first() == "TIF") {
-                // 選択中種別は表示用取得が7日分をキャッシュするため、二重queryを起こさない。
-                preloadEpgDataForSearchNow(
-                    preloadTypesFor("TIF").filterNot { it == currentlyDisplayedType }
-                )
+                preloadEpgDataForSearchNow(preloadTypesFor("TIF"))
             }
         }
     }
 
     fun refreshEpgData(channelType: String? = null) {
         epgJob?.cancel()
+        sliceJob?.cancel()
+        val requestedType = channelType ?: _selectedBroadcastingType.value
+        if (requestedType != _selectedBroadcastingType.value) return
+        displayedBroadcastingType = requestedType
         epgJob = viewModelScope.launch {
-            val typeToFetch = channelType ?: _selectedBroadcastingType.value
+            val typeToFetch = requestedType
             val now = OffsetDateTime.now()
             val start = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
-            val end = now.plusDays(7)
+            val end = start.plusDays(7)
 
             // 成功を維持できるのは同じ種別のデータを表示した場合だけ。
             // 前の放送種別のSuccessを新種別の取得失敗へ流用しない。
@@ -424,6 +426,8 @@ class EpgViewModel @OptIn(UnstableApi::class)
 
             // キャッシュ表示後も、裏側でRoomから最新情報を取得してキャッシュを更新する
             repository.getEpgDataStream(start, end, typeToFetch).collect { result ->
+                if (typeToFetch != _selectedBroadcastingType.value ||
+                    typeToFetch != displayedBroadcastingType) return@collect
                 result.onSuccess { data ->
                     hasShownRequestedType = true
                     fullEpgData = data
@@ -500,6 +504,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
             return
         }
         val generation = backendGeneration
+        val sourceType = displayedBroadcastingType
         val sourceData = fullEpgData
         val sourceLogos = fullLogoUrls
         val sourceTargetTime = currentTargetTime
@@ -531,7 +536,9 @@ class EpgViewModel @OptIn(UnstableApi::class)
             // 計算完了後にgenerationとactiveを確認し、Mainでのみ描画状態を公開する。
             ensureActive()
             withContext(Dispatchers.Main.immediate) {
-                if (generation != backendGeneration || !isActive) return@withContext
+                if (generation != backendGeneration || !isActive ||
+                    sourceType != displayedBroadcastingType ||
+                    sourceType != _selectedBroadcastingType.value) return@withContext
                 uiState = EpgUiState.Success(
                     data = slicedData,
                     logoUrls = sourceLogos,
@@ -550,6 +557,10 @@ class EpgViewModel @OptIn(UnstableApi::class)
 
     fun updateBroadcastingType(type: String) {
         if (_selectedBroadcastingType.value != type) {
+            // combineによる再取得が始まる前にも旧種別の描画結果を無効化する。
+            epgJob?.cancel()
+            sliceJob?.cancel()
+            uiState = EpgUiState.Loading
             _selectedBroadcastingType.value = type
         }
     }
