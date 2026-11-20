@@ -151,6 +151,8 @@ fun MainRootScreen(
             listingsPermissionGranted = true
             // 権限ダイアログ中に失敗した可視EPGも同じ種別で再取得する。
             epgViewModel.refreshAfterTifInputChange()
+            // ダイアログ許可だけではON_STOP/RESUMEしない端末でもホームを再集計。
+            homeViewModel.refreshAfterTifInputChange()
         } else state.toastMessage = "TV番組一覧へのアクセス許可が必要です。アプリの権限設定で許可してください。"
     }
     // OS設定から復帰した場合も権限を読み直し、チャンネルと番組表を再取得する。
@@ -431,6 +433,18 @@ fun MainRootScreen(
 
     val groupedChannels by channelViewModel.groupedChannels.collectAsState()
     val isChannelLoading by channelViewModel.isLoading.collectAsState()
+    LaunchedEffect(groupedChannels, isChannelLoading, backendType) {
+        if (backendType == TifInput.BACKEND_TYPE && !isChannelLoading) {
+            val selected = state.epgSelectedProgram
+            if (selected != null &&
+                groupedChannels.values.none { channels ->
+                    channels.any { it.id == selected.channel_id }
+                }) {
+                // 削除済みTIF局の詳細と「視聴する」を残さない。
+                state.epgSelectedProgram = null
+            }
+        }
+    }
     val isHomeLoading by homeViewModel.isLoading.collectAsState()
     val isChannelError by channelViewModel.connectionError.collectAsState()
     val isSettingsInitialized by settingsViewModel.isSettingsInitialized.collectAsState()
