@@ -210,7 +210,12 @@ fun HomeLauncherScreen(
 
     val backendType by homeViewModel.backendType.collectAsState()
     val ownedHistory by homeViewModel.ownedWatchHistory.collectAsState()
-    val displayedHistory = if (ownedHistory.first == backendType) ownedHistory.second
+    // 描画スナップショットの取得元を非nullで固定し、カード側のクリックへ渡す。
+    // Flowが先に切り替わり再コンポーズがまだでも、旧カードを新backendと解釈しない。
+    val displayedHistoryBackend = ownedHistory.first?.takeIf {
+        it == backendType && it != "TIF"
+    }
+    val displayedHistory = if (displayedHistoryBackend != null) ownedHistory.second
         else emptyList()
     val cancelPendingHistory: () -> Unit = {
         historySelectionJob?.cancel()
@@ -967,7 +972,7 @@ fun HomeLauncherScreen(
                             onChannelClick = {
                                 if (it != null) onChannelClick(it, false)
                             },
-                            onHistoryClick = { item -> playVerifiedHistory(item, ownedHistory.first) },
+                            onHistoryClick = { item -> displayedHistoryBackend?.let { source -> playVerifiedHistory(item, source) } },
                             onReserveClick = { if (backendType != "TIF") onReserveSelected(it) },
                             onProgramClick = { onEpgProgramSelected(it) },
                             onNavigateToTab = { targetIndex ->
@@ -1039,7 +1044,7 @@ fun HomeLauncherScreen(
                                     cancelPendingHistory()
                                     onProgramSelected(it)
                                 },
-                                onHistoryClick = { item -> playVerifiedHistory(item, ownedHistory.first) },
+                                onHistoryClick = { item -> displayedHistoryBackend?.let { source -> playVerifiedHistory(item, source) } },
                                 onShowAllRecordings = onShowAllRecordings,
                                 onShowSeriesList = onShowSeriesList,
                                 onShowSmbLibrary = onShowSmbLibrary,
