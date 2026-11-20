@@ -97,7 +97,11 @@ fun MainRootScreen(
                         if (state.backendType == TifInput.BACKEND_TYPE)
                             homeViewModel.refreshAfterTifInputChange()
                         else homeViewModel.refreshHomeData()
-                        channelViewModel.fetchChannels()
+                        // TIFは旧ジョブへ合流せず、復帰後の入力を強制再照会する。
+                        // 強制要求IDにより削除前の遅延応答を画面へ公開しない。
+                        channelViewModel.fetchChannels(
+                            force = state.backendType == TifInput.BACKEND_TYPE
+                        )
 
                         // 2. プレイヤー（ライブ・ビデオ・SMB）を開いたまま裏に行っていた場合、強制的にホーム画面に戻す
                         val hasTifPlayback = state.selectedChannel?.id?.startsWith("tif:") == true
@@ -162,7 +166,8 @@ fun MainRootScreen(
                 val currentlyGranted = ContextCompat.checkSelfPermission(
                     context, TifInput.READ_LISTINGS_PERMISSION
                 ) == PackageManager.PERMISSION_GRANTED
-                if (currentlyGranted != listingsPermissionGranted) channelViewModel.fetchChannels(force = true)
+                // ON_RESUME側でTIFの局取得は常に強制済み。
+                // 権限状態の更新のみ行い、同一復帰で二重照会しない。
                 listingsPermissionGranted = currentlyGranted
                 // TISスキャン後の復帰では権限に変化がなくてもEPGを更新する。
                 epgViewModel.refreshAfterTifInputChange()
