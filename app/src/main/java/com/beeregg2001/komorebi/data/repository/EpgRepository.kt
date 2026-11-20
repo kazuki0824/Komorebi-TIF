@@ -615,7 +615,7 @@ class EpgRepository @Inject constructor(
             if (requestBackend == TifInput.BACKEND_TYPE) {
                 val recent = synchronized(coverage) {
                     val last = tifPublishedAt[cacheKey] ?: Long.MIN_VALUE
-                    android.os.SystemClock.elapsedRealtime() - last in 0..1500 &&
+                    android.os.SystemClock.elapsedRealtime() - last in 0L..1500L &&
                         tifRangeCovered(cacheKey, startTime.toInstant().toEpochMilli(),
                             endTime.toInstant().toEpochMilli())
                 }
