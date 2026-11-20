@@ -65,6 +65,8 @@ fun MainRootScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val state = rememberMainRootState()
+    // 録画再生の後続選択が、背面ホームの遅延履歴照会を上書きしないための世代。
+    val recordedSelectionEpoch = remember { mutableIntStateOf(0) }
 
     // =========================================================================================
     // ★ 追加: アプリのバックグラウンド移行（スリープ）と復帰を検知する機構
@@ -264,6 +266,7 @@ fun MainRootScreen(
                         state.isPlayerMiniListOpen = false; state.playerIsSubMenuOpen = false
                         state.isPlayerSubMenuOpen = false; state.isPlayerSceneSearchOpen = false
                         state.isMiniPlayerMode = false
+                        recordedSelectionEpoch.intValue++
                         state.initialPlaybackPositionMs = 0L; state.selectedProgram = target
                         state.lastSelectedProgramId = target.id.toString()
                         state.showPlayerControls = true; state.isReturningFromPlayer = false
@@ -751,6 +754,7 @@ fun MainRootScreen(
 
                     MainRootBackground(
                         state = state,
+                        recordedSelectionEpoch = recordedSelectionEpoch,
                         channelViewModel = channelViewModel,
                         homeViewModel = homeViewModel,
                         epgViewModel = epgViewModel,
