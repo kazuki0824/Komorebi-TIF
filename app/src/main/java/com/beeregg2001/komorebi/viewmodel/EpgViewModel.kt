@@ -74,6 +74,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
 
     private var fullEpgData: List<EpgChannelWrapper> = emptyList()
     private var displayedBroadcastingType: String = "GR"
+    private var hasDisplayedDataForType = false
     private var fullLogoUrls: List<String> = emptyList()
     private var currentTargetTime: OffsetDateTime = OffsetDateTime.now()
 
@@ -344,6 +345,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
                     logoMemoryCache.clear()
                     fullEpgData = emptyList()
                     fullLogoUrls = emptyList()
+                    hasDisplayedDataForType = false
                     uiState = EpgUiState.Loading
                     _isInitialLoadComplete.value = false
                     _isPreloading.value = true
@@ -388,6 +390,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
         logoMemoryCache.clear()
         fullEpgData = emptyList()
         fullLogoUrls = emptyList()
+        hasDisplayedDataForType = false
         uiState = EpgUiState.Loading
         refreshEpgData()
         // 全種別の検索用取得を維持する。表示用と同一期間の照会はRepositoryで共有し、
@@ -405,6 +408,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
         val requestedType = channelType ?: _selectedBroadcastingType.value
         if (requestedType != _selectedBroadcastingType.value) return
         displayedBroadcastingType = requestedType
+        hasDisplayedDataForType = false
         epgJob = viewModelScope.launch {
             val typeToFetch = requestedType
             val now = OffsetDateTime.now()
@@ -416,11 +420,14 @@ class EpgViewModel @OptIn(UnstableApi::class)
             var hasShownRequestedType = false
             val cachedForType = epgMemoryCache[typeToFetch]
             if (cachedForType != null) {
+                hasDisplayedDataForType = true
                 fullEpgData = cachedForType
                 fullLogoUrls = logoMemoryCache[typeToFetch] ?: emptyList()
                 sliceAndEmitEpgData()
                 hasShownRequestedType = true
             } else {
+                fullEpgData = emptyList()
+                fullLogoUrls = emptyList()
                 uiState = EpgUiState.Loading
             }
 
@@ -430,6 +437,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
                     typeToFetch != displayedBroadcastingType) return@collect
                 result.onSuccess { data ->
                     hasShownRequestedType = true
+                    hasDisplayedDataForType = true
                     fullEpgData = data
                     epgMemoryCache[typeToFetch] = data
                     // ★ 時刻解析メモが無制限に膨らまないよう、元データ更新時に破棄する
@@ -492,6 +500,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
 
     private fun sliceAndEmitEpgData() {
         sliceJob?.cancel()
+        if (!hasDisplayedDataForType) return
         if (fullEpgData.isEmpty()) {
             // EPGを持たないTIF（HDMIのみ等）も正常完了。Loadingのままにしない。
             uiState = EpgUiState.Success(
