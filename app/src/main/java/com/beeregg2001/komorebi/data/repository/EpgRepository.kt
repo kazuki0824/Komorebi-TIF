@@ -74,6 +74,12 @@ class EpgRepository @Inject constructor(
     private val tifRetryRanges = mutableMapOf<String, Map<String, List<TifRetryWindow>>>()
     // 放送種別の公開局一覧も実際の照会開始順で更新する。
     private val tifCatalogSequence = mutableMapOf<String, Long>()
+    private data class TifCacheSnapshot(
+        val channels: List<EpgChannelWrapper>?,
+        val coverage: Map<String, List<TifCoverageWindow>>?,
+        val retries: Map<String, List<TifRetryWindow>>?,
+        val catalogSequence: Long?
+    )
     // 入力更新直後の表示・先読みが、公開直後の同一結果を再照会しないための短い共有窓。
     private val tifPublishedAt = mutableMapOf<String, Long>()
 
@@ -270,20 +276,17 @@ class EpgRepository @Inject constructor(
         while (true) {
             val original = synchronized(coverage) {
                 if (tifCacheRevision.get() != expectedRevision) null
-                else listOf(
+                else TifCacheSnapshot(
                     memoryCache[cacheKey],
                     tifChannelCoverage[cacheKey],
                     tifRetryRanges[cacheKey],
                     tifCatalogSequence[cacheKey]
                 )
             } ?: return@withContext null
-            @Suppress("UNCHECKED_CAST")
-            val previousChannels = original[0] as? List<EpgChannelWrapper>
-            @Suppress("UNCHECKED_CAST")
-            val oldCoverage = (original[1] as? Map<String, List<TifCoverageWindow>>).orEmpty()
-            @Suppress("UNCHECKED_CAST")
-            val oldRetry = (original[2] as? Map<String, List<TifRetryWindow>>).orEmpty()
-            val catalogSequence = original[3] as? Long ?: 0L
+            val previousChannels = original.channels
+            val oldCoverage = original.coverage.orEmpty()
+            val oldRetry = original.retries.orEmpty()
+            val catalogSequence = original.catalogSequence ?: 0L
             val previousById = previousChannels.orEmpty().associateBy { it.channel.id }
             val incomingById = channels.associateBy { it.channel.id }
             // 古い照会結果では公開局集合・局名を巻き戻さない。
@@ -359,9 +362,9 @@ class EpgRepository @Inject constructor(
                 when {
                     tifCacheRevision.get() != expectedRevision -> -1
                     memoryCache[cacheKey] !== previousChannels ||
-                        tifChannelCoverage[cacheKey] !== original[1] ||
-                        tifRetryRanges[cacheKey] !== original[2] ||
-                        tifCatalogSequence[cacheKey] != original[3] -> 0
+                        tifChannelCoverage[cacheKey] !== original.coverage ||
+                        tifRetryRanges[cacheKey] !== original.retries ||
+                        tifCatalogSequence[cacheKey] != original.catalogSequence -> 0
                     else -> {
                         memoryCache[cacheKey] = merged
                         tifChannelCoverage[cacheKey] = updatedCoverage
