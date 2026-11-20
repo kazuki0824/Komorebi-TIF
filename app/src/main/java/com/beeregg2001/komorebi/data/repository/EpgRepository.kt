@@ -643,18 +643,31 @@ class EpgRepository @Inject constructor(
                  requestRevision != tifCacheRevision.get())) return@flow
             if (requestBackend == TifInput.BACKEND_TYPE && snapshot != null &&
                 snapshot.channels.isNotEmpty() &&
-                snapshot.failedChannelIds.size == snapshot.channels.size &&
-                snapshot.channels.all { it.programs.isEmpty() } &&
-                memoryCache[cacheKey].orEmpty().all { it.programs.isEmpty() }
+                snapshot.failedChannelIds.size == snapshot.channels.size
             ) {
-                synchronized(tifFetchLock) {
-                    tifInFlight.removeAll {
-                        it.revision == requestRevision && it.channelType == channelType &&
-                            it.start == startTime.toInstant().toEpochMilli() &&
-                            it.end == endTime.toInstant().toEpochMilli() && it.waiters == 0
+                val visibleIds = snapshot.channels.mapTo(mutableSetOf()) { it.channel.id }
+                val rangeStart = startTime.toInstant().toEpochMilli()
+                val rangeEnd = endTime.toInstant().toEpochMilli()
+                val usableOldPrograms = memoryCache[cacheKey].orEmpty().any { row ->
+                    row.channel.id in visibleIds && row.programs.any { program ->
+                        val from = runCatching {
+                            OffsetDateTime.parse(program.start_time).toInstant().toEpochMilli()
+                        }.getOrDefault(Long.MAX_VALUE)
+                        val to = runCatching {
+                            OffsetDateTime.parse(program.end_time).toInstant().toEpochMilli()
+                        }.getOrDefault(Long.MIN_VALUE)
+                        to > rangeStart && from < rangeEnd
                     }
                 }
-                throw IllegalStateException("TV番組表の全局照会に失敗しました。")
+                if (!usableOldPrograms) {
+                    synchronized(tifFetchLock) {
+                        tifInFlight.removeAll {
+                            it.revision == requestRevision && it.channelType == channelType &&
+                                it.start == rangeStart && it.end == rangeEnd && it.waiters == 0
+                        }
+                    }
+                    throw IllegalStateException("TV番組表の全局照会に失敗しました。")
+                }
             }
             val published = cacheEpg(cacheKey, requestBackend,
                 startTime.toInstant().toEpochMilli(), endTime.toInstant().toEpochMilli(),
