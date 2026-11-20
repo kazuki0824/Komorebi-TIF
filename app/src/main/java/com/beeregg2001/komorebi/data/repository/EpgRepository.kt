@@ -260,7 +260,8 @@ class EpgRepository @Inject constructor(
     private suspend fun cacheEpg(
         cacheKey: String, backend: String, start: Long, end: Long,
         channels: List<EpgChannelWrapper>, expectedRevision: Long,
-        requestSequence: Long = 0L, failedIds: Set<String> = emptySet()
+        requestSequence: Long = 0L, failedIds: Set<String> = emptySet(),
+        cutoff: Long = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
     ): List<EpgChannelWrapper>? = withContext(Dispatchers.Default) {
         if (backend != TifInput.BACKEND_TYPE) {
             synchronized(coverage) {
@@ -270,7 +271,6 @@ class EpgRepository @Inject constructor(
             return@withContext channels
         }
 
-        val cutoff = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
         if (end <= cutoff) return@withContext channels
 
         fun time(value: String, invalid: Long): Long =
@@ -750,11 +750,11 @@ class EpgRepository @Inject constructor(
             if (settingsRepository.backendType.first() != requestBackend ||
                 (requestBackend == TifInput.BACKEND_TYPE &&
                  requestRevision != tifCacheRevision.get())) return@flow
-            // 検索キャッシュの保持期限より前の期間はキャッシュへ保存しない。
-            // 同種別の現在番組キャッシュを代用すると、要求した過去期間と食い違う。
+            // 保持期限の基準時刻を一度だけ確定し、キャッシュ側の判定にも渡す。
+            // Default Dispatcherへの切替中に24時間境界を跨いでも判断を揃える。
+            val cacheCutoff = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
             if (requestBackend == TifInput.BACKEND_TYPE &&
-                endTime.toInstant().toEpochMilli() <=
-                    System.currentTimeMillis() - 24L * 60L * 60L * 1000L) {
+                endTime.toInstant().toEpochMilli() <= cacheCutoff) {
                 val allFailed = snapshot != null && snapshot.channels.isNotEmpty() &&
                     snapshot.failedChannelIds.size == snapshot.channels.size
                 if (allFailed) emit(Result.failure(
@@ -764,7 +764,8 @@ class EpgRepository @Inject constructor(
             }
             val published = cacheEpg(cacheKey, requestBackend,
                 startTime.toInstant().toEpochMilli(), endTime.toInstant().toEpochMilli(),
-                channels, requestRevision, fetched?.sequence ?: 0L, snapshot?.failedChannelIds.orEmpty())
+                channels, requestRevision, fetched?.sequence ?: 0L,
+                snapshot?.failedChannelIds.orEmpty(), cutoff = cacheCutoff)
                 ?: return@flow
             if (settingsRepository.backendType.first() != requestBackend ||
                 (requestBackend == TifInput.BACKEND_TYPE &&
