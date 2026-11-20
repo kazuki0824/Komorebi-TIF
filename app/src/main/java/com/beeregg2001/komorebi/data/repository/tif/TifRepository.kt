@@ -123,6 +123,12 @@ class TifRepository @Inject constructor(
         val genres: List<EpgGenre>?
     )
 
+    /** 取得失敗の局と、正常に0番組だった局を区別する。 */
+    data class EpgSnapshot(
+        val channels: List<EpgChannelWrapper>,
+        val failedChannelIds: Set<String>
+    )
+
     private fun hasListingsPermission(): Boolean =
         context.checkSelfPermission(TifInput.READ_LISTINGS_PERMISSION) == PackageManager.PERMISSION_GRANTED
 
@@ -182,9 +188,9 @@ class TifRepository @Inject constructor(
     }
 
     /** 番組情報がないTISでもチャンネルを残す。権限不備だけは必ず呼出元へ伝える。 */
-    private suspend fun readProgramsOrEmpty(
+    private suspend fun readProgramsOrNull(
         rowId: Long, start: Long? = null, end: Long? = null, liveNow: Long? = null
-    ): List<ProgramRow> =
+    ): List<ProgramRow>? =
         try {
             currentCoroutineContext().ensureActive()
             if (liveNow != null) readLivePrograms(rowId, liveNow)
@@ -195,7 +201,7 @@ class TifRepository @Inject constructor(
             throw error
         } catch (error: Exception) {
             Log.w("TifRepository", "番組情報取得失敗 rowId=" + rowId, error)
-            emptyList()
+            null
         }
 
     /**
@@ -470,9 +476,9 @@ class TifRepository @Inject constructor(
         val displayNames = tunerDisplayNames(tunerRows, infos)
         val channels = tunerRows.map { row ->
             // 別TISがEPGを公開していなくても視聴チャンネルまで消さない。
-            val programs = readProgramsOrEmpty(
+            val programs = readProgramsOrNull(
                 row.id, liveNow = now
-            )
+            ).orEmpty()
             val displayName = displayNames[row.id] ?: row.name
             row.toLiveChannel(
                 programs.firstOrNull { it.start <= now && it.end > now },
@@ -494,9 +500,10 @@ class TifRepository @Inject constructor(
         throw UnsupportedOperationException("TIFはTvView.tune()によって視聴します。")
     override suspend fun getChannelLogoUrl(channelId: String): String = ""
 
-    private suspend fun toEpgWrapper(row: ChannelRow, from: Long, to: Long, displayName: String): EpgChannelWrapper {
+    private fun toEpgWrapper(
+        row: ChannelRow, programs: List<ProgramRow>, displayName: String
+    ): EpgChannelWrapper {
             val id = TifInput.channelId(row.inputId, row.id)
-            val programs = readProgramsOrEmpty(row.id, from, to)
             return EpgChannelWrapper(
                 channel = EpgChannel(
                     id = id, display_channel_id = row.number.ifBlank { row.sid.toString() },
@@ -522,20 +529,33 @@ class TifRepository @Inject constructor(
             )
     }
 
-    override suspend fun getEpgPrograms(
+    /** 局単位の取得失敗は局を消さずに通知し、成功した空一覧とは区別する。 */
+    suspend fun getEpgSnapshot(
         startTime: String?, endTime: String?, channelType: String?
-    ): List<EpgChannelWrapper> = withContext(Dispatchers.IO) {
+    ): EpgSnapshot = withContext(Dispatchers.IO) {
         val from = startTime?.let { OffsetDateTime.parse(it).toInstant().toEpochMilli() }
             ?: (System.currentTimeMillis() - 60 * 60_000L)
         val to = endTime?.let { OffsetDateTime.parse(it).toInstant().toEpochMilli() }
             ?: (from + 24 * 60 * 60_000L)
-        if (to <= from || channelType == "INPUT") return@withContext emptyList()
+        if (to <= from || channelType == "INPUT")
+            return@withContext EpgSnapshot(emptyList(), emptySet())
         val infos = TifInput.inputs(context)
         val rows = readTunerChannels(infos)
         val displayNames = tunerDisplayNames(rows, infos)
-        rows.filter { channelType.isNullOrBlank() || it.category == channelType }
-            .map { toEpgWrapper(it, from, to, displayNames[it.id] ?: it.name) }
+        val failed = mutableSetOf<String>()
+        val channels = rows.filter { channelType.isNullOrBlank() || it.category == channelType }
+            .map { row ->
+                val id = TifInput.channelId(row.inputId, row.id)
+                val programs = readProgramsOrNull(row.id, from, to)
+                if (programs == null) failed += id
+                toEpgWrapper(row, programs.orEmpty(), displayNames[row.id] ?: row.name)
+            }
+        EpgSnapshot(channels, failed)
     }
+
+    override suspend fun getEpgPrograms(
+        startTime: String?, endTime: String?, channelType: String?
+    ): List<EpgChannelWrapper> = getEpgSnapshot(startTime, endTime, channelType).channels
 
     override suspend fun getPinnedEpgPrograms(pinnedChannelIds: String): List<EpgChannelWrapper> =
         withContext(Dispatchers.IO) {
@@ -549,7 +569,12 @@ class TifRepository @Inject constructor(
             val rows = readTunerChannels(infos)
             val displayNames = tunerDisplayNames(rows, infos)
             rows.filter { TifInput.channelId(it.inputId, it.id) in wanted }
-                .map { toEpgWrapper(it, from, to, displayNames[it.id] ?: it.name) }
+                .map { row ->
+                    toEpgWrapper(
+                        row, readProgramsOrNull(row.id, from, to).orEmpty(),
+                        displayNames[row.id] ?: row.name
+                    )
+                }
         }
 
     // 汎用TIFの録画対応可否と、Komorebiの録画UI実装可否は別問題。
