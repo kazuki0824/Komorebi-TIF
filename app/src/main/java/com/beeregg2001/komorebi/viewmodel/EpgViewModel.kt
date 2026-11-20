@@ -390,9 +390,14 @@ class EpgViewModel @OptIn(UnstableApi::class)
         uiState = EpgUiState.Loading
         refreshEpgData()
         // 番組検索は全種別の7日間を母集団とする。入力変更後も再構築する。
+        val currentlyDisplayedType = _selectedBroadcastingType.value
         preloadJob = viewModelScope.launch {
-            if (settingsRepository.backendType.first() == "TIF")
-                preloadEpgDataForSearchNow(preloadTypesFor("TIF"))
+            if (settingsRepository.backendType.first() == "TIF") {
+                // 選択中種別は表示用取得が7日分をキャッシュするため、二重queryを起こさない。
+                preloadEpgDataForSearchNow(
+                    preloadTypesFor("TIF").filterNot { it == currentlyDisplayedType }
+                )
+            }
         }
     }
 
