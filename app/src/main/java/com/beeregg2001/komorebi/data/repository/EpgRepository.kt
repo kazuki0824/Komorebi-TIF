@@ -755,8 +755,15 @@ class EpgRepository @Inject constructor(
                 // 0局・0番組という正常結果をAの遅延失敗でエラーへ戻さない。
                 // Bの成功が一部期間だけなら、未取得期間の失敗は隠さない。
                 val newerSuccessfulEmpty = synchronized(coverage) {
-                    (tifCatalogSequence[cacheKey] ?: 0L) > (fetched?.sequence ?: 0L) &&
-                        tifRangeCovered(cacheKey, from, to)
+                    val hasNewerCatalog =
+                        (tifCatalogSequence[cacheKey] ?: 0L) > (fetched?.sequence ?: 0L)
+                    hasNewerCatalog && (
+                        // TV入力の公開局集合は番組照会の時間窓に依存しない。
+                        // 新しい照会が正常な0局を返したら、古い照会の失敗は無効。
+                        memoryCache[cacheKey]?.isEmpty() == true ||
+                            // 局がある場合の正常な0番組は、要求期間の被覆が必要。
+                            tifRangeCovered(cacheKey, from, to)
+                    )
                 }
                 if (!hasCurrentProgram && !newerSuccessfulEmpty) {
                     // 失敗した共有照会を次回の再試行に流用しない。
