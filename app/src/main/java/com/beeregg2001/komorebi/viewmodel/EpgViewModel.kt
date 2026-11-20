@@ -307,7 +307,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
     private suspend fun preloadEpgDataForSearchNow(availableTypes: List<String>) {
         val now = OffsetDateTime.now()
         val start = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
-        val end = start.plusDays(7)
+        val end = start.plusDays(7).plusHours(4)
         coroutineScope {
             availableTypes.map { type ->
                 async(Dispatchers.IO) {
@@ -413,7 +413,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
             val typeToFetch = requestedType
             val now = OffsetDateTime.now()
             val start = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
-            val end = start.plusDays(7)
+            val end = start.plusDays(7).plusHours(4)
 
             // 成功を維持できるのは同じ種別のデータを表示した場合だけ。
             // 前の放送種別のSuccessを新種別の取得失敗へ流用しない。
