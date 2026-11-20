@@ -133,9 +133,11 @@ class EpgRepository @Inject constructor(
 
         while (true) {
             val snapshot = synchronized(coverage) {
-                if (tifCacheRevision.get() != expectedRevision ||
-                    (appliedTifRequests[cacheKey] ?: 0L) > requestSequence) {
+                if (tifCacheRevision.get() != expectedRevision) {
                     null
+                } else if ((appliedTifRequests[cacheKey] ?: 0L) > requestSequence) {
+                    // 古い応答は上書きせず、最新の公開済み結果を呼出元へ返す。
+                    return@withContext memoryCache[cacheKey]
                 } else {
                     Pair(coverage[cacheKey], memoryCache[cacheKey])
                 }
@@ -183,7 +185,9 @@ class EpgRepository @Inject constructor(
                 }
             }
             if (committed == 1) return@withContext merged
-            if (committed == -1) return@withContext null
+            if (committed == -1) return@withContext synchronized(coverage) {
+                if (tifCacheRevision.get() != expectedRevision) null else memoryCache[cacheKey]
+            }
         }
         @Suppress("UNREACHABLE_CODE")
         null
