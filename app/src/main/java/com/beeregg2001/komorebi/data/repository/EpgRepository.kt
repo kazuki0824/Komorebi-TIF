@@ -809,7 +809,8 @@ class EpgRepository @Inject constructor(
                 }
                 // 全局失敗も正常0局も、検証した同じ一覧で通知を確定する。
                 // Flow.emitは購読側で中断するため、Mutexを保持しない。
-                if (delivery.isFailure) {
+                val outcome = checkNotNull(delivery)
+                if (outcome.isFailure) {
                     synchronized(tifFetchLock) {
                         tifInFlight.removeAll {
                             it.revision == requestRevision &&
@@ -819,7 +820,7 @@ class EpgRepository @Inject constructor(
                     }
                 }
                 if (requestRevision != tifCacheRevision.get()) return@flow
-                emit(delivery)
+                emit(outcome)
             } else {
                 emit(Result.success(published))
                 CoroutineScope(Dispatchers.IO).launch {
