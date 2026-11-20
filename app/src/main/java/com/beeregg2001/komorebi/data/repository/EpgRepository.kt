@@ -113,7 +113,8 @@ class EpgRepository @Inject constructor(
         val start: Long,
         val end: Long,
         val task: Deferred<TifRepository.EpgSnapshot>,
-        var waiters: Int = 0
+        var waiters: Int = 0,
+        var completedAt: Long? = null
     )
     private val tifFetchLock = Any()
     private val tifInFlight = mutableListOf<TifInFlight>()
@@ -145,6 +146,10 @@ class EpgRepository @Inject constructor(
         // より広い取得が進行中なら、それを共有して要求区間へ切り詰める。
         // 狭い取得では広い要求を満たせないため、その逆方向の流用はしない。
         val entry = synchronized(tifFetchLock) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            tifInFlight.removeAll {
+                it.waiters == 0 && it.completedAt?.let { at -> now - at > 1500 } == true
+            }
             val matched = tifInFlight.firstOrNull {
                 it.revision == revision && it.channelType == channelType &&
                     it.start <= from && it.end >= to
@@ -155,7 +160,10 @@ class EpgRepository @Inject constructor(
                 val next = TifInFlight(revision, channelType, from, to, deferred)
                 tifInFlight.add(next)
                 deferred.invokeOnCompletion { cause ->
-                    if (cause != null) synchronized(tifFetchLock) { tifInFlight.remove(next) }
+                    synchronized(tifFetchLock) {
+                        next.completedAt = android.os.SystemClock.elapsedRealtime()
+                        if (cause != null) tifInFlight.remove(next)
+                    }
                 }
                 deferred.start()
                 next
@@ -639,6 +647,13 @@ class EpgRepository @Inject constructor(
                 snapshot.channels.all { it.programs.isEmpty() } &&
                 memoryCache[cacheKey].orEmpty().all { it.programs.isEmpty() }
             ) {
+                synchronized(tifFetchLock) {
+                    tifInFlight.removeAll {
+                        it.revision == requestRevision && it.channelType == channelType &&
+                            it.start == startTime.toInstant().toEpochMilli() &&
+                            it.end == endTime.toInstant().toEpochMilli() && it.waiters == 0
+                    }
+                }
                 throw IllegalStateException("TV番組表の全局照会に失敗しました。")
             }
             val published = cacheEpg(cacheKey, requestBackend,
