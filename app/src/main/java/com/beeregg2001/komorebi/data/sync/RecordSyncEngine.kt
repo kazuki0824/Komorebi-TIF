@@ -324,10 +324,11 @@ class RecordSyncEngine @Inject constructor(
             val owned = ownerPrefs.getString("backend", null) == syncBackend &&
                 !ownerPrefs.getBoolean("pending", false)
             val performFullSync = forceFullSync || !owned
-            if (performFullSync) {
-                dictionaryJob?.cancel()
-                dictionaryJob?.join()
-            }
+            // 通常同期でも旧世代の辞書処理を終了させてから新世代を公開する。
+            // 旧辞書が生存したままだと新辞書を起動できず、「準備中」が残る。
+            dictionaryJob?.cancel()
+            dictionaryJob?.join()
+            dictionaryJob = null
             jobMutex.withLock {
                 activeSyncJob = currentJob
             }
