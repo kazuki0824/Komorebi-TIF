@@ -303,11 +303,25 @@ class EpgViewModel @OptIn(UnstableApi::class)
         if (backend == "TIF") listOf("GR", "BS", "CS", "TV")
         else listOf("GR", "BS", "CS", "SKY", "BS4K")
 
+    /**
+     * TIFは最後の表示対象放送日の翌朝04時、ネットワークは従来の現在＋7日を
+     * 下回らない終端を使う。標準TvProvider自体には放送日境界を要求しない。
+     */
+    private fun epgRangeEnd(now: OffsetDateTime, backend: String): OffsetDateTime {
+        val dayStart = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
+        val lastBroadcastDayEnd = dayStart.plusDays(7).plusHours(4)
+        if (backend == "TIF") return lastBroadcastDayEnd
+        val originalSearchEnd = now.plusDays(7)
+        return if (originalSearchEnd.isAfter(lastBroadcastDayEnd))
+            originalSearchEnd else lastBroadcastDayEnd
+    }
+
     /** 呼出元のJobへ従属させる。delay後の実取得もcancelが伝播する。 */
     private suspend fun preloadEpgDataForSearchNow(availableTypes: List<String>) {
+        val backend = settingsRepository.backendType.first()
         val now = OffsetDateTime.now()
         val start = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
-        val end = start.plusDays(7).plusHours(4)
+        val end = epgRangeEnd(now, backend)
         coroutineScope {
             availableTypes.map { type ->
                 async(Dispatchers.IO) {
@@ -417,7 +431,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
             val typeToFetch = requestedType
             val now = OffsetDateTime.now()
             val start = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
-            val end = start.plusDays(7).plusHours(4)
+            val end = epgRangeEnd(now, settingsRepository.backendType.first())
 
             // 成功を維持できるのは同じ種別のデータを表示した場合だけ。
             // 前の放送種別のSuccessを新種別の取得失敗へ流用しない。
