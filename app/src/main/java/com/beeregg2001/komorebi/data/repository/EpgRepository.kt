@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import java.text.Normalizer
 import java.time.OffsetDateTime
@@ -82,6 +83,8 @@ class EpgRepository @Inject constructor(
     )
     // 入力更新直後の表示・先読みが、公開直後の同一結果を再照会しないための短い共有窓。
     private val tifPublishedAt = mutableMapOf<String, Long>()
+    // 番組表へ通知する際の局一覧と、TIFキャッシュの公開を同じ排他境界で扱う。
+    private val tifPublicationMutex = Mutex()
 
     private fun subtractWindows(
         from: Long, to: Long, blocked: List<Pair<Long, Long>>
@@ -363,8 +366,11 @@ class EpgRepository @Inject constructor(
 
                 selected.copy(programs = combined)
             }
-            val accepted = synchronized(coverage) {
-                when {
+            // メモリ上の候補計算は排他外で行い、公開だけを短く直列化する。
+            tifPublicationMutex.lock()
+            val accepted = try {
+                synchronized(coverage) {
+                    when {
                     tifCacheRevision.get() != expectedRevision -> -1
                     memoryCache[cacheKey] !== previousChannels ||
                         tifChannelCoverage[cacheKey] !== original.coverage ||
@@ -392,7 +398,10 @@ class EpgRepository @Inject constructor(
                         tifPublishedAt[cacheKey] = android.os.SystemClock.elapsedRealtime()
                         1
                     }
+                    }
                 }
+            } finally {
+                tifPublicationMutex.unlock()
             }
             if (accepted == 1) {
                 // 取得結果がキャッシュへ反映された段階で、完了済み共有照会を解放する。
@@ -706,11 +715,22 @@ class EpgRepository @Inject constructor(
                     tifRangeCovered(cacheKey, startTime.toInstant().toEpochMilli(),
                         endTime.toInstant().toEpochMilli())
                 if (recent) {
-                    val cached = memoryCache[cacheKey]
-                    if (cached != null && settingsRepository.backendType.first() == requestBackend &&
-                        requestRevision == tifCacheRevision.get()) {
-                        emit(Result.success(cached))
-                        return@flow
+                    tifPublicationMutex.lock()
+                    try {
+                        val cached = synchronized(coverage) {
+                            if (requestRevision != tifCacheRevision.get() ||
+                                !isRecentlyPublishedTif(cacheKey) ||
+                                !tifRangeCovered(cacheKey, startTime.toInstant().toEpochMilli(),
+                                    endTime.toInstant().toEpochMilli())) null
+                            else memoryCache[cacheKey]
+                        }
+                        if (cached != null &&
+                            settingsRepository.backendType.first() == requestBackend) {
+                            emit(Result.success(cached))
+                            return@flow
+                        }
+                    } finally {
+                        tifPublicationMutex.unlock()
                     }
                 }
             }
@@ -732,57 +752,64 @@ class EpgRepository @Inject constructor(
                 startTime.toInstant().toEpochMilli(), endTime.toInstant().toEpochMilli(),
                 channels, requestRevision, fetched?.sequence ?: 0L, snapshot?.failedChannelIds.orEmpty())
                 ?: return@flow
-            // 全局失敗の可否は古い照会自身の局集合ではなく、キャッシュに
-            // 採用された最新の公開局・番組を正とする。
-            if (requestBackend == TifInput.BACKEND_TYPE && snapshot != null &&
-                snapshot.channels.isNotEmpty() &&
-                snapshot.failedChannelIds.size == snapshot.channels.size
-            ) {
-                val from = startTime.toInstant().toEpochMilli()
-                val to = endTime.toInstant().toEpochMilli()
-                val hasCurrentProgram = published.any { row ->
-                    row.programs.any { program ->
-                        val begins = runCatching {
-                            OffsetDateTime.parse(program.start_time).toInstant().toEpochMilli()
-                        }.getOrDefault(Long.MAX_VALUE)
-                        val ends = runCatching {
-                            OffsetDateTime.parse(program.end_time).toInstant().toEpochMilli()
-                        }.getOrDefault(Long.MIN_VALUE)
-                        ends > from && begins < to
-                    }
-                }
-                // Aより後に開始した実照会Bが要求範囲を正常に取得していれば、
-                // 0局・0番組という正常結果をAの遅延失敗でエラーへ戻さない。
-                // Bの成功が一部期間だけなら、未取得期間の失敗は隠さない。
-                val newerSuccessfulEmpty = synchronized(coverage) {
-                    val hasNewerCatalog =
-                        (tifCatalogSequence[cacheKey] ?: 0L) > (fetched?.sequence ?: 0L)
-                    hasNewerCatalog && (
-                        // TV入力の公開局集合は番組照会の時間窓に依存しない。
-                        // 新しい照会が正常な0局を返したら、古い照会の失敗は無効。
-                        memoryCache[cacheKey]?.isEmpty() == true ||
-                            // 局がある場合の正常な0番組は、要求期間の被覆が必要。
-                            tifRangeCovered(cacheKey, from, to)
-                    )
-                }
-                if (!hasCurrentProgram && !newerSuccessfulEmpty) {
-                    // 失敗した共有照会を次回の再試行に流用しない。
-                    synchronized(tifFetchLock) {
-                        tifInFlight.removeAll {
-                            it.revision == requestRevision && it.channelType == channelType &&
-                                it.start == from && it.end == to && it.waiters == 0
-                        }
-                    }
-                    throw IllegalStateException("TV番組表の全局照会に失敗しました。")
-                }
-            }
             if (settingsRepository.backendType.first() != requestBackend ||
                 (requestBackend == TifInput.BACKEND_TYPE &&
                  requestRevision != tifCacheRevision.get())) return@flow
-            emit(Result.success(published))
-
-            if (requestBackend != TifInput.BACKEND_TYPE) CoroutineScope(Dispatchers.IO).launch {
-                saveToFileCache(cacheKey, published)
+            if (requestBackend == TifInput.BACKEND_TYPE) {
+                // cacheEpgの公開と同じMutexを使う。局集合の新旧判定と
+                // emitする一覧が途中の別照会によって食い違うことを防ぐ。
+                tifPublicationMutex.lock()
+                try {
+                    val from = startTime.toInstant().toEpochMilli()
+                    val to = endTime.toInstant().toEpochMilli()
+                    val current = synchronized(coverage) {
+                        if (requestRevision != tifCacheRevision.get()) null
+                        else {
+                            val visible = memoryCache[cacheKey] ?: published
+                            val newer = (tifCatalogSequence[cacheKey] ?: 0L) >
+                                (fetched?.sequence ?: 0L)
+                            val newerSuccess = newer &&
+                                (visible.isEmpty() || tifRangeCovered(cacheKey, from, to))
+                            visible to newerSuccess
+                        }
+                    } ?: return@flow
+                    val (visible, newerSuccessfulEmpty) = current
+                    val allFailed = snapshot != null &&
+                        snapshot.channels.isNotEmpty() &&
+                        snapshot.failedChannelIds.size == snapshot.channels.size
+                    if (allFailed) {
+                        val hasCurrentProgram = visible.any { row ->
+                            row.programs.any { program ->
+                                val begins = runCatching {
+                                    OffsetDateTime.parse(program.start_time).toInstant().toEpochMilli()
+                                }.getOrDefault(Long.MAX_VALUE)
+                                val ends = runCatching {
+                                    OffsetDateTime.parse(program.end_time).toInstant().toEpochMilli()
+                                }.getOrDefault(Long.MIN_VALUE)
+                                ends > from && begins < to
+                            }
+                        }
+                        if (!hasCurrentProgram && !newerSuccessfulEmpty) {
+                            synchronized(tifFetchLock) {
+                                tifInFlight.removeAll {
+                                    it.revision == requestRevision &&
+                                        it.channelType == channelType &&
+                                        it.start == from && it.end == to && it.waiters == 0
+                                }
+                            }
+                            throw IllegalStateException("TV番組表の全局照会に失敗しました。")
+                        }
+                    }
+                    // 空一覧か局ありかも含め、上記と同じスナップショットを返す。
+                    emit(Result.success(visible))
+                } finally {
+                    tifPublicationMutex.unlock()
+                }
+            } else {
+                emit(Result.success(published))
+                CoroutineScope(Dispatchers.IO).launch {
+                    saveToFileCache(cacheKey, published)
+                }
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
