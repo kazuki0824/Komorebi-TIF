@@ -72,13 +72,18 @@ class WatchHistoryRepository @Inject constructor(
         }
     }
 
+    // 選択backendとRoomから取り出した履歴を単一emissionで公開する。
+    // backend切替時の直前のリストを、新backendの録画履歴と誤認しない。
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    fun getLocalWatchHistory(): Flow<List<WatchHistoryEntity>> =
+    fun getOwnedLocalWatchHistory(): Flow<Pair<String, List<WatchHistoryEntity>>> =
         settingsRepository.backendType.flatMapLatest { backend ->
             backendHistoryDao.observeRecent(backend).map { rows ->
-                rows.map(::fromRow)
+                backend to rows.map(::fromRow)
             }
         }
+
+    fun getLocalWatchHistory(): Flow<List<WatchHistoryEntity>> =
+        getOwnedLocalWatchHistory().map { it.second }
 
     suspend fun getHistoryEntityById(id: Int, backend: String): WatchHistoryEntity? =
         backendHistoryDao.findById(backend, id)?.let(::fromRow)
