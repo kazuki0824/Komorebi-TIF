@@ -95,9 +95,9 @@ class EpgRepository @Inject constructor(
             candidate.cancel()
             existing
         } else {
-            candidate.also {
-                it.invokeOnCompletion { tifInFlight.remove(key, it) }
-                it.start()
+            candidate.also { deferred ->
+                deferred.invokeOnCompletion { tifInFlight.remove(key, deferred) }
+                deferred.start()
             }
         }
         return task.await()
