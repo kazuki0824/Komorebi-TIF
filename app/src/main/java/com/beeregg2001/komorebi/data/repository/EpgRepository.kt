@@ -113,6 +113,11 @@ class EpgRepository @Inject constructor(
         return result
     }
 
+    private fun isRecentlyPublishedTif(key: String): Boolean = synchronized(coverage) {
+        val last = tifPublishedAt[key] ?: return@synchronized false
+        android.os.SystemClock.elapsedRealtime() - last in 0L..1500L
+    }
+
     private fun tifRangeCovered(key: String, from: Long, to: Long): Boolean =
         synchronized(coverage) {
             val rows = memoryCache[key] ?: return@synchronized false
@@ -373,8 +378,14 @@ class EpgRepository @Inject constructor(
                             tifCatalogSequence[cacheKey] = requestSequence
                         }
                         if (merged.isEmpty() && requestSequence >= catalogSequence) {
-                            // 0局もこの範囲の正常な取得成功として再利用可能にする。
-                            coverage[cacheKey] = start to end
+                            // 同一の実照会を共有した広い取得範囲を狭い待機者が縮めない。
+                            // 新しい実照会が0局と判断した場合は旧世代の被覆を引き継がない。
+                            val oldEmpty = coverage[cacheKey]
+                            coverage[cacheKey] = if (requestSequence == catalogSequence &&
+                                previousChannels?.isEmpty() == true && oldEmpty != null &&
+                                start <= oldEmpty.second && end >= oldEmpty.first) {
+                                minOf(start, oldEmpty.first) to maxOf(end, oldEmpty.second)
+                            } else start to end
                         } else if (merged.isNotEmpty()) {
                             coverage.remove(cacheKey)
                         }
@@ -592,8 +603,13 @@ class EpgRepository @Inject constructor(
         val cacheKey = requestBackend + "_" + channelType
         val requestRevision = tifCacheRevision.get()
         if (requestBackend == TifInput.BACKEND_TYPE) {
-            if (tifRangeCovered(cacheKey, startTime.toInstant().toEpochMilli(),
-                    endTime.toInstant().toEpochMilli())) return
+            val alreadyCovered = tifRangeCovered(cacheKey, startTime.toInstant().toEpochMilli(),
+                endTime.toInstant().toEpochMilli())
+            // 0局はTV Providerのセットアップ・再スキャン後に変化し得る。
+            // 直後の並行呼出元だけ再利用し、10秒後の検索先読みでは再列挙する。
+            if (alreadyCovered &&
+                (memoryCache[cacheKey]?.isNotEmpty() == true ||
+                    isRecentlyPublishedTif(cacheKey))) return
         } else if (memoryCache.containsKey(cacheKey)) return
 
         var isFreshCacheAvailable = false
@@ -686,12 +702,9 @@ class EpgRepository @Inject constructor(
             val endStr = endTime.format(formatter)
 
             if (requestBackend == TifInput.BACKEND_TYPE) {
-                val recent = synchronized(coverage) {
-                    val last = tifPublishedAt[cacheKey] ?: Long.MIN_VALUE
-                    android.os.SystemClock.elapsedRealtime() - last in 0L..1500L &&
-                        tifRangeCovered(cacheKey, startTime.toInstant().toEpochMilli(),
-                            endTime.toInstant().toEpochMilli())
-                }
+                val recent = isRecentlyPublishedTif(cacheKey) &&
+                    tifRangeCovered(cacheKey, startTime.toInstant().toEpochMilli(),
+                        endTime.toInstant().toEpochMilli())
                 if (recent) {
                     val cached = memoryCache[cacheKey]
                     if (cached != null && settingsRepository.backendType.first() == requestBackend &&
@@ -715,38 +728,40 @@ class EpgRepository @Inject constructor(
             if (settingsRepository.backendType.first() != requestBackend ||
                 (requestBackend == TifInput.BACKEND_TYPE &&
                  requestRevision != tifCacheRevision.get())) return@flow
+            val published = cacheEpg(cacheKey, requestBackend,
+                startTime.toInstant().toEpochMilli(), endTime.toInstant().toEpochMilli(),
+                channels, requestRevision, fetched?.sequence ?: 0L, snapshot?.failedChannelIds.orEmpty())
+                ?: return@flow
+            // 全局失敗の可否は古い照会自身の局集合ではなく、キャッシュに
+            // 採用された最新の公開局・番組を正とする。
             if (requestBackend == TifInput.BACKEND_TYPE && snapshot != null &&
                 snapshot.channels.isNotEmpty() &&
                 snapshot.failedChannelIds.size == snapshot.channels.size
             ) {
-                val visibleIds = snapshot.channels.mapTo(mutableSetOf()) { it.channel.id }
-                val rangeStart = startTime.toInstant().toEpochMilli()
-                val rangeEnd = endTime.toInstant().toEpochMilli()
-                val usableOldPrograms = memoryCache[cacheKey].orEmpty().any { row ->
-                    row.channel.id in visibleIds && row.programs.any { program ->
-                        val from = runCatching {
+                val from = startTime.toInstant().toEpochMilli()
+                val to = endTime.toInstant().toEpochMilli()
+                val hasCurrentProgram = published.any { row ->
+                    row.programs.any { program ->
+                        val begins = runCatching {
                             OffsetDateTime.parse(program.start_time).toInstant().toEpochMilli()
                         }.getOrDefault(Long.MAX_VALUE)
-                        val to = runCatching {
+                        val ends = runCatching {
                             OffsetDateTime.parse(program.end_time).toInstant().toEpochMilli()
                         }.getOrDefault(Long.MIN_VALUE)
-                        to > rangeStart && from < rangeEnd
+                        ends > from && begins < to
                     }
                 }
-                if (!usableOldPrograms) {
+                if (!hasCurrentProgram) {
+                    // 失敗した共有照会を次回の再試行に流用しない。
                     synchronized(tifFetchLock) {
                         tifInFlight.removeAll {
                             it.revision == requestRevision && it.channelType == channelType &&
-                                it.start == rangeStart && it.end == rangeEnd && it.waiters == 0
+                                it.start == from && it.end == to && it.waiters == 0
                         }
                     }
                     throw IllegalStateException("TV番組表の全局照会に失敗しました。")
                 }
             }
-            val published = cacheEpg(cacheKey, requestBackend,
-                startTime.toInstant().toEpochMilli(), endTime.toInstant().toEpochMilli(),
-                channels, requestRevision, fetched?.sequence ?: 0L, snapshot?.failedChannelIds.orEmpty())
-                ?: return@flow
             if (settingsRepository.backendType.first() != requestBackend ||
                 (requestBackend == TifInput.BACKEND_TYPE &&
                  requestRevision != tifCacheRevision.get())) return@flow
