@@ -145,6 +145,8 @@ fun HomeLauncherScreen(
     initialTabIndex: Int = 0,
     selectedProgram: RecordedProgram?,
     onProgramSelected: (RecordedProgram?) -> Unit,
+    onVerifiedHistorySelected: (RecordedProgram, Double) -> Unit,
+    recordedSelectionEpoch: androidx.compose.runtime.MutableIntState,
     epgSelectedProgram: EpgProgram?,
     onEpgProgramSelected: (EpgProgram?) -> Unit,
     onReserveSelected: (ReserveItem) -> Unit = {},
@@ -215,19 +217,23 @@ fun HomeLauncherScreen(
         historySelectionGeneration++
     }
     LaunchedEffect(backendType) { cancelPendingHistory() }
-    val playVerifiedHistory: (KonomiHistoryProgram) -> Unit = { historyItem ->
+    // カードを描画した時点の履歴取得元をクリックへ渡す。
+    // 再コンポーズ前の旧カードから、別backendの同じ録画IDへすり替えない。
+    val playVerifiedHistory: (KonomiHistoryProgram, String) -> Unit = { historyItem, cardBackend ->
         val programId = historyItem.program.id.toIntOrNull()
-        if (backendType != "TIF" && ownedHistory.first == backendType &&
-            programId != null && homeViewModel.backendType.value == backendType) {
+        if (cardBackend != "TIF" && cardBackend == backendType &&
+            programId != null && homeViewModel.backendType.value == cardBackend &&
+            homeViewModel.ownedWatchHistory.value.first == cardBackend) {
             cancelPendingHistory()
             val requestId = historySelectionGeneration
-            val requestedBackend = backendType
+            val selectionEpoch = recordedSelectionEpoch.intValue
             historySelectionJob = scope.launch {
-                val program = recordViewModel.getResumableHistoryProgram(programId, requestedBackend)
+                val program = recordViewModel.getResumableHistoryProgram(programId, cardBackend)
                 if (requestId == historySelectionGeneration &&
-                    homeViewModel.backendType.value == requestedBackend &&
-                    homeViewModel.ownedWatchHistory.value.first == requestedBackend) {
-                    if (program != null) onProgramSelected(program)
+                    selectionEpoch == recordedSelectionEpoch.intValue &&
+                    homeViewModel.backendType.value == cardBackend &&
+                    homeViewModel.ownedWatchHistory.value.first == cardBackend) {
+                    if (program != null) onVerifiedHistorySelected(program, program.playbackPosition)
                     else recordViewModel.historyResumeError.value?.let { reason ->
                         android.widget.Toast.makeText(
                             scopeContext, reason, android.widget.Toast.LENGTH_LONG
@@ -959,7 +965,7 @@ fun HomeLauncherScreen(
                             onChannelClick = {
                                 if (it != null) onChannelClick(it, false)
                             },
-                            onHistoryClick = playVerifiedHistory,
+                            onHistoryClick = { item -> playVerifiedHistory(item, ownedHistory.first) },
                             onReserveClick = { if (backendType != "TIF") onReserveSelected(it) },
                             onProgramClick = { onEpgProgramSelected(it) },
                             onNavigateToTab = { targetIndex ->
@@ -1031,7 +1037,7 @@ fun HomeLauncherScreen(
                                     cancelPendingHistory()
                                     onProgramSelected(it)
                                 },
-                                onHistoryClick = playVerifiedHistory,
+                                onHistoryClick = { item -> playVerifiedHistory(item, ownedHistory.first) },
                                 onShowAllRecordings = onShowAllRecordings,
                                 onShowSeriesList = onShowSeriesList,
                                 onShowSmbLibrary = onShowSmbLibrary,
