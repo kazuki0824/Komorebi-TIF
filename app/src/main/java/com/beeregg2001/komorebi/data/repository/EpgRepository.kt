@@ -75,12 +75,19 @@ class EpgRepository @Inject constructor(
         val channelType: String,
         val start: Long,
         val end: Long,
-        val task: Deferred<TifRepository.EpgSnapshot>
+        val task: Deferred<TifRepository.EpgSnapshot>,
+        var waiters: Int = 0
     )
     private val tifFetchLock = Any()
     private val tifInFlight = mutableListOf<TifInFlight>()
 
     fun invalidateTifCache() {
+        val abandoned = synchronized(tifFetchLock) {
+            val tasks = tifInFlight.map { it.task }
+            tifInFlight.clear()
+            tasks
+        }
+        abandoned.forEach { it.cancel() }
         synchronized(coverage) {
             tifCacheRevision.incrementAndGet()
             memoryCache.keys.filter { it.startsWith("TIF_") }.forEach {
@@ -99,7 +106,7 @@ class EpgRepository @Inject constructor(
         // より広い取得が進行中なら、それを共有して要求区間へ切り詰める。
         // 狭い取得では広い要求を満たせないため、その逆方向の流用はしない。
         val entry = synchronized(tifFetchLock) {
-            tifInFlight.firstOrNull {
+            val matched = tifInFlight.firstOrNull {
                 it.revision == revision && it.channelType == channelType &&
                     it.start <= from && it.end >= to
             } ?: run {
@@ -114,10 +121,13 @@ class EpgRepository @Inject constructor(
                 deferred.start()
                 next
             }
+            matched.waiters++
+            matched
         }
-        val snapshot = entry.task.await()
-        if (entry.start == from && entry.end == to) return snapshot
-        val narrowed = withContext(Dispatchers.Default) {
+        try {
+            val snapshot = entry.task.await()
+            if (entry.start == from && entry.end == to) return snapshot
+            val narrowed = withContext(Dispatchers.Default) {
             snapshot.channels.map { channel ->
                 channel.copy(programs = channel.programs.filter { program ->
                     val programStart = runCatching {
@@ -130,7 +140,17 @@ class EpgRepository @Inject constructor(
                 })
             }
         }
-        return snapshot.copy(channels = narrowed)
+            return snapshot.copy(channels = narrowed)
+        } finally {
+            val abandoned = synchronized(tifFetchLock) {
+                entry.waiters--
+                if (entry.waiters == 0 && !entry.task.isCompleted) {
+                    tifInFlight.remove(entry)
+                    true
+                } else false
+            }
+            if (abandoned) entry.task.cancel()
+        }
     }
 
     /**
@@ -524,6 +544,14 @@ class EpgRepository @Inject constructor(
             if (settingsRepository.backendType.first() != requestBackend ||
                 (requestBackend == TifInput.BACKEND_TYPE &&
                  requestRevision != tifCacheRevision.get())) return@flow
+            if (requestBackend == TifInput.BACKEND_TYPE && snapshot != null &&
+                snapshot.channels.isNotEmpty() &&
+                snapshot.failedChannelIds.size == snapshot.channels.size &&
+                snapshot.channels.all { it.programs.isEmpty() } &&
+                memoryCache[cacheKey].orEmpty().all { it.programs.isEmpty() }
+            ) {
+                throw IllegalStateException("TV番組表の全局照会に失敗しました。")
+            }
             val published = cacheEpg(cacheKey, requestBackend,
                 startTime.toInstant().toEpochMilli(), endTime.toInstant().toEpochMilli(),
                 channels, requestRevision, requestSequence, snapshot?.failedChannelIds.orEmpty())
