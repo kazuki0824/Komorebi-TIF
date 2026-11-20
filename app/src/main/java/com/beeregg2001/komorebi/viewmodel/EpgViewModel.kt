@@ -336,6 +336,10 @@ class EpgViewModel @OptIn(UnstableApi::class)
                 _selectedBroadcastingType
             ) { isInit, backend, mIp, mPort, type ->
                 if (observedBackend != backend) {
+                    if (observedBackend != null &&
+                        (observedBackend == "TIF" || backend == "TIF")) {
+                        repository.invalidateTifCache()
+                    }
                     backendGeneration++
                     epgJob?.cancel()
                     preloadJob?.cancel()
