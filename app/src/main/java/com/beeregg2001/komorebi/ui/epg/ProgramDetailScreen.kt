@@ -54,6 +54,8 @@ fun ProgramDetailScreen(
     mode: ProgramDetailMode = ProgramDetailMode.EPG,
     isReserved: Boolean = false,
     isReadOnly: Boolean = false,
+    recordingAvailable: Boolean = true,
+    isTifBackend: Boolean = false,
     onPlayClick: (EpgProgram) -> Unit = {},
     onRecordClick: (EpgProgram) -> Unit = {},
     onRecordDetailClick: (EpgProgram) -> Unit = {},
@@ -218,7 +220,13 @@ fun ProgramDetailScreen(
                                 )
                             }
 
-                            if (isReserved) {
+                            if (!recordingAvailable) {
+                                Text(
+                                    if (isTifBackend) "TIFでは録画・予約に対応していません。視聴は利用できます。"
+                                    else "録画・予約は利用できません。視聴は利用できます。",
+                                    color = colors.textSecondary
+                                )
+                            } else if (isReserved) {
                                 Button(
                                     onClick = { if (isClickEnabled) onEditReserveClick(safeProgram) },
                                     colors = ButtonDefaults.colors(
@@ -289,7 +297,16 @@ fun ProgramDetailScreen(
                             }
 
                         } else if (isFuture) {
-                            if (isReserved) {
+                            if (!recordingAvailable) {
+                                Text(
+                                    if (isTifBackend) "TIFでは録画・予約に対応していません。"
+                                    else "録画・予約は利用できません。",
+                                    color = colors.textSecondary,
+                                    modifier = Modifier
+                                        .focusRequester(initialFocusRequester)
+                                        .focusable()
+                                )
+                            } else if (isReserved) {
                                 Button(
                                     onClick = { if (isClickEnabled) onEditReserveClick(safeProgram) },
                                     colors = ButtonDefaults.colors(
@@ -446,6 +463,19 @@ fun ProgramDetailScreen(
                     fontFamily = NotoSansJP
                 )
                 Spacer(modifier = Modifier.height(12.dp))
+                // TIFのscrambledは料金区分ではない。未提供もそのまま可視化する。
+                if (isTifBackend) {
+                    Text(
+                        text = when (safeProgram.is_scrambled) {
+                            true -> "スクランブル: あり（料金区分は不明）"
+                            false -> "スクランブル: なし（料金区分は不明）"
+                            null -> "スクランブル: 情報なし（料金区分は不明）"
+                        },
+                        color = colors.textSecondary,
+                        fontFamily = NotoSansJP
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
                 Text(
                     text = safeProgram.title,
                     style = MaterialTheme.typography.displaySmall.copy(

@@ -8,7 +8,10 @@ data class ChannelApiResponse(
     @SerializedName("BS") val bs: List<Channel>? = null,
     @SerializedName("CS") val cs: List<Channel>? = null,
     @SerializedName("SKY") val sky: List<Channel>? = null,
-    @SerializedName("BS4K") val bs4k: List<Channel>? = null
+    @SerializedName("BS4K") val bs4k: List<Channel>? = null,
+    // TIFの汎用放送入力とHDMI等のパススルー入力。既存APIには影響しない。
+    val others: List<Channel>? = null,
+    val inputs: List<Channel>? = null
 )
 
 // チャンネル情報
@@ -31,7 +34,7 @@ data class Channel(
     @SerializedName("jikkyo_force") val jikkyoForce: Int? = null // ★追加
 ) {
     // ★追加: どのバックエンドでも変わらない全国共通の識別子
-    val uniqueId: String get() = "${networkId}_${serviceId}"
+    val uniqueId: String get() = if (id.startsWith("tif:")) id else "${networkId}_${serviceId}"
 }
 
 // 番組情報

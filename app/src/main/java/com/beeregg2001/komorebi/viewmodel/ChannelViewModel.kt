@@ -213,7 +213,11 @@ class ChannelViewModel @Inject constructor(
                             channel = ch,
                             displayChannelId = ch.displayChannelId,
                             name = ch.name,
-                            programTitle = ch.programPresent?.title ?: "放送休止中",
+                            programTitle = ch.programPresent?.title ?: when {
+                                ch.id.startsWith("tif:input:") -> ch.name
+                                ch.id.startsWith("tif:") -> "番組情報なし"
+                                else -> "放送休止中"
+                            },
                             progress = progress,
                             hasProgram = ch.programPresent != null,
                             jikkyoForce = ch.jikkyoForce
@@ -240,7 +244,8 @@ class ChannelViewModel @Inject constructor(
 
             val processed = withContext(Dispatchers.Default) {
                 val rawChannels = listOfNotNull(
-                    response.terrestrial, response.bs, response.cs, response.sky, response.bs4k
+                    response.terrestrial, response.bs, response.cs, response.sky, response.bs4k,
+                    response.others, response.inputs
                 ).flatten()
 
                 val allChannels = rawChannels.map { apiChannel ->
@@ -418,8 +423,10 @@ class ChannelViewModel @Inject constructor(
     fun saveToHistory(program: RecordedProgram) {
         viewModelScope.launch {
             val backend = settingsRepository.backendType.first()
-            val entity = KonomiDataMapper.toEntity(program)
-            watchHistoryRepository.saveToLocalHistory(entity, backend)
+            if (backend != "TIF") {
+                val entity = KonomiDataMapper.toEntity(program)
+                watchHistoryRepository.saveToLocalHistory(entity, backend)
+            }
         }
     }
 

@@ -38,6 +38,7 @@ import androidx.media3.ui.PlayerView
 import androidx.tv.material3.*
 import com.beeregg2001.komorebi.common.AppStrings
 import com.beeregg2001.komorebi.data.SettingsRepository
+import com.beeregg2001.komorebi.data.repository.tif.TifInput
 import com.beeregg2001.komorebi.viewmodel.*
 import com.beeregg2001.komorebi.common.safeRequestFocus
 import com.beeregg2001.komorebi.common.safeRequestFocusWithRetry
@@ -61,6 +62,85 @@ private const val TAG = "LivePlayerScreen"
 @RequiresApi(Build.VERSION_CODES.O)
 @Composable
 fun LivePlayerScreen(
+    channel: Channel,
+    initialQuality: String = "1080p-60fps",
+    isBaseballMode: Boolean = false,
+    isMiniListOpen: Boolean,
+    onMiniListToggle: (Boolean) -> Unit,
+    showOverlay: Boolean,
+    onShowOverlayChange: (Boolean) -> Unit,
+    isManualOverlay: Boolean,
+    onManualOverlayChange: (Boolean) -> Unit,
+    isPinnedOverlay: Boolean,
+    onPinnedOverlayChange: (Boolean) -> Unit,
+    isSubMenuOpen: Boolean,
+    onSubMenuToggle: (Boolean) -> Unit,
+    onChannelSelect: (Channel) -> Unit,
+    onBackPressed: () -> Unit,
+    onShowToast: (String) -> Unit,
+    isPiPMode: Boolean = false,
+    onPiPRequested: () -> Unit = {},
+    channelViewModel: ChannelViewModel = hiltViewModel(),
+    reserveViewModel: ReserveViewModel? = null,
+    settingsViewModel: SettingsViewModel = hiltViewModel(),
+    livePlayerViewModel: LivePlayerViewModel? = null,
+    timeFormat: String = "24H"
+) {
+    val backend by settingsViewModel.confirmedBackendType.collectAsState(initial = null)
+    if (backend == null) {
+        // backend未確定の間はNetwork/TIF双方のPlayer ViewModelを生成しない。
+        androidx.compose.foundation.layout.Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("再生バックエンドを確認しています…")
+        }
+    } else if (backend == TifInput.BACKEND_TYPE) {
+        val channels by channelViewModel.groupedChannels.collectAsState()
+        val subtitleSetting by settingsViewModel.liveSubtitleDefault.collectAsState()
+        TifLivePlayerScreen(
+            channel = channel,
+            groupedChannels = channels,
+            isMiniListOpen = isMiniListOpen,
+            onMiniListToggle = onMiniListToggle,
+            onChannelSelect = onChannelSelect,
+            showOverlay = showOverlay,
+            onShowOverlayChange = onShowOverlayChange,
+            initialCaptions = subtitleSetting == "ON"
+        )
+    } else {
+        // Media3/JNIに依存するVMは非TIF枝でのみ取得する。署名上の既定引数で先に初期化しない。
+        NetworkLivePlayerScreen(
+            channel = channel,
+            initialQuality = initialQuality,
+            isBaseballMode = isBaseballMode,
+            isMiniListOpen = isMiniListOpen,
+            onMiniListToggle = onMiniListToggle,
+            showOverlay = showOverlay,
+            onShowOverlayChange = onShowOverlayChange,
+            isManualOverlay = isManualOverlay,
+            onManualOverlayChange = onManualOverlayChange,
+            isPinnedOverlay = isPinnedOverlay,
+            onPinnedOverlayChange = onPinnedOverlayChange,
+            isSubMenuOpen = isSubMenuOpen,
+            onSubMenuToggle = onSubMenuToggle,
+            onChannelSelect = onChannelSelect,
+            onBackPressed = onBackPressed,
+            onShowToast = onShowToast,
+            isPiPMode = isPiPMode,
+            onPiPRequested = onPiPRequested,
+            channelViewModel = channelViewModel,
+            reserveViewModel = reserveViewModel ?: hiltViewModel(),
+            settingsViewModel = settingsViewModel,
+            livePlayerViewModel = livePlayerViewModel ?: hiltViewModel(),
+            timeFormat = timeFormat
+        )
+    }
+}
+
+@RequiresApi(Build.VERSION_CODES.O)
+@Composable
+private fun NetworkLivePlayerScreen(
     channel: Channel,
     initialQuality: String = "1080p-60fps",
     isBaseballMode: Boolean = false,
