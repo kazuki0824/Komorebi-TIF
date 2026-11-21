@@ -193,7 +193,7 @@ class SettingsViewModel @Inject constructor(
         .map { it?.lastSyncedAt ?: 0L }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
 
-    // DataStore確定前の初期値と確定済み値を区別する。
+    // 初回DataStore emission前にKonomiTVと決め打ちしない。TIF経路が不要なJNIをロードするのを防ぐ。
     val confirmedBackendType: Flow<String?> = settingsRepository.backendType
 
     val backendType: StateFlow<String> = settingsRepository.backendType.stateIn(
@@ -650,9 +650,9 @@ class SettingsViewModel @Inject constructor(
                     // Room確定だけ失敗し設定はBに切り替わった場合、Bの同期を再開する。
                     val storedBackend = settingsRepository.backendType.first()
                     _backendSwitchError.value = if (storedBackend != oldType) {
-                        syncEngine.launchSyncAllRecords(forceFullSync = true)
+                        if (storedBackend != "TIF") syncEngine.launchSyncAllRecords(forceFullSync = true)
                         "バックエンドは$storedBackend に切替済みですが録画キャッシュの更新に失敗しました。" +
-                            "録画を再同期します。"
+                            (if (storedBackend == "TIF") "録画は利用できません。" else "録画を再同期します。")
                     } else {
                         "バックエンド切替に失敗しました。元の設定と録画情報を保持しました。"
                     }
@@ -665,8 +665,11 @@ class SettingsViewModel @Inject constructor(
                 } catch (error: Exception) {
                     Log.w("SettingsViewModel", "Failed to clear image cache after backend switch", error)
                 }
-                syncEngine.launchSyncAllRecords(forceFullSync = true)
-                forceSyncStreamQualities()
+                // TIFは視聴専用。ネットワークbackendの録画のみ完全同期する。
+                if (newType != "TIF") {
+                    syncEngine.launchSyncAllRecords(forceFullSync = true)
+                    forceSyncStreamQualities()
+                }
             }
         }
     }
@@ -739,7 +742,9 @@ class SettingsViewModel @Inject constructor(
 
     fun triggerFullSync() {
         viewModelScope.launch {
-            syncEngine.launchSyncAllRecords(forceFullSync = true)
+            if (settingsRepository.backendType.first() != "TIF") {
+                syncEngine.launchSyncAllRecords(forceFullSync = true)
+            }
         }
     }
 

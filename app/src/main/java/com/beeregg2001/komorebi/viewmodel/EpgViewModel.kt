@@ -279,7 +279,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
                     }
                 }.awaitAll()
             }
-            // バックエンドや検索世代が変わった場合は旧結果を返さない。
+            // 同backendでもTIF入力の再スキャン・削除後は旧AI検索結果を返さない。
             if (generation == backendGeneration &&
                 catalogueGeneration == searchGeneration) results else emptyList()
         } catch (e: CancellationException) {
@@ -298,13 +298,19 @@ class EpgViewModel @OptIn(UnstableApi::class)
         _searchResults.value = emptyList()
     }
 
+    // INPUTには番組表がなく、TIFはSKY/BS4Kを独立したカテゴリに分類しない。
     private fun preloadTypesFor(backend: String): List<String> =
-        listOf("GR", "BS", "CS", "SKY", "BS4K")
+        if (backend == "TIF") listOf("GR", "BS", "CS", "TV")
+        else listOf("GR", "BS", "CS", "SKY", "BS4K")
 
-    /** 既存の検索範囲を下回らず、最終放送日04:00境界まで含める。 */
+    /**
+     * TIFは最後の表示対象放送日の翌朝04時、ネットワークは従来の現在＋7日を
+     * 下回らない終端を使う。標準TvProvider自体には放送日境界を要求しない。
+     */
     private fun epgRangeEnd(now: OffsetDateTime, backend: String): OffsetDateTime {
         val dayStart = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
         val lastBroadcastDayEnd = dayStart.plusDays(7).plusHours(4)
+        if (backend == "TIF") return lastBroadcastDayEnd
         val originalSearchEnd = now.plusDays(7)
         return if (originalSearchEnd.isAfter(lastBroadcastDayEnd))
             originalSearchEnd else lastBroadcastDayEnd
@@ -314,12 +320,13 @@ class EpgViewModel @OptIn(UnstableApi::class)
     private suspend fun preloadEpgDataForSearchNow(availableTypes: List<String>) {
         val backend = settingsRepository.backendType.first()
         val now = OffsetDateTime.now()
-        val start = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
+        val start = if (backend == "TIF") getTvDayStart(now)
+            else now.withHour(0).withMinute(0).withSecond(0).withNano(0)
         val end = epgRangeEnd(now, backend)
         coroutineScope {
             availableTypes.map { type ->
                 async(Dispatchers.IO) {
-                    // Repositoryがバックエンド別キャッシュを管理する。
+                    // Repository自身がキャッシュ／権限を判断する。入力一覧の二重列挙は不要。
                     repository.fetchAndCacheEpgDataSilently(start, end, type)
                 }
             }.awaitAll()
@@ -344,6 +351,10 @@ class EpgViewModel @OptIn(UnstableApi::class)
                 _selectedBroadcastingType
             ) { isInit, backend, mIp, mPort, type ->
                 if (observedBackend != backend) {
+                    if (observedBackend != null &&
+                        (observedBackend == "TIF" || backend == "TIF")) {
+                        repository.invalidateTifCache()
+                    }
                     backendGeneration++
                     epgJob?.cancel()
                     preloadJob?.cancel()
@@ -359,7 +370,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
                     _isPreloading.value = true
                     hasInitialFetched = false
                     observedBackend = backend
-                    // 有効な放送種別は維持する。
+                    // 既存のBS等は維持し、切替先の対象外（TIF専用TV等）だけ修正する。
                     val available = preloadTypesFor(backend)
                     if (type !in available) _selectedBroadcastingType.value = available.first()
                 }
@@ -387,6 +398,29 @@ class EpgViewModel @OptIn(UnstableApi::class)
         refreshEpgData()
     }
 
+    /** TV入力スキャン／削除後は描画済み番組を使い回さず、公開チャンネルを再確認する。 */
+    fun refreshAfterTifInputChange() {
+        epgJob?.cancel()
+        preloadJob?.cancel()
+        sliceJob?.cancel()
+        clearSearch()
+        repository.invalidateTifCache()
+        epgMemoryCache.clear()
+        logoMemoryCache.clear()
+        fullEpgData = emptyList()
+        fullLogoUrls = emptyList()
+        hasDisplayedDataForType = false
+        uiState = EpgUiState.Loading
+        refreshEpgData()
+        // 全種別の検索用取得を維持する。表示用と同一期間の照会はRepositoryで共有し、
+        // 途中の放送種別変更で検索母集団が欠けないようにする。
+        preloadJob = viewModelScope.launch {
+            if (settingsRepository.backendType.first() == "TIF") {
+                preloadEpgDataForSearchNow(preloadTypesFor("TIF"))
+            }
+        }
+    }
+
     fun refreshEpgData(channelType: String? = null) {
         epgJob?.cancel()
         sliceJob?.cancel()
@@ -398,7 +432,8 @@ class EpgViewModel @OptIn(UnstableApi::class)
             val typeToFetch = requestedType
             val now = OffsetDateTime.now()
             val requestBackend = settingsRepository.backendType.first()
-            val start = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
+            val start = if (requestBackend == "TIF") getTvDayStart(now)
+                else now.withHour(0).withMinute(0).withSecond(0).withNano(0)
             val end = epgRangeEnd(now, requestBackend)
 
             // 成功を維持できるのは同じ種別のデータを表示した場合だけ。
@@ -488,7 +523,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
         sliceJob?.cancel()
         if (!hasDisplayedDataForType) return
         if (fullEpgData.isEmpty()) {
-            // 空EPGも取得成功として描画を完了する。
+            // EPGを持たないTIF（HDMIのみ等）も正常完了。Loadingのままにしない。
             uiState = EpgUiState.Success(
                 data = emptyList(),
                 logoUrls = emptyList(),

@@ -27,10 +27,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.tv.material3.*
-import com.beeregg2001.komorebi.ui.main.visibleHomeTabs
 import com.beeregg2001.komorebi.common.safeRequestFocus
 import com.beeregg2001.komorebi.common.AppStrings
 import com.beeregg2001.komorebi.data.SettingsRepository
+import com.beeregg2001.komorebi.data.repository.tif.TifInput
+import com.beeregg2001.komorebi.ui.main.visibleHomeTabs
 import com.beeregg2001.komorebi.data.model.StreamQuality
 import com.beeregg2001.komorebi.ui.components.GlobalToast
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
@@ -86,6 +87,18 @@ fun SettingsScreen(
     val flatChannels = remember(groupedChannels) { groupedChannels.values.flatten() }
 
     var toastMessage by remember { mutableStateOf<String?>(null) }
+    val startTifSetup: (String) -> Unit = { selectedId ->
+        val setupIntent = TifInput.inputs(context).firstOrNull { it.id == selectedId }?.createSetupIntent()
+        if (setupIntent == null) {
+            toastMessage = "このTV入力にはセットアップ画面がありません"
+        } else {
+            try {
+                context.startActivity(setupIntent)
+            } catch (error: Exception) {
+                toastMessage = "TV入力のセットアップを起動できません: " + error.message
+            }
+        }
+    }
     LaunchedEffect(toastMessage) {
         if (toastMessage != null) {
             delay(3500)
@@ -367,10 +380,14 @@ fun SettingsScreen(
                             { viewModel.checkForUpdatesManually() },
                             itemFocusRequesters[0][5],
                             {
-                                uiState.activeDialog = SettingDialogState.ConfirmClear(
-                                    "データベースの再構築",
-                                    "すべての録画データをサーバーから再取得します。よろしいですか？"
-                                ) { viewModel.triggerFullSync() }
+                                if (prefs.backendType == "TIF") {
+                                    toastMessage = "TIFでは録画データベースの再構築に対応していません。"
+                                } else {
+                                    uiState.activeDialog = SettingDialogState.ConfirmClear(
+                                        "データベースの再構築",
+                                        "すべての録画データをサーバーから再取得します。よろしいですか？"
+                                    ) { viewModel.triggerFullSync() }
+                                }
                             },
                             {
                                 uiState.activeDialog = SettingDialogState.ConfirmClear(
@@ -533,12 +550,14 @@ fun SettingsScreen(
                                     listOf(
                                         "KonomiTV" to "KONOMITV",
                                         "EDCB (EpgTimerSrv)" to "EDCB",
-                                        "EPGStation" to "EPGSTATION"
+                                        "EPGStation" to "EPGSTATION",
+                                        "TV Input Framework" to "TIF"
                                     ),
                                     if (listOf(
                                             "KONOMITV",
                                             "EDCB",
                                             "EPGSTATION",
+                                            "TIF",
                                             "MIRAKURUN_ONLY"
                                         ).any { it == prefs.backendType }
                                     ) prefs.backendType else "KONOMITV"
@@ -581,7 +600,22 @@ fun SettingsScreen(
                             itemFocusRequesters[1][6],
                             itemFocusRequesters[1][8],
                             itemFocusRequesters[1][9],
-                            categoryFocusRequesters[1]
+                            categoryFocusRequesters[1],
+                            {
+                                val options = TifInput.inputs(context).filter { it.createSetupIntent() != null }
+                                when (options.size) {
+                                    0 -> toastMessage = "再設定できる入力がありません。初回登録は端末標準のテレビアプリまたはTV入力設定で実施してください。"
+                                    1 -> startTifSetup(options.single().id)
+                                    else -> uiState.activeDialog = SettingDialogState.Selection(
+                                        "再設定・スキャンするTV入力",
+                                        options.map { info ->
+                                            val title = TifInput.label(context, info)
+                                            (title + " (" + info.id + ")") to info.id
+                                        },
+                                        options.first().id
+                                    ) { selectedId -> startTifSetup(selectedId) }
+                                }
+                            }
                         ) { uiState.restoreFocusRequester = it; uiState.restoreCategoryIndex = 1 }
 
                         2 -> PlaybackSettingsContent(
@@ -743,6 +777,7 @@ fun SettingsScreen(
                             },
                             prefs.pickupGenre,
                             prefs.excludePaid,
+                            prefs.backendType == "TIF",
                             prefs.pickupTime,
                             prefs.startupTab,
                             itemFocusRequesters[4][0],
