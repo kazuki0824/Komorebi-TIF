@@ -127,6 +127,7 @@ dependencies {
     // PR #3 regression suite (local JVM; no device required).
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.16.1")
+    testImplementation("org.mockito:mockito-core:5.12.0")
     testImplementation("androidx.test:core:1.6.1")
     testImplementation("androidx.room:room-testing:2.7.0-alpha11")
 
