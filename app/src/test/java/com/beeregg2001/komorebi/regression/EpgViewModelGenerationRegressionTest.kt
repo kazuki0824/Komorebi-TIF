@@ -54,6 +54,7 @@ class EpgViewModelGenerationRegressionTest {
         Mockito.`when`(settings.mirakurunIp).thenReturn(flowOf(""))
         Mockito.`when`(settings.mirakurunPort).thenReturn(flowOf(""))
         val live = Mockito.mock(LiveProvider::class.java)
+        Mockito.doReturn("test-logo").`when`(live).getChannelLogoUrl("channel-1")
         viewModel = EpgViewModel(
             repository, live, settings,
             ApplicationProvider.getApplicationContext<Context>()
@@ -71,6 +72,7 @@ class EpgViewModelGenerationRegressionTest {
         Mockito.`when`(program.start_time).thenReturn(OffsetDateTime.now().plusDays(1).toString())
         val channel = Mockito.mock(EpgChannel::class.java)
         Mockito.`when`(channel.name).thenReturn("Existing Network Channel")
+        Mockito.`when`(channel.display_channel_id).thenReturn("channel-1")
         return EpgSearchResultItem(program, channel)
     }
 
@@ -127,4 +129,13 @@ class EpgViewModelGenerationRegressionTest {
             release.countDown()
         }
     }
+    @Test
+    fun silentSearchWithoutGenerationChangeReturnsActualResult() = runBlocking {
+        val data = listOf(searchItem())
+        Mockito.doReturn(data).`when`(repository).searchFuturePrograms("current", null, null, false, null)
+        val results = viewModel.searchSilently("current")
+        assertEquals("positive control: valid unchanged search must return a result", 1, results.size)
+        assertEquals("test-logo", results.single().logoUrl)
+    }
+
 }
