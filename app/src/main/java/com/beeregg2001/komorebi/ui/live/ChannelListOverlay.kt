@@ -101,6 +101,11 @@ fun ChannelListOverlay(
         }
     }
 
+    if (availableTabKeys.isEmpty()) {
+        Text("表示可能なチャンネルがありません", color = colors.textPrimary, modifier = Modifier.padding(16.dp))
+        return
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()

@@ -50,6 +50,7 @@ import java.time.OffsetDateTime
 @Composable
 fun MainRootDialogs(
     state: MainRootState,
+    recordedSelectionEpoch: MutableIntState,
     channelViewModel: ChannelViewModel,
     epgViewModel: EpgViewModel,
     homeViewModel: HomeViewModel,
@@ -236,6 +237,8 @@ fun MainRootDialogs(
             onPlayClick = {
                 val channel = groupedChannels.values.flatten().find { ch -> ch.id == it.channel_id }
                 if (channel != null) {
+                    // 以後に選ばれたライブを、先行する録画履歴照会の遅延結果で上書きさせない。
+                    recordedSelectionEpoch.intValue++
                     state.selectedChannel = channel
                     state.isBaseballMode = false
                     state.lastSelectedChannelId = channel.id

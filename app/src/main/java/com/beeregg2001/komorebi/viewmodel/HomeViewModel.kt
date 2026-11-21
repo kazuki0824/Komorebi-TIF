@@ -29,6 +29,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
 import java.time.LocalTime
 import java.time.OffsetDateTime
 import javax.inject.Inject
@@ -55,6 +56,9 @@ class HomeViewModel @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    suspend fun recentStartupChannelIds(availableChannelIds: List<String>): List<String> =
+        lastChannelRepository.getRecentForChannels(availableChannelIds).map { it.channelId }
+
     val backendType: StateFlow<String> = settingsRepository.backendType
         .stateIn(viewModelScope, SharingStarted.Eagerly, "KONOMITV")
 
@@ -74,6 +78,7 @@ class HomeViewModel @Inject constructor(
     // ジャンルピックアップ / プロ野球カードの取得ジョブ。起動直後に複数経路から
     // 同時に呼ばれても EPG 取得を 1 本にまとめるために保持する。
     private var genrePickupJob: Job? = null
+    private var lastPickupBackend: String? = null
 
     // バックエンド疎通確認は EDCB / EPGStation ではチャンネル一覧の取得そのもの。
     // 起動直後に init 側と refreshHomeData 側の両方から呼ばれて二重に通信していた。
@@ -93,9 +98,16 @@ class HomeViewModel @Inject constructor(
         _isFallbackTriggered.value = false
     }
 
+    /** 履歴と実際の取得元backendを同じemissionで公開する。 */
+    val ownedWatchHistory: StateFlow<Pair<String?, List<KonomiHistoryProgram>>> =
+        watchHistoryRepository.getOwnedLocalWatchHistory()
+            .map { (backend, entities) ->
+                backend to entities.map { KonomiDataMapper.toUiModel(it) }
+            }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null to emptyList())
+
     val watchHistory: StateFlow<List<KonomiHistoryProgram>> =
-        watchHistoryRepository.getLocalWatchHistory()
-            .map { entities -> entities.map { KonomiDataMapper.toUiModel(it) } }
+        ownedWatchHistory.map { it.second }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val lastWatchedChannelFlow: StateFlow<List<Channel>> = watchHistoryRepository.getLastChannels()
@@ -194,6 +206,7 @@ class HomeViewModel @Inject constructor(
         }
         genrePickupJob?.cancel()
         genrePickupJob = viewModelScope.launch {
+            val requestedBackend = settingsRepository.backendType.first()
             val genre = pickupGenreLabel.value
             val timeSetting = pickupTimeSetting.value
             val isExcludePaid = excludePaidBroadcasts.value == "ON"
@@ -213,7 +226,7 @@ class HomeViewModel @Inject constructor(
                 }
             }.awaitAll().flatten()
 
-            cachedBaseballPrograms = withContext(Dispatchers.Default) {
+            val fetchedBaseballPrograms = withContext(Dispatchers.Default) {
                 allPrograms.flatMap { wrapper ->
                     wrapper.programs.map { it to wrapper.channel }
                 }.filter { (prog, _) ->
@@ -247,30 +260,45 @@ class HomeViewModel @Inject constructor(
                 }
             }
 
-            _genrePickupPrograms.value =
-                filterGenrePickup(allPrograms, genre, timeSetting, isExcludePaid)
-
-            _favoriteBaseballGames.value = filterFavoriteBaseballGames(
-                cachedBaseballPrograms,
-                favoriteBaseballTeams.value,
-                _baseballDateOffset.value
-            )
+            val fetchedGenrePickup = filterGenrePickup(allPrograms, genre, timeSetting, isExcludePaid)
+            // 集計・backend確認での中断後に日付を再確認する。
+            // 最新のbackend・日付を確定してから公開するまで中断点を挟まない。
+            var fetchedGames: List<Pair<String, List<BaseballGameInfo>>>
+            while (true) {
+                val requestedDateOffset = _baseballDateOffset.value
+                fetchedGames = filterFavoriteBaseballGames(
+                    fetchedBaseballPrograms,
+                    favoriteBaseballTeams.value,
+                    requestedDateOffset
+                )
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (settingsRepository.backendType.first() != requestedBackend) return@launch
+                if (_baseballDateOffset.value == requestedDateOffset) break
+            }
+            cachedBaseballPrograms = fetchedBaseballPrograms
+            _genrePickupPrograms.value = fetchedGenrePickup
+            _favoriteBaseballGames.value = fetchedGames
         }
     }
+
+    private var baseballDateJob: kotlinx.coroutines.Job? = null
 
     fun updateBaseballDateOffset(offset: Int) {
         if (offset in 0..2) {
             _baseballDateOffset.value = offset
-            viewModelScope.launch {
+            baseballDateJob?.cancel()
+            baseballDateJob = viewModelScope.launch {
+                val requestedBackend = settingsRepository.backendType.first()
                 if (cachedBaseballPrograms.isNotEmpty()) {
-                    _favoriteBaseballGames.value = filterFavoriteBaseballGames(
+                    val games = filterFavoriteBaseballGames(
                         cachedBaseballPrograms,
                         favoriteBaseballTeams.value,
                         offset
                     )
-                } else {
-                    fetchAllTypeGenrePickup()
-                }
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    if (settingsRepository.backendType.first() == requestedBackend &&
+                        _baseballDateOffset.value == offset) _favoriteBaseballGames.value = games
+                } else fetchAllTypeGenrePickup()
             }
         }
     }
@@ -373,7 +401,6 @@ class HomeViewModel @Inject constructor(
         val currentBackend = settingsRepository.backendType.first()
 
         if (currentBackend == "KONOMITV") return
-
         try {
             liveProvider.getChannels()
             Log.i("Komorebi_Failsafe", "Health check passed for backend: $currentBackend")
@@ -393,11 +420,23 @@ class HomeViewModel @Inject constructor(
                 pickupGenreLabel,
                 pickupTimeSetting,
                 excludePaidBroadcasts,
-                favoriteBaseballTeams
-            ) { genre, time, excludePaid, baseballTeams ->
-                listOf(genre, time, excludePaid, baseballTeams.toString())
+                favoriteBaseballTeams,
+                settingsRepository.backendType
+            ) { genre, time, excludePaid, baseballTeams, backend ->
+                listOf(genre, time, excludePaid, baseballTeams.toString(), backend)
             }
                 .distinctUntilChanged()
+                .onEach { values ->
+                    val backend = values.last()
+                    if (lastPickupBackend != backend) {
+                        lastPickupBackend = backend
+                        genrePickupJob?.cancel()
+                        baseballDateJob?.cancel()
+                        cachedBaseballPrograms = emptyList()
+                        _genrePickupPrograms.value = emptyList()
+                        _favoriteBaseballGames.value = emptyList()
+                    }
+                }
                 .debounce(1500L)
                 .collectLatest {
                     // 設定変更を確実に反映させるため、実行中のジョブは捨てて取り直す。
@@ -459,7 +498,7 @@ class HomeViewModel @Inject constructor(
                             val programIds =
                                 apiHistoryList.mapNotNull { it.program.id.toIntOrNull() }
                             val existingEntitiesMap =
-                                watchHistoryRepository.getHistoryEntitiesByIds(programIds)
+                                watchHistoryRepository.getHistoryEntitiesByIds(programIds, backend)
                                     .associateBy { it.id }
                             val entitiesToSave = apiHistoryList.mapNotNull { history ->
                                 val programId =
@@ -479,7 +518,7 @@ class HomeViewModel @Inject constructor(
                                 newEntity
                             }
                             if (entitiesToSave.isNotEmpty()) watchHistoryRepository.saveAllToLocalHistory(
-                                entitiesToSave
+                                entitiesToSave, backend
                             )
                         }
                         konomiRepository.refreshUser()

@@ -10,6 +10,7 @@ import com.beeregg2001.komorebi.data.local.entity.*
 @Database(
     entities = [
         WatchHistoryEntity::class,
+        BackendWatchHistoryEntity::class,
         LastChannelEntity::class,
         EpgCacheEntity::class, // ★復元: これがないとEpgRepositoryが壊れます
         RecordedProgramEntity::class,
@@ -18,12 +19,13 @@ import com.beeregg2001.komorebi.data.local.entity.*
         EpgChannelEntity::class,
         EpgProgramEntity::class
     ],
-    version = 15,
+    version = 16,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun watchHistoryDao(): WatchHistoryDao
+    abstract fun backendWatchHistoryDao(): BackendWatchHistoryDao
     abstract fun lastChannelDao(): LastChannelDao
     abstract fun epgCacheDao(): EpgCacheDao // ★復元
 

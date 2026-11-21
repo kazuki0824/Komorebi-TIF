@@ -20,6 +20,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -38,6 +39,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -70,15 +72,48 @@ class RecordSyncEngine @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     private val _syncProgress = MutableStateFlow(SyncProgress())
+    private val syncProgressEpoch = AtomicLong(0L)
     val syncProgress: StateFlow<SyncProgress> = _syncProgress.asStateFlow()
+    // 切替時に旧backendの録画画面が表示されないよう、完全同期完了まで非公開にする。
+    private val _recordCacheReady = MutableStateFlow(false)
+    val recordCacheReady: StateFlow<Boolean> = _recordCacheReady.asStateFlow()
+    private val _recordCacheGeneration = MutableStateFlow(0L)
+    val recordCacheGeneration: StateFlow<Long> = _recordCacheGeneration.asStateFlow()
+    // 切替無効化とシリーズ表示更新を同じ境界で直列化する。
+    val recordPublicationLock = Any()
 
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Room録画キャッシュの帰属先と切替中フラグをプロセス終了後も検証する。
+    private val ownerPrefs = context.getSharedPreferences("record_cache_backend_owner", Context.MODE_PRIVATE)
+    private val ownerInitialized = CompletableDeferred<Unit>()
+
+    init {
+        engineScope.launch {
+            try {
+                val backend = settingsRepository.backendType.first()
+                val isBuilt = db.syncMetaDao().getSyncMeta()?.isInitialBuildCompleted == true
+                // 旧版にはバックエンド所有者の正本がない。推測移行は禁止する。
+                // 所有者不明の録画は再取得まで公開しない。
+                _recordCacheReady.value = isBuilt &&
+                    !ownerPrefs.getBoolean("pending", false) &&
+                    ownerPrefs.getString("backend", null) == backend
+            } catch (e: Exception) {
+                Log.e(TAG, "Unable to validate recorded-program cache ownership", e)
+                _recordCacheReady.value = false
+            } finally {
+                ownerInitialized.complete(Unit)
+            }
+        }
+    }
 
     private val syncMutex = Mutex()
     private val jobMutex = Mutex()
     private val dictionaryMutex = Mutex()
     private val smartSyncMutex = Mutex()
     private var activeSyncJob: Job? = null
+    private val backendTransitionMutex = Mutex()
+    @Volatile private var switchingBackend = false
+    private var dictionaryJob: Job? = null
 
     private data class SyncProfile(
         val name: String,
@@ -175,24 +210,97 @@ class RecordSyncEngine @Inject constructor(
         _syncProgress.value = _syncProgress.value.copy(error = null)
     }
 
+    // 辞書Jobは自身の起動時の同期世代とメッセージの両方が一致するときだけ進捗を変更する。
+    private fun updateDictionaryProgress(epoch: Long, transform: (SyncProgress) -> SyncProgress) {
+        while (syncProgressEpoch.get() == epoch) {
+            val current = _syncProgress.value
+            if (current.error != null ||
+                (current.message != "シリーズ辞書を自動生成中..." &&
+                 current.message != "シリーズ辞書を準備中...")) return
+            if (_syncProgress.compareAndSet(current, transform(current))) return
+        }
+    }
+
+    private fun finishDictionaryProgress(epoch: Long) {
+        updateDictionaryProgress(epoch) { SyncProgress(isSyncing = false) }
+    }
+
+    /** 録画DB更新はバックエンド切替と直列化する。 */
     fun launchSyncAllRecords(forceFullSync: Boolean = false) {
         if (!forceFullSync && syncMutex.isLocked) {
             Log.i(TAG, "launchSyncAllRecords: sync already running. Skipping.")
             return
         }
         Log.i(TAG, "launchSyncAllRecords: launching. forceFullSync=$forceFullSync")
-        engineScope.launch {
-            syncAllRecords(forceFullSync)
-        }
+        engineScope.launch { syncAllRecords(forceFullSync) }
     }
 
     fun launchSmartSync() {
-        engineScope.launch {
-            smartSync()
+        engineScope.launch { smartSync() }
+    }
+
+    /** バックエンド切替前に進行中の録画DB書込みを終了させる。 */
+    /**
+     * 録画DBへの書込みとbackend切替を直列化する。
+     * 待機ジョブもswitchingBackendを検査し、旧backendでの新規開始を禁止する。
+     */
+    suspend fun switchBackend(updateSetting: suspend () -> Unit) {
+        backendTransitionMutex.withLock {
+            ownerInitialized.await()
+            val oldBackend = settingsRepository.backendType.first()
+            val wasReady = _recordCacheReady.value
+            val previousOwner = ownerPrefs.getString("backend", null)
+            switchingBackend = true
+            try {
+                val active = jobMutex.withLock { activeSyncJob }
+                active?.cancel()
+                active?.join()
+                // キューに積まれた同期はロック取得後にswitchingBackendを見て終了する。
+                syncMutex.withLock {
+                    val dictionary = dictionaryJob
+                    dictionary?.cancel()
+                    dictionary?.join()
+                    // 先に永続的に切替中を記録し、途中でプロセスが終了しても旧録画を公開しない。
+                    check(ownerPrefs.edit().putBoolean("pending", true).commit()) {
+                        "録画キャッシュ切替マーカーを保存できません。"
+                    }
+                    synchronized(recordPublicationLock) {
+                        _recordCacheGeneration.value++
+                        _recordCacheReady.value = false
+                    }
+                    // DataStoreの保存に失敗した場合はRoom側もロールバックする。
+                    // 録画専用キャッシュだけを無効化し、視聴履歴等は保持する。
+                    db.withTransaction {
+                        db.recordedProgramDao().clearAll()
+                        aiSeriesDictionaryDao.clearAll()
+                        db.syncMetaDao().upsert(
+                            SyncMetaEntity(id = 1, lastSyncedPage = 0, lastSyncedAt = 0L,
+                                isInitialBuildCompleted = false)
+                        )
+                        updateSetting()
+                    }
+                }
+            } catch (error: Throwable) {
+                // キャンセル時も可能な限り元の所有状態を復元する。
+                // 設定が部分保存済みならpendingを維持して旧録画を絶対に公開しない。
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                    if (settingsRepository.backendType.first() == oldBackend) {
+                        val restored = ownerPrefs.edit()
+                            .putString("backend", previousOwner)
+                            .putBoolean("pending", false).commit()
+                        _recordCacheReady.value = restored && wasReady
+                    }
+                }
+                throw error
+            } finally {
+                switchingBackend = false
+            }
         }
     }
 
     suspend fun syncAllRecords(forceFullSync: Boolean = false) {
+        ownerInitialized.await()
+        if (switchingBackend) return
         val currentJob = currentCoroutineContext().job
 
         var jobToJoin: Job? = null
@@ -207,13 +315,26 @@ class RecordSyncEngine @Inject constructor(
         var isSyncSuccessful = false
 
         syncMutex.withLock {
+            // バックエンド切替と同じ排他を取得した後に、所有者と完全同期要否を確定する。
+            if (switchingBackend) return@withLock
+            val syncBackend = settingsRepository.backendType.first()
+                val owned = ownerPrefs.getString("backend", null) == syncBackend &&
+                !ownerPrefs.getBoolean("pending", false)
+            val performFullSync = forceFullSync || !owned
+            // 通常同期でも旧辞書処理の終了を待ってから新世代へ進む。
+            // join中に同期自体がキャンセルされた場合は旧辞書の終了通知を妨げない。
+            dictionaryJob?.cancel()
+            dictionaryJob?.join()
+            dictionaryJob = null
+            // 旧辞書の終了後に世代を進め、以降の旧応答を進捗へ反映させない。
+            syncProgressEpoch.incrementAndGet()
             jobMutex.withLock {
                 activeSyncJob = currentJob
             }
             withContext(Dispatchers.IO) {
                 try {
                     val syncStartedAtNanos = System.nanoTime()
-                    Log.i(TAG, "Sync started. FullSync: $forceFullSync")
+                    Log.i(TAG, "Sync started. FullSync: $performFullSync")
 
                     val metaDao = db.syncMetaDao()
                     val programDao = db.recordedProgramDao()
@@ -225,14 +346,23 @@ class RecordSyncEngine @Inject constructor(
                         isInitialBuildCompleted = false
                     )
 
-                    if (forceFullSync) {
-                        programDao.clearAll()
-                        aiSeriesDictionaryDao.clearAll()
+                    if (performFullSync) {
+                        // 所有者不明／切替後のデータを消去してから帰属を記録する。
+                        // ページ0を永続化すれば、次回起動の途中同期を安全に再開できる。
                         currentMeta =
                             currentMeta.copy(lastSyncedPage = 0, isInitialBuildCompleted = false)
+                        db.withTransaction {
+                            programDao.clearAll()
+                            aiSeriesDictionaryDao.clearAll()
+                            metaDao.upsert(currentMeta)
+                        }
+                        check(ownerPrefs.edit().putString("backend", syncBackend)
+                            .putBoolean("pending", false).commit()) {
+                            "録画キャッシュ初期化後の取得元保存に失敗しました。"
+                        }
                     }
 
-                    val isInitial = forceFullSync || !currentMeta.isInitialBuildCompleted
+                    val isInitial = performFullSync || !currentMeta.isInitialBuildCompleted
                     val baseMessage =
                         if (isInitial) "データベース構築中..." else "録画リストを更新中..."
 
@@ -248,7 +378,7 @@ class RecordSyncEngine @Inject constructor(
                     val canResumeInitialBuild =
                         currentMeta.lastSyncedPage > 0 &&
                                 !currentMeta.isInitialBuildCompleted &&
-                                !forceFullSync
+                                !performFullSync
                     var currentPage =
                         if (canResumeInitialBuild) currentMeta.lastSyncedPage + 1 else 1
                     val isResumed = canResumeInitialBuild
@@ -257,11 +387,11 @@ class RecordSyncEngine @Inject constructor(
 
                     // 省メモリ機では通常の初期構築で17081件規模のID集合を作らない。
                     // ただし孤児削除を恒久的に諦めるとサーバー側で消した録画がローカルに残り続けるため、
-                    // 明示的な完全同期 (forceFullSync) のときだけは省メモリ機でも実行する。
+                    // 明示的な完全同期 (performFullSync) のときだけは省メモリ機でも実行する。
                     val needsOrphanDeletion =
                         !isResumed &&
-                            (isInitial || forceFullSync) &&
-                            (syncProfile.name != "low" || forceFullSync)
+                            (isInitial || performFullSync) &&
+                            (syncProfile.name != "low" || performFullSync)
                     val allFetchedIds = if (needsOrphanDeletion) mutableSetOf<Int>() else null
 
                     val dictionary: Map<String, String> =
@@ -315,7 +445,7 @@ class RecordSyncEngine @Inject constructor(
                             val entities = programs.map { RecordDataMapper.toEntity(it) }
                             allFetchedIds?.addAll(entities.map { it.id })
 
-                            if (currentMeta.isInitialBuildCompleted && !forceFullSync) {
+                            if (currentMeta.isInitialBuildCompleted && !performFullSync) {
                                 val pageIds = entities.map { it.id }
                                 val localEntitiesMap =
                                     programDao.getByIds(pageIds).associateBy { it.id }
@@ -450,7 +580,13 @@ class RecordSyncEngine @Inject constructor(
                         current = 0,
                         total = 0
                     )
+                    val syncedBackend = settingsRepository.backendType.first()
+                    check(ownerPrefs.edit().putString("backend", syncedBackend)
+                        .putBoolean("pending", false).commit()) {
+                        "録画キャッシュのバックエンド帰属を保存できません。"
+                    }
                     isSyncSuccessful = true
+                    _recordCacheReady.value = true
 
                 } catch (e: CancellationException) {
                     Log.i(TAG, "Sync gracefully cancelled: ${e.message}")
@@ -474,15 +610,23 @@ class RecordSyncEngine @Inject constructor(
             }
         }
 
-        if (isSyncSuccessful) {
-            engineScope.launch {
-                startDictionaryResolutionLoop()
+        if (isSyncSuccessful && !switchingBackend) {
+            syncMutex.withLock {
+                if (!switchingBackend &&
+                    dictionaryJob?.isActive != true) {
+                    dictionaryJob = engineScope.launch {
+                        if (!switchingBackend)
+                            startDictionaryResolutionLoop()
+                    }
+                }
             }
         }
     }
 
     suspend fun clearDatabase() {
+        if (switchingBackend) return
         syncMutex.withLock {
+            if (switchingBackend) return@withLock
             withContext(Dispatchers.IO) {
                 db.recordedProgramDao().clearAll()
                 aiSeriesDictionaryDao.clearAll()
@@ -499,6 +643,8 @@ class RecordSyncEngine @Inject constructor(
     }
 
     suspend fun smartSync() {
+        ownerInitialized.await()
+        if (switchingBackend || !_recordCacheReady.value) return
         if (!smartSyncMutex.tryLock()) {
             Log.i(TAG, "smartSync: already running. Skipping.")
             return
@@ -520,6 +666,7 @@ class RecordSyncEngine @Inject constructor(
             var isSyncSuccessful = false
 
             syncMutex.withLock {
+                if (switchingBackend) return@withLock
                 jobMutex.withLock { activeSyncJob = currentJob }
                 withContext(Dispatchers.IO) {
                     try {
@@ -579,10 +726,16 @@ class RecordSyncEngine @Inject constructor(
             }
 
             if (isSyncSuccessful) {
-                if (!dictionaryMutex.isLocked) {
-                    engineScope.launch { startDictionaryResolutionLoop() }
-                } else {
-                    Log.i(TAG, "smartSync: dictionary already running, skipping launch.")
+                syncMutex.withLock {
+                    if (!switchingBackend &&
+                        dictionaryJob?.isActive != true) {
+                        dictionaryJob = engineScope.launch {
+                            if (!switchingBackend)
+                                startDictionaryResolutionLoop()
+                        }
+                    } else {
+                        Log.i(TAG, "smartSync: dictionary already running or backend switching.")
+                    }
                 }
             }
 
@@ -592,6 +745,8 @@ class RecordSyncEngine @Inject constructor(
     }
 
     private suspend fun startDictionaryResolutionLoop() {
+        val epoch = syncProgressEpoch.get()
+        if (switchingBackend) return
         // EPGStationは同期時点でサーバー側のシリーズ情報(recorded[].series等)を直接
         // seriesNameへ採用済み(EpgStationDataMapper参照)であり、このループが処理対象とする
         // 「未解決タイトル」自体が発生しない設計のため、辞書生成をスキップする。
@@ -602,11 +757,7 @@ class RecordSyncEngine @Inject constructor(
         // 削除した(EpgStationSeriesDictionary.ktおよびこのクラスへの注入・呼び出しを削除)。
         if (settingsRepository.backendType.first() == "EPGSTATION") {
             Log.i(TAG, "EPGStation はサーバー側のシリーズ情報を使うため、辞書生成をスキップします。")
-            _syncProgress.value = SyncProgress(
-                isSyncing = false,
-                isInitialBuild = false,
-                isInitialSyncPhase = false
-            )
+            finishDictionaryProgress(epoch)
             return
         }
 
@@ -620,22 +771,18 @@ class RecordSyncEngine @Inject constructor(
                 val programDao = db.recordedProgramDao()
                 val totalUnknown = programDao.getUnknownTitlesCount()
                 if (totalUnknown == 0) {
-                    _syncProgress.value = SyncProgress(
-                        isSyncing = false,
-                        isInitialBuild = false,
-                        isInitialSyncPhase = false
-                    )
+                    finishDictionaryProgress(epoch)
                     return@withContext
                 }
 
-                _syncProgress.value = SyncProgress(
-                    isSyncing = true,
-                    isInitialBuild = false,
-                    isInitialSyncPhase = false,
-                    message = "シリーズ辞書を自動生成中...",
-                    current = 0,
-                    total = totalUnknown
-                )
+                updateDictionaryProgress(epoch) {
+                    SyncProgress(
+                        isSyncing = true,
+                        message = "シリーズ辞書を自動生成中...",
+                        current = 0,
+                        total = totalUnknown
+                    )
+                }
 
                 var processedCount = 0
                 val chunkSize = 100
@@ -670,7 +817,7 @@ class RecordSyncEngine @Inject constructor(
                         val finalSeriesName = resolvedBaseTitles[baseTitle] ?: baseTitle
                         processedCount++
                         if (processedCount % 100 == 0 || processedCount == totalUnknown) {
-                            _syncProgress.value = _syncProgress.value.copy(current = processedCount)
+                            updateDictionaryProgress(epoch) { it.copy(current = processedCount) }
                         }
                         AiSeriesDictionaryEntity(
                             originalTitle = title,
@@ -700,16 +847,13 @@ class RecordSyncEngine @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Background dictionary generation failed", e)
         } finally {
-            _syncProgress.value = SyncProgress(
-                isSyncing = false,
-                isInitialBuild = false,
-                isInitialSyncPhase = false
-            )
+            finishDictionaryProgress(epoch)
             dictionaryMutex.unlock()
         }
     }
 
     suspend fun isInitialBuildCompleted(): Boolean = withContext(Dispatchers.IO) {
-        db.syncMetaDao().getSyncMeta()?.isInitialBuildCompleted == true
+        ownerInitialized.await()
+        _recordCacheReady.value && db.syncMetaDao().getSyncMeta()?.isInitialBuildCompleted == true
     }
 }

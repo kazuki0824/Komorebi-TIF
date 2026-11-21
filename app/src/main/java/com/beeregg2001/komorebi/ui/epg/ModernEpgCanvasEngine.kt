@@ -108,8 +108,7 @@ fun ModernEpgCanvasEngine_Smooth(
     val reserveMap = remember(reserves) { reserves.associateBy { it.program.id } }
 
     val visibleTabs = remember(availableTypes) {
-        val all =
-            listOf("地デジ" to "GR", "BS" to "BS", "CS" to "CS", "BS4K" to "BS4K", "SKY" to "SKY")
+        val all = listOf("地デジ" to "GR", "BS" to "BS", "CS" to "CS", "BS4K" to "BS4K", "SKY" to "SKY")
         if (availableTypes.isEmpty()) all else all.filter { it.second in availableTypes }
     }
     val subTabFocusRequesters =
@@ -237,6 +236,11 @@ fun ModernEpgCanvasEngine_Smooth(
 
                 delay(100)
                 isJumping = false
+            } else {
+                // Loading/Errorでは旧backendを描画・選択させない。
+                lastLoadedType = null
+                hasRenderedFirstFrame = false
+                epgState.clearData()
             }
         }
 
@@ -452,11 +456,26 @@ fun ModernEpgCanvasEngine_Smooth(
                             })
                 }
 
-                if (uiState is EpgUiState.Loading || epgState.isCalculating || (!hasRenderedFirstFrame && !isJumping)) {
+                if (uiState is EpgUiState.Success && uiState.data.isEmpty()) {
+                    Box(
+                        Modifier.fillMaxSize().background(colors.background),
+                        contentAlignment = Alignment.Center
+                    ) { Text("番組表がありません", color = colors.textPrimary) }
+                } else if (uiState is EpgUiState.Error) {
+                    Box(Modifier.fillMaxSize().background(colors.background), contentAlignment = Alignment.Center) {
+                        Text(
+                            "番組表を取得できません",
+                            color = colors.textPrimary
+                        )
+                    }
+                } else if (uiState is EpgUiState.Loading || epgState.isCalculating ||
+                    (uiState is EpgUiState.Success && !hasRenderedFirstFrame && !isJumping)) {
                     Box(
                         Modifier
                             .fillMaxSize()
-                            .background(colors.background.copy(alpha = 0.5f)),
+                            // backend切替時に旧Canvasの描画内容が透過して見えないようにする。
+                            .background(if (uiState is EpgUiState.Loading) colors.background
+                                else colors.background.copy(alpha = 0.5f)),
                         contentAlignment = Alignment.Center
                     ) { CircularProgressIndicator(color = colors.textPrimary) }
                 }
