@@ -173,8 +173,6 @@ dependencies {
     implementation("androidx.room:room-ktx:$room_version")
     implementation("androidx.room:room-paging:$room_version")
     ksp("androidx.room:room-compiler:$room_version") // kaptからkspへ
-    // Generate the @Database implementation declared by Robolectric tests.
-    add("kspDebugUnitTest", "androidx.room:room-compiler:$room_version")
 
     // --- Media3 ---
     val media3_version = "1.7.1-komorebi"
