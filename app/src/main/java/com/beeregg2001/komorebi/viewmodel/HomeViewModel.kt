@@ -13,6 +13,8 @@ import com.beeregg2001.komorebi.data.model.*
 import com.beeregg2001.komorebi.data.repository.KonomiRepository
 import com.beeregg2001.komorebi.data.repository.EpgRepository
 import com.beeregg2001.komorebi.data.repository.LastChannelRepository
+import com.beeregg2001.komorebi.data.repository.tif.TifInput
+import com.beeregg2001.komorebi.data.repository.tif.TifRepository
 import com.beeregg2001.komorebi.data.repository.LiveProvider
 import com.beeregg2001.komorebi.data.repository.WatchHistoryRepository
 import com.beeregg2001.komorebi.util.AppUpdater
@@ -45,6 +47,7 @@ data class BaseballGameInfo(
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val liveProvider: LiveProvider,
+    private val tifRepository: TifRepository,
     private val konomiRepository: KonomiRepository,
     private val epgRepository: EpgRepository,
     private val settingsRepository: SettingsRepository,
@@ -215,7 +218,13 @@ class HomeViewModel @Inject constructor(
             val startSearch = now.minusHours(1)
             val endSearch = now.plusDays(3)
 
-            val types = listOf("GR", "BS", "CS")
+            // 汎用TIFのATSC/DVB/IPTV等はTVに分類される。外部INPUTはEPGを持たない。
+            // 従来ネットワークバックエンドの取得種別は変更しない。
+            val types = if (requestedBackend == "TIF") {
+                listOf("GR", "BS", "CS", "TV")
+            } else {
+                listOf("GR", "BS", "CS")
+            }
 
             val allPrograms = types.map { type ->
                 async {
@@ -357,13 +366,15 @@ class HomeViewModel @Inject constructor(
         }
         _genrePickupTimeSlot.value = actualTimeSlot
 
+        // AOSPのscrambledは料金区分ではない。TIFでは有料除外を適用できない。
+        val canApplyPaidExclusion = settingsRepository.backendType.first() != "TIF"
         allPrograms.flatMap { wrapper ->
             wrapper.programs.map { it to wrapper.channel.name }
         }.filter { (prog, _) ->
             val isGenre = prog.genres?.any { it.major.contains(genre) } == true
             if (!isGenre) return@filter false
 
-            val isFreeCheckOk = if (isExcludePaid) prog.is_free else true
+            val isFreeCheckOk = if (isExcludePaid && canApplyPaidExclusion) prog.is_free else true
             if (!isFreeCheckOk) return@filter false
 
             val start = runCatching { OffsetDateTime.parse(prog.start_time) }.getOrNull()
@@ -402,7 +413,12 @@ class HomeViewModel @Inject constructor(
 
         if (currentBackend == "KONOMITV") return
         try {
-            liveProvider.getChannels()
+            if (currentBackend == TifInput.BACKEND_TYPE) {
+                // checkReadyのIO上で入力列挙は一度だけ。falseは権限要求待ち。
+                if (!tifRepository.checkReady()) return
+            } else {
+                liveProvider.getChannels()
+            }
             Log.i("Komorebi_Failsafe", "Health check passed for backend: $currentBackend")
         } catch (e: Throwable) {
             Log.e("Komorebi_Failsafe", "Health check FAILED for backend: $currentBackend", e)
@@ -466,6 +482,19 @@ class HomeViewModel @Inject constructor(
 
     fun dismissUpdate() {
         appUpdater.resetState()
+    }
+
+    /** TIFの入力削除・再スキャン時は60秒の間引きを無視して旧番組を破棄する。 */
+    fun refreshAfterTifInputChange() {
+        homeRefreshJob?.cancel()
+        genrePickupJob?.cancel()
+        baseballDateJob?.cancel()
+        cachedBaseballPrograms = emptyList()
+        _genrePickupPrograms.value = emptyList()
+        _favoriteBaseballGames.value = emptyList()
+        _sharedEpgData.value = emptyList()
+        lastHomeRefreshAt = 0L
+        refreshHomeData(force = true)
     }
 
     /**

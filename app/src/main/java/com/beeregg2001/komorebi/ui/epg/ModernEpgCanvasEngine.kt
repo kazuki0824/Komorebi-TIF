@@ -107,9 +107,17 @@ fun ModernEpgCanvasEngine_Smooth(
     val clockPainter = rememberVectorPainter(Icons.Default.Schedule)
     val reserveMap = remember(reserves) { reserves.associateBy { it.program.id } }
 
-    val visibleTabs = remember(availableTypes) {
-        val all = listOf("地デジ" to "GR", "BS" to "BS", "CS" to "CS", "BS4K" to "BS4K", "SKY" to "SKY")
-        if (availableTypes.isEmpty()) all else all.filter { it.second in availableTypes }
+    val confirmedBackend by settingsViewModel.confirmedBackendType.collectAsState(initial = null)
+    val visibleTabs = remember(availableTypes, confirmedBackend) {
+        val all = listOf(
+            "地デジ" to "GR", "BS" to "BS", "CS" to "CS",
+            "BS4K" to "BS4K", "SKY" to "SKY", "その他" to "TV"
+        )
+        val supported = if (confirmedBackend == "TIF")
+            setOf("GR", "BS", "CS", "TV")
+        else setOf("GR", "BS", "CS", "BS4K", "SKY")
+        all.filter { it.second in supported &&
+            (availableTypes.isEmpty() || it.second in availableTypes) }
     }
     val subTabFocusRequesters =
         remember(visibleTabs.size) { List(visibleTabs.size) { FocusRequester() } }
@@ -464,7 +472,9 @@ fun ModernEpgCanvasEngine_Smooth(
                 } else if (uiState is EpgUiState.Error) {
                     Box(Modifier.fillMaxSize().background(colors.background), contentAlignment = Alignment.Center) {
                         Text(
-                            "番組表を取得できません",
+                            if (uiState.message.contains("READ_TV_LISTINGS"))
+                                "TV番組一覧の権限がありません。Komorebiの設定から「TV番組一覧の権限設定」を開き、許可してください。"
+                            else "番組表を取得できません",
                             color = colors.textPrimary
                         )
                     }

@@ -213,7 +213,7 @@ fun HomeLauncherScreen(
     // 描画スナップショットの取得元を非nullで固定し、カード側のクリックへ渡す。
     // Flowが先に切り替わり再コンポーズがまだでも、旧カードを新backendと解釈しない。
     val displayedHistoryBackend = ownedHistory.first?.takeIf {
-        it == backendType
+        it == backendType && it != "TIF"
     }
     val displayedHistory = if (displayedHistoryBackend != null) ownedHistory.second
         else emptyList()
@@ -226,7 +226,7 @@ fun HomeLauncherScreen(
     // 再コンポーズ前の旧カードから、別backendの同じ録画IDへすり替えない。
     val playVerifiedHistory: (KonomiHistoryProgram, String) -> Unit = { historyItem, cardBackend ->
         val programId = historyItem.program.id.toIntOrNull()
-        if (cardBackend == backendType &&
+        if (cardBackend != "TIF" && cardBackend == backendType &&
             programId != null && homeViewModel.backendType.value == cardBackend &&
             homeViewModel.ownedWatchHistory.value.first == cardBackend &&
             // 最新の履歴に同じIDがあるだけでは不十分。旧カードの実体を拒否する。
@@ -252,14 +252,17 @@ fun HomeLauncherScreen(
         }
     }
     // 帰属付き視聴履歴は録画一覧キャッシュの構築途中も再生候補として表示する。
+    // TIFでは録画機能自体がないので非表示を維持する。
     LaunchedEffect(backendType, groupedChannels.keys) {
         // 全backendで実際に公開された局の種別から選ぶ。共通BS等は維持する。
-        val candidateTypes = listOf("GR", "BS", "CS", "SKY", "BS4K")
+        val candidateTypes = if (backendType == "TIF")
+            listOf("GR", "BS", "CS", "TV") else listOf("GR", "BS", "CS", "SKY", "BS4K")
         val available = candidateTypes.filter { it in groupedChannels.keys }
         if (available.isNotEmpty() &&
             epgViewModel.selectedBroadcastingType.value !in available) {
             epgViewModel.updateBroadcastingType(available.first())
         }
+        // HDMIのみのINPUTは番組表を持たない。
     }
     val shouldCropLogo = remember(backendType) { backendType == "KONOMITV" }
 
@@ -296,8 +299,9 @@ fun HomeLauncherScreen(
     val translatedLastChannels = remember(ui.lastChannels, displayFlatChannels, backendType) {
         val visibleById = displayFlatChannels.associateBy { it.id }
         ui.lastChannels.asSequence().mapNotNull { saved ->
-            // 現backendが公開する完全IDだけを採用する。
-            visibleById[saved.id]
+            // 現backendが公開する完全IDだけを採用し、他TISへのすり替えを防ぐ。
+            if ((backendType == "TIF") != saved.id.startsWith("tif:")) null
+            else visibleById[saved.id]
         }.take(10).toList()
     }
 
@@ -956,9 +960,9 @@ fun HomeLauncherScreen(
                     when (currentTabLabel) {
                         "ホーム" -> HomeContents(
                             lastWatchedChannels = translatedLastChannels,
-                            watchHistory = displayedHistory,
+                            watchHistory = if (backendType == "TIF") emptyList() else displayedHistory,
                             hotChannels = ui.hotChannels,
-                            upcomingReserves = ui.upcomingReserves,
+                            upcomingReserves = if (backendType == "TIF") emptyList() else ui.upcomingReserves,
                             genrePickup = ui.genrePickup,
                             pickupGenreName = ui.pickupGenreLabel,
                             pickupTimeSlot = ui.genrePickupTimeSlot,
@@ -969,7 +973,7 @@ fun HomeLauncherScreen(
                                 if (it != null) onChannelClick(it, false)
                             },
                             onHistoryClick = { item -> displayedHistoryBackend?.let { source -> playVerifiedHistory(item, source) } },
-                            onReserveClick = onReserveSelected,
+                            onReserveClick = { if (backendType != "TIF") onReserveSelected(it) },
                             onProgramClick = { onEpgProgramSelected(it) },
                             onNavigateToTab = { targetIndex ->
                                 ui.tabFocusRequesters.getOrNull(targetIndex)
@@ -1055,9 +1059,10 @@ fun HomeLauncherScreen(
                                 konomiIp = konomiIp,
                                 konomiPort = konomiPort,
                                 timeFormat = timeFormat,
-                                watchHistory = displayedHistory,
+                                watchHistory = if (backendType == "TIF") emptyList() else displayedHistory,
                                 aiFocusReturnTick = if (currentTabLabel == "ビデオ") aiFocusReturnTick else 0,
-                                onAiReturnConsumed = onAiReturnConsumed
+                                onAiReturnConsumed = onAiReturnConsumed,
+                                isTifMode = backendType == "TIF"
                             )
                             // 録画一覧は Room の Flow から供給され、ローカル DB からの
                             // 読み出しなので待ち合わせが必要なほど遅くはない。
@@ -1146,7 +1151,14 @@ fun HomeLauncherScreen(
                                 dateOffset = baseballDateOffset,
                                 onDateOffsetChange = { homeViewModel.updateBaseballDateOffset(it) },
                                 onChannelClick = { channel ->
-                                    val matchedChannel = displayFlatChannels.find { it.id == channel.id } ?: channel
+                                    val matchedChannel = if (backendType == "TIF" || channel.id.startsWith("tif:")) {
+                                        // 野球カードもTIFの所有inputIdを保持して選局する。
+                                        displayFlatChannels.find { it.id == channel.id }
+                                    } else {
+                                        displayFlatChannels.find {
+                                            it.networkId == channel.networkId && it.serviceId == channel.serviceId
+                                        } ?: channel
+                                    }
                                     if (matchedChannel != null) onChannelClick(matchedChannel, true)
                                 },
                                 onProgramClick = { onEpgProgramSelected(it) },

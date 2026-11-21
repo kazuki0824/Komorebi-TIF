@@ -229,10 +229,13 @@ fun MainRootDialogs(
     }
 
     if (state.epgSelectedProgram != null) {
-        val relatedReserve = reserves.find { it.program.id == state.epgSelectedProgram!!.id }
+        val canRecord = state.backendType != "TIF"
+        val relatedReserve = if (canRecord) reserves.find { it.program.id == state.epgSelectedProgram!!.id } else null
         ProgramDetailScreen(
             program = state.epgSelectedProgram!!,
             mode = ProgramDetailMode.EPG,
+            recordingAvailable = canRecord,
+            isTifBackend = state.backendType == "TIF",
             isReserved = relatedReserve != null,
             onPlayClick = {
                 val channel = groupedChannels.values.flatten().find { ch -> ch.id == it.channel_id }
@@ -248,7 +251,11 @@ fun MainRootDialogs(
                     state.isReturningFromPlayer = false
                 }
             },
-            onRecordClick = { program ->
+            onRecordClick = recordClick@{ program ->
+                if (!canRecord) {
+                    state.toastMessage = "TIFでは録画・予約に対応していません。"
+                    return@recordClick
+                }
                 reserveViewModel.addReserve(
                     programId = program.id,
                     onFailure = { state.toastMessage = it }
@@ -259,7 +266,11 @@ fun MainRootDialogs(
                     }
                 }
             },
-            onEpgReserveClick = { program, keyword, daysOfWeek, startH, startM, endH, endM, exc, tOnly, bType, fuzzy, dup, pri, relay, exact ->
+            onEpgReserveClick = epgReserveClick@{ program, keyword, daysOfWeek, startH, startM, endH, endM, exc, tOnly, bType, fuzzy, dup, pri, relay, exact ->
+                if (!canRecord) {
+                    state.toastMessage = "TIFでは録画・予約に対応していません。"
+                    return@epgReserveClick
+                }
                 val channel = groupedChannels.values.flatten().find { it.id == program.channel_id }
                 var finalTsId = channel?.transportStreamId?.toInt() ?: 0
 

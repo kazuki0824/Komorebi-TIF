@@ -14,6 +14,8 @@ import com.beeregg2001.komorebi.data.repository.epgstation.EpgStationEpgReposito
 import com.beeregg2001.komorebi.data.repository.epgstation.EpgStationLiveRepository
 import com.beeregg2001.komorebi.data.repository.epgstation.EpgStationRecordRepository
 import com.beeregg2001.komorebi.data.repository.epgstation.EpgStationReserveRepository
+import com.beeregg2001.komorebi.data.repository.tif.TifInput
+import com.beeregg2001.komorebi.data.repository.tif.TifRepository
 import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -26,6 +28,7 @@ import javax.inject.Singleton
 class DtvProviderProxy @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val konomiRepository: KonomiRepository,
+    private val tifRepository: TifRepository,
     private val epgStationLiveRepository: EpgStationLiveRepository,
     private val epgStationRecordRepository: EpgStationRecordRepository,
     private val epgStationReserveRepository: EpgStationReserveRepository,
@@ -43,6 +46,7 @@ class DtvProviderProxy @Inject constructor(
     private fun liveProviderFor(backend: String): LiveProvider = when (backend) {
         "EDCB" -> edcbLiveRepository
         "EPGSTATION" -> epgStationLiveRepository
+        TifInput.BACKEND_TYPE -> tifRepository
         else -> konomiRepository
     }
 
@@ -53,6 +57,7 @@ class DtvProviderProxy @Inject constructor(
         return when (settingsRepository.backendType.first()) {
             "EDCB" -> edcbRecordRepository
             "EPGSTATION" -> epgStationRecordRepository
+            TifInput.BACKEND_TYPE -> tifRepository
             else -> konomiRepository
         }
     }
@@ -61,6 +66,7 @@ class DtvProviderProxy @Inject constructor(
         return when (settingsRepository.backendType.first()) {
             "EDCB" -> edcbReserveRepository
             "EPGSTATION" -> epgStationReserveRepository
+            TifInput.BACKEND_TYPE -> tifRepository
             else -> konomiRepository
         }
     }
@@ -68,6 +74,7 @@ class DtvProviderProxy @Inject constructor(
     private fun epgProviderFor(backend: String): EpgProvider = when (backend) {
         "EDCB" -> edcbEpgRepository
         "EPGSTATION" -> epgStationEpgRepository
+        TifInput.BACKEND_TYPE -> tifRepository
         else -> konomiRepository
     }
 
@@ -85,14 +92,18 @@ class DtvProviderProxy @Inject constructor(
     // ========================================================================
 
     override suspend fun getChannels(): ChannelApiResponse {
+        val backend = settingsRepository.backendType.first()
+        val provider = liveProviderFor(backend)
         return try {
-            getLiveProvider().getChannels()
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
+            provider.getChannels()
         } catch (e: NotImplementedError) {
+            if (backend == TifInput.BACKEND_TYPE) throw e
             Log.w("DtvProviderProxy", "getChannels is not implemented in active backend. Skipping.")
             ChannelApiResponse()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
+            if (backend == TifInput.BACKEND_TYPE) throw e
             Log.e("DtvProviderProxy", "Error fetching channels. Skipping.", e)
             ChannelApiResponse()
         }
