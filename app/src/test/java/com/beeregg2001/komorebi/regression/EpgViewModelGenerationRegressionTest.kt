@@ -54,7 +54,9 @@ class EpgViewModelGenerationRegressionTest {
         Mockito.`when`(settings.mirakurunIp).thenReturn(flowOf(""))
         Mockito.`when`(settings.mirakurunPort).thenReturn(flowOf(""))
         val live = Mockito.mock(LiveProvider::class.java)
-        Mockito.doReturn("test-logo").`when`(live).getChannelLogoUrl("channel-1")
+        runBlocking {
+            Mockito.doReturn("test-logo").`when`(live).getChannelLogoUrl("channel-1")
+        }
         viewModel = EpgViewModel(
             repository, live, settings,
             ApplicationProvider.getApplicationContext<Context>()
