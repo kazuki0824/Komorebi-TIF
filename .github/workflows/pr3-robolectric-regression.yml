@@ -15,6 +15,10 @@ on:
       - test/pr3-robolectric-regression
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -51,6 +55,29 @@ jobs:
           ./gradlew --no-daemon :app:testDebugUnitTest \
             --tests 'com.beeregg2001.komorebi.regression.*' \
             --stacktrace
+
+      - name: Verify complete regression suite executed
+        if: success()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import glob
+          import xml.etree.ElementTree as ET
+          paths = glob.glob("app/build/test-results/testDebugUnitTest/TEST-*.xml")
+          if not paths:
+              raise SystemExit("FAIL: no JUnit XML results produced")
+          cases = []
+          failures = 0
+          skipped = 0
+          for path in paths:
+              root = ET.parse(path).getroot()
+              cases.extend(root.findall(".//testcase"))
+              failures += sum(1 for case in root.findall(".//testcase") if case.find("failure") is not None or case.find("error") is not None)
+              skipped += sum(1 for case in root.findall(".//testcase") if case.find("skipped") is not None)
+          print(f"PR3 regression cases: {len(cases)}; failed: {failures}; skipped: {skipped}")
+          if len(cases) < 16 or failures or skipped:
+              raise SystemExit("FAIL: minimum 16 executed cases required, with no failure or skips")
+          PY
 
       - name: Upload JVM test evidence (including failures)
         if: always()
