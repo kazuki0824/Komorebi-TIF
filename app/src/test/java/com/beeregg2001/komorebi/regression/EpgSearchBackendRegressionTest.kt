@@ -44,7 +44,8 @@ class EpgSearchBackendRegressionTest {
         Mockito.`when`(channel.name).thenReturn(channelName)
         val wrap = Mockito.mock(EpgChannelWrapper::class.java)
         Mockito.`when`(wrap.channel).thenReturn(channel)
-        Mockito.`when`(wrap.programs).thenReturn(listOf(program(title)))
+        val mockedProgram = program(title)
+        Mockito.`when`(wrap.programs).thenReturn(listOf(mockedProgram))
         return wrap
     }
 
