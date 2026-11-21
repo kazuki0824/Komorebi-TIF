@@ -103,7 +103,7 @@ jobs:
               "LastChannelRegressionTest": 5,
               "RecordCacheOwnershipRegressionTest": 5,
               "RecordSyncBackendTransitionRegressionTest": 7,
-              "RecordViewModelRegressionTest": 3,
+              "RecordViewModelRegressionTest": 5,
               "WatchHistoryRepositoryRegressionTest": 4,
               "VideoPlaybackHistoryOwnershipRegressionTest": 2,
           }
