@@ -17,6 +17,7 @@ import com.beeregg2001.komorebi.data.sync.SyncProgress
 import com.beeregg2001.komorebi.ui.video.components.RecordCategory
 import com.beeregg2001.komorebi.viewmodel.RecordViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -141,10 +142,11 @@ class RecordViewModelRegressionTest {
             assertTrue("record provider never started", entered.await(15, TimeUnit.SECONDS))
             cacheReady.value = false
             release.countDown()
-            // The production job is canceled when ownership is revoked.
-            withTimeout(10_000L) {
-                while (viewModel.programDetail.value != null) kotlinx.coroutines.delay(10)
-            }
+            // Join the actual production job; do not pass while the old response is still blocked.
+            val field = RecordViewModel::class.java.getDeclaredField("detailFetchJob")
+            field.isAccessible = true
+            val detailJob = field.get(viewModel) as Job
+            withTimeout(10_000L) { detailJob.join() }
             assertNull(viewModel.programDetail.value)
         } finally {
             release.countDown()
