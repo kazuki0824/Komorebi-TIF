@@ -74,9 +74,25 @@ jobs:
               cases.extend(root.findall(".//testcase"))
               failures += sum(1 for case in root.findall(".//testcase") if case.find("failure") is not None or case.find("error") is not None)
               skipped += sum(1 for case in root.findall(".//testcase") if case.find("skipped") is not None)
+          from collections import Counter
+          actual = Counter(case.attrib.get("classname", "").rsplit(".", 1)[-1] for case in cases)
+          expected = {
+              "BackendDataIsolationRegressionTest": 8,
+              "DatabaseMigrationRegressionTest": 1,
+              "DtvProviderProxyRoutingRegressionTest": 4,
+              "EpgInFlightBackendRegressionTest": 2,
+              "EpgSearchBackendRegressionTest": 3,
+              "EpgStateRegressionTest": 2,
+              "ExistingHomeNavigationRegressionTest": 4,
+              "LastChannelRegressionTest": 5,
+              "RecordCacheOwnershipRegressionTest": 5,
+              "RecordSyncBackendTransitionRegressionTest": 7,
+              "WatchHistoryRepositoryRegressionTest": 4,
+          }
           print(f"PR3 regression cases: {len(cases)}; failed: {failures}; skipped: {skipped}")
-          if len(cases) < 45 or failures or skipped:
-              raise SystemExit("FAIL: minimum 45 executed cases required, with no failure or skips")
+          print(f"Test class coverage: {dict(actual)}")
+          if actual != Counter(expected) or failures or skipped:
+              raise SystemExit(f"FAIL: expected class coverage {expected}, got {dict(actual)}; failed={failures}; skipped={skipped}")
           PY
 
       - name: Upload JVM test evidence (including failures)
