@@ -11,6 +11,9 @@ import com.beeregg2001.komorebi.data.local.entity.WatchHistoryEntity
 import com.beeregg2001.komorebi.data.repository.RecordProvider
 import com.beeregg2001.komorebi.data.sync.RecordSyncEngine
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.MutableStateFlow
+import java.util.concurrent.atomic.AtomicLong
+import com.beeregg2001.komorebi.data.sync.SyncProgress
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
@@ -94,4 +97,56 @@ class RecordSyncBackendTransitionRegressionTest {
         assertFalse(context.getSharedPreferences(
             "record_cache_backend_owner", Context.MODE_PRIVATE).getBoolean("pending", true))
     }
+    @Suppress("UNCHECKED_CAST")
+    private fun progressState(): MutableStateFlow<SyncProgress> {
+        val field = RecordSyncEngine::class.java.getDeclaredField("_syncProgress")
+        field.isAccessible = true
+        return field.get(engine) as MutableStateFlow<SyncProgress>
+    }
+
+    private fun epochCounter(): AtomicLong {
+        val field = RecordSyncEngine::class.java.getDeclaredField("syncProgressEpoch")
+        field.isAccessible = true
+        return field.get(engine) as AtomicLong
+    }
+
+    /** Invoke production's private epoch gate, not a duplicate test algorithm. */
+    private fun updateDictionary(epoch: Long, transform: (SyncProgress) -> SyncProgress) {
+        val method = RecordSyncEngine::class.java.getDeclaredMethod(
+            "updateDictionaryProgress", java.lang.Long.TYPE, kotlin.jvm.functions.Function1::class.java
+        )
+        method.isAccessible = true
+        method.invoke(engine, epoch, transform)
+    }
+
+    @Test
+    fun staleDictionaryGenerationCannotOverwriteProgressOfNewSync() {
+        val state = progressState()
+        val epoch = epochCounter().incrementAndGet()
+        state.value = SyncProgress(isSyncing = true, message = "シリーズ辞書を準備中...", current = 4)
+        updateDictionary(epoch - 1L) { it.copy(current = 999) }
+        assertEquals(4, state.value.current)
+    }
+
+    @Test
+    fun currentDictionaryGenerationMayUpdateItsOwnProgress() {
+        val state = progressState()
+        val epoch = epochCounter().incrementAndGet()
+        state.value = SyncProgress(isSyncing = true, message = "シリーズ辞書を準備中...", current = 4)
+        updateDictionary(epoch) { it.copy(current = 7) }
+        assertEquals(7, state.value.current)
+    }
+
+    @Test
+    fun dictionaryProgressDoesNotOverwriteErrorOrOtherSyncMessage() {
+        val state = progressState()
+        val epoch = epochCounter().incrementAndGet()
+        state.value = SyncProgress(isSyncing = true, message = "シリーズ辞書を準備中...", current = 4, error = "sync failed")
+        updateDictionary(epoch) { it.copy(current = 999) }
+        assertEquals(4, state.value.current)
+        state.value = SyncProgress(isSyncing = true, message = "録画リストを更新中...", current = 5)
+        updateDictionary(epoch) { it.copy(current = 999) }
+        assertEquals(5, state.value.current)
+    }
+
 }
