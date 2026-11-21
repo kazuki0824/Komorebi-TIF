@@ -12,6 +12,7 @@ import com.beeregg2001.komorebi.data.repository.RecordProvider
 import com.beeregg2001.komorebi.data.sync.RecordSyncEngine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicLong
 import com.beeregg2001.komorebi.data.sync.SyncProgress
 import kotlinx.coroutines.runBlocking
@@ -147,6 +148,46 @@ class RecordSyncBackendTransitionRegressionTest {
         state.value = SyncProgress(isSyncing = true, message = "録画リストを更新中...", current = 5)
         updateDictionary(epoch) { it.copy(current = 999) }
         assertEquals(5, state.value.current)
+    }
+
+    @Test
+    fun partiallySavedSettingMustKeepCachePendingAndNeverPublishOldOwner() = runBlocking {
+        val newSelectedBackend = MutableStateFlow("KONOMITV")
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(newSelectedBackend)
+        val secondaryEngine = RecordSyncEngine(
+            Mockito.mock(RecordProvider::class.java), db,
+            settings, db.aiSeriesDictionaryDao(), context
+        )
+        val result = runCatching {
+            secondaryEngine.switchBackend {
+                // Simulates DataStore committing before the Room transaction fails.
+                newSelectedBackend.value = "EDCB"
+                throw IllegalStateException("injected failure after setting commit")
+            }
+        }
+        assertTrue(result.exceptionOrNull() is IllegalStateException)
+        assertEquals("EDCB", newSelectedBackend.value)
+        assertTrue(
+            context.getSharedPreferences("record_cache_backend_owner", Context.MODE_PRIVATE)
+                .getBoolean("pending", false)
+        )
+        assertFalse(secondaryEngine.recordCacheReady.value)
+    }
+
+    @Test
+    fun queuedSyncMustNotReadBackendWhileSwitchInProgress() = runBlocking {
+        val repoMock = Mockito.mock(RecordProvider::class.java)
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(flowOf("KONOMITV"))
+        val secondaryEngine = RecordSyncEngine(
+            repoMock, db, settings, db.aiSeriesDictionaryDao(), context
+        )
+        val field = RecordSyncEngine::class.java.getDeclaredField("switchingBackend")
+        field.isAccessible = true
+        field.setBoolean(secondaryEngine, true)
+        withTimeout(10_000L) { secondaryEngine.syncAllRecords() }
+        Mockito.verifyNoInteractions(repoMock)
     }
 
 }
