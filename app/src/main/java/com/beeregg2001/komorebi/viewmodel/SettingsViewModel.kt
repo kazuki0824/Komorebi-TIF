@@ -23,6 +23,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -46,6 +47,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 @Keep
 data class PostRecordingBatch(
@@ -78,6 +81,9 @@ class SettingsViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val gson = Gson()
+    private val backendSelectionMutex = Mutex()
+    private val _backendSwitchError = MutableStateFlow<String?>(null)
+    val backendSwitchError: StateFlow<String?> = _backendSwitchError.asStateFlow()
 
     private val _dynamicQualities = MutableStateFlow<List<StreamQuality>?>(null)
     // ★ 追加: EPGStationのライブ画質一覧専用のキャッシュ。EDCB/KonomiTVはライブ・録画で
@@ -186,6 +192,9 @@ class SettingsViewModel @Inject constructor(
     val lastSyncedAt: StateFlow<Long> = db.syncMetaDao().getSyncMetaFlow()
         .map { it?.lastSyncedAt ?: 0L }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
+
+    // DataStore確定前の初期値と確定済み値を区別する。
+    val confirmedBackendType: Flow<String?> = settingsRepository.backendType
 
     val backendType: StateFlow<String> = settingsRepository.backendType.stateIn(
         viewModelScope,
@@ -622,19 +631,44 @@ class SettingsViewModel @Inject constructor(
         settingsRepository.saveString(SettingsRepository.EPG_VISIBLE_HOURS, value)
     }
 
-    fun updateBackendType(newType: String) = viewModelScope.launch(Dispatchers.IO) {
-        val oldType = settingsRepository.backendType.first()
-        if (oldType == newType) return@launch
+    fun updateBackendType(newType: String) = viewModelScope.launch {
+        // ユーザーの確定順に処理し、DataStoreを読み直してから切替を判断する。
+        backendSelectionMutex.withLock {
+            withContext(Dispatchers.IO) {
+                val oldType = settingsRepository.backendType.first()
+                if (oldType == newType) return@withContext
 
-        settingsRepository.saveString(SettingsRepository.BACKEND_TYPE, newType)
-        try {
-            db.clearAllTables()
-            context.imageLoader.memoryCache?.clear()
-            context.imageLoader.diskCache?.clear()
-        } catch (e: Exception) {
+                try {
+                    _backendSwitchError.value = null
+                    syncEngine.switchBackend {
+                        settingsRepository.saveString(SettingsRepository.BACKEND_TYPE, newType)
+                    }
+                } catch (error: kotlinx.coroutines.CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    Log.e("SettingsViewModel", "Backend switch failed", error)
+                    // Room確定だけ失敗し設定はBに切り替わった場合、Bの同期を再開する。
+                    val storedBackend = settingsRepository.backendType.first()
+                    _backendSwitchError.value = if (storedBackend != oldType) {
+                        syncEngine.launchSyncAllRecords(forceFullSync = true)
+                        "バックエンドは$storedBackend に切替済みですが録画キャッシュの更新に失敗しました。" +
+                            "録画を再同期します。"
+                    } else {
+                        "バックエンド切替に失敗しました。元の設定と録画情報を保持しました。"
+                    }
+                    return@withContext
+                }
+
+                try {
+                    context.imageLoader.memoryCache?.clear()
+                    context.imageLoader.diskCache?.clear()
+                } catch (error: Exception) {
+                    Log.w("SettingsViewModel", "Failed to clear image cache after backend switch", error)
+                }
+                syncEngine.launchSyncAllRecords(forceFullSync = true)
+                forceSyncStreamQualities()
+            }
         }
-        syncEngine.launchSyncAllRecords(forceFullSync = true)
-        forceSyncStreamQualities()
     }
 
     fun updateEdcbIp(ip: String) = viewModelScope.launch(Dispatchers.IO) {
@@ -704,7 +738,9 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun triggerFullSync() {
-        viewModelScope.launch { syncEngine.launchSyncAllRecords(forceFullSync = true) }
+        viewModelScope.launch {
+            syncEngine.launchSyncAllRecords(forceFullSync = true)
+        }
     }
 
     fun addPostRecordingBatch(name: String, path: String) {

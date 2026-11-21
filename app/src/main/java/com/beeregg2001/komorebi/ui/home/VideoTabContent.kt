@@ -29,7 +29,6 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.tv.material3.*
 import com.beeregg2001.komorebi.common.UrlBuilder
-import com.beeregg2001.komorebi.data.mapper.KonomiDataMapper
 import com.beeregg2001.komorebi.data.model.KonomiHistoryProgram
 import com.beeregg2001.komorebi.data.model.RecordedProgram
 import com.beeregg2001.komorebi.common.safeRequestFocus
@@ -58,6 +57,7 @@ fun VideoTabContent(
     getLogoUrl: suspend (String) -> String = { "" },
     shouldCropLogo: Boolean = false,
     onProgramClick: (RecordedProgram) -> Unit,
+    onHistoryClick: (KonomiHistoryProgram) -> Unit = {},
     onShowAllRecordings: () -> Unit,
     onShowSeriesList: () -> Unit,
     openedSeriesTitle: String?,
@@ -387,12 +387,7 @@ fun VideoTabContent(
                                         konomiIp = konomiIp, konomiPort = konomiPort,
                                         ticketManager = ticketManager,
                                         onReturnFocusConsumed = onReturnFocusConsumed,
-                                        onClick = {
-                                            val programToPlay =
-                                                matchedProgram?.copy(playbackPosition = historyItem.playback_position)
-                                                    ?: KonomiDataMapper.toDomainModel(historyItem)
-                                            onProgramClick(programToPlay)
-                                        },
+                                        onClick = { onHistoryClick(historyItem) },
                                         onFocus = {
                                             val videoId = matchedProgram?.id ?: try {
                                                 historyItem.program.id.toString().toInt()

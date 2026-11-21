@@ -30,11 +30,11 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.*
-import com.beeregg2001.komorebi.ui.main.visibleHomeTabs
 import com.beeregg2001.komorebi.ColdStartDiag
 import com.beeregg2001.komorebi.data.mapper.KonomiDataMapper
 import com.beeregg2001.komorebi.data.model.*
 import com.beeregg2001.komorebi.ui.epg.EpgNavigationContainer
+import com.beeregg2001.komorebi.ui.main.visibleHomeTabs
 import com.beeregg2001.komorebi.ui.reserve.ReserveListScreen
 import com.beeregg2001.komorebi.viewmodel.*
 import com.beeregg2001.komorebi.common.safeRequestFocus
@@ -145,6 +145,8 @@ fun HomeLauncherScreen(
     initialTabIndex: Int = 0,
     selectedProgram: RecordedProgram?,
     onProgramSelected: (RecordedProgram?) -> Unit,
+    onVerifiedHistorySelected: (RecordedProgram, Double) -> Unit,
+    recordedSelectionEpoch: androidx.compose.runtime.MutableIntState,
     epgSelectedProgram: EpgProgram?,
     onEpgProgramSelected: (EpgProgram?) -> Unit,
     onReserveSelected: (ReserveItem) -> Unit = {},
@@ -198,12 +200,67 @@ fun HomeLauncherScreen(
 
     val ticketManager = rememberHomeFocusTicketManager()
     val scope = rememberCoroutineScope()
+    val scopeContext = androidx.compose.ui.platform.LocalContext.current
+    var historySelectionJob by remember { mutableStateOf<Job?>(null) }
+    var historySelectionGeneration by remember { mutableIntStateOf(0) }
 
     val favoriteBaseballTeams by homeViewModel.favoriteBaseballTeams.collectAsState()
     val favoriteBaseballGames by homeViewModel.favoriteBaseballGames.collectAsState()
     val baseballDateOffset by homeViewModel.baseballDateOffset.collectAsState()
 
     val backendType by homeViewModel.backendType.collectAsState()
+    val ownedHistory by homeViewModel.ownedWatchHistory.collectAsState()
+    // 描画スナップショットの取得元を非nullで固定し、カード側のクリックへ渡す。
+    // Flowが先に切り替わり再コンポーズがまだでも、旧カードを新backendと解釈しない。
+    val displayedHistoryBackend = ownedHistory.first?.takeIf {
+        it == backendType
+    }
+    val displayedHistory = if (displayedHistoryBackend != null) ownedHistory.second
+        else emptyList()
+    val cancelPendingHistory: () -> Unit = {
+        historySelectionJob?.cancel()
+        historySelectionGeneration++
+    }
+    LaunchedEffect(backendType) { cancelPendingHistory() }
+    // カードを描画した時点の履歴取得元をクリックへ渡す。
+    // 再コンポーズ前の旧カードから、別backendの同じ録画IDへすり替えない。
+    val playVerifiedHistory: (KonomiHistoryProgram, String) -> Unit = { historyItem, cardBackend ->
+        val programId = historyItem.program.id.toIntOrNull()
+        if (cardBackend == backendType &&
+            programId != null && homeViewModel.backendType.value == cardBackend &&
+            homeViewModel.ownedWatchHistory.value.first == cardBackend &&
+            // 最新の履歴に同じIDがあるだけでは不十分。旧カードの実体を拒否する。
+            homeViewModel.ownedWatchHistory.value.second.any { it === historyItem }) {
+            cancelPendingHistory()
+            val requestId = historySelectionGeneration
+            val selectionEpoch = recordedSelectionEpoch.intValue
+            historySelectionJob = scope.launch {
+                val program = recordViewModel.getResumableHistoryProgram(programId, cardBackend)
+                if (requestId == historySelectionGeneration &&
+                    selectionEpoch == recordedSelectionEpoch.intValue &&
+                    homeViewModel.backendType.value == cardBackend &&
+                    homeViewModel.ownedWatchHistory.value.first == cardBackend) {
+                    if (program != null) onVerifiedHistorySelected(program, program.playbackPosition)
+                    else recordViewModel.historyResumeError.value?.let { reason ->
+                        android.widget.Toast.makeText(
+                            scopeContext, reason, android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        recordViewModel.clearHistoryResumeError()
+                    }
+                }
+            }
+        }
+    }
+    // 帰属付き視聴履歴は録画一覧キャッシュの構築途中も再生候補として表示する。
+    LaunchedEffect(backendType, groupedChannels.keys) {
+        // 全backendで実際に公開された局の種別から選ぶ。共通BS等は維持する。
+        val candidateTypes = listOf("GR", "BS", "CS", "SKY", "BS4K")
+        val available = candidateTypes.filter { it in groupedChannels.keys }
+        if (available.isNotEmpty() &&
+            epgViewModel.selectedBroadcastingType.value !in available) {
+            epgViewModel.updateBroadcastingType(available.first())
+        }
+    }
     val shouldCropLogo = remember(backendType) { backendType == "KONOMITV" }
 
     val tabs = remember(favoriteBaseballTeams, backendType) {
@@ -236,12 +293,12 @@ fun HomeLauncherScreen(
     val returnPlayerFocusRequester = remember { FocusRequester() }
     val displayFlatChannels = remember(groupedChannels) { groupedChannels.values.flatten() }
 
-    val translatedLastChannels = remember(ui.lastChannels, displayFlatChannels) {
-        ui.lastChannels.map { savedChannel ->
-            displayFlatChannels.find {
-                it.networkId == savedChannel.networkId && it.serviceId == savedChannel.serviceId
-            } ?: savedChannel
-        }
+    val translatedLastChannels = remember(ui.lastChannels, displayFlatChannels, backendType) {
+        val visibleById = displayFlatChannels.associateBy { it.id }
+        ui.lastChannels.asSequence().mapNotNull { saved ->
+            // 現backendが公開する完全IDだけを採用する。
+            visibleById[saved.id]
+        }.take(10).toList()
     }
 
     LaunchedEffect(tabs.size) {
@@ -899,7 +956,7 @@ fun HomeLauncherScreen(
                     when (currentTabLabel) {
                         "ホーム" -> HomeContents(
                             lastWatchedChannels = translatedLastChannels,
-                            watchHistory = ui.watchHistory,
+                            watchHistory = displayedHistory,
                             hotChannels = ui.hotChannels,
                             upcomingReserves = ui.upcomingReserves,
                             genrePickup = ui.genrePickup,
@@ -911,17 +968,7 @@ fun HomeLauncherScreen(
                             onChannelClick = {
                                 if (it != null) onChannelClick(it, false)
                             },
-                            onHistoryClick = { historyItem ->
-                                val programId = historyItem.program.id.toIntOrNull()
-                                // クリック時にのみ必要な値なので、composition では購読せず
-                                // ここで ViewModel の最新値を直接読み出す。
-                                val betterProgram =
-                                    recordViewModel.recentRecordings.value.find { it.id == programId }
-                                onProgramSelected(
-                                    betterProgram?.copy(playbackPosition = historyItem.playback_position)
-                                        ?: KonomiDataMapper.toDomainModel(historyItem)
-                                )
-                            },
+                            onHistoryClick = { item -> displayedHistoryBackend?.let { source -> playVerifiedHistory(item, source) } },
                             onReserveClick = onReserveSelected,
                             onProgramClick = { onEpgProgramSelected(it) },
                             onNavigateToTab = { targetIndex ->
@@ -989,7 +1036,11 @@ fun HomeLauncherScreen(
                         "ビデオ" -> {
                             VideoTabContent(
                                 recordViewModel = recordViewModel,
-                                onProgramClick = { onProgramSelected(it) },
+                                onProgramClick = {
+                                    cancelPendingHistory()
+                                    onProgramSelected(it)
+                                },
+                                onHistoryClick = { item -> displayedHistoryBackend?.let { source -> playVerifiedHistory(item, source) } },
                                 onShowAllRecordings = onShowAllRecordings,
                                 onShowSeriesList = onShowSeriesList,
                                 onShowSmbLibrary = onShowSmbLibrary,
@@ -1004,7 +1055,7 @@ fun HomeLauncherScreen(
                                 konomiIp = konomiIp,
                                 konomiPort = konomiPort,
                                 timeFormat = timeFormat,
-                                watchHistory = ui.watchHistory,
+                                watchHistory = displayedHistory,
                                 aiFocusReturnTick = if (currentTabLabel == "ビデオ") aiFocusReturnTick else 0,
                                 onAiReturnConsumed = onAiReturnConsumed
                             )
@@ -1095,10 +1146,8 @@ fun HomeLauncherScreen(
                                 dateOffset = baseballDateOffset,
                                 onDateOffsetChange = { homeViewModel.updateBaseballDateOffset(it) },
                                 onChannelClick = { channel ->
-                                    val matchedChannel = displayFlatChannels.find {
-                                        it.networkId == channel.networkId && it.serviceId == channel.serviceId
-                                    } ?: channel
-                                    onChannelClick(matchedChannel, true)
+                                    val matchedChannel = displayFlatChannels.find { it.id == channel.id } ?: channel
+                                    if (matchedChannel != null) onChannelClick(matchedChannel, true)
                                 },
                                 onProgramClick = { onEpgProgramSelected(it) },
                                 topNavFocusRequester = ui.tabFocusRequesters[activeRenderIndex],
