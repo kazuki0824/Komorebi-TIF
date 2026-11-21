@@ -1,8 +1,7 @@
 package com.beeregg2001.komorebi.regression
 
-import androidx.room.Database
 import androidx.room.Room
-import androidx.room.RoomDatabase
+import com.beeregg2001.komorebi.data.local.AppDatabase
 import androidx.test.core.app.ApplicationProvider
 import android.content.Context
 import com.beeregg2001.komorebi.data.local.dao.BackendWatchHistoryDao
@@ -29,27 +28,12 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class BackendDataIsolationRegressionTest {
-    @Database(
-        entities = [
-            BackendWatchHistoryEntity::class,
-            WatchHistoryEntity::class,
-            EpgCacheEntity::class
-        ],
-        version = 1,
-        exportSchema = false
-    )
-    abstract class RegressionDatabase : RoomDatabase() {
-        abstract fun histories(): BackendWatchHistoryDao
-        abstract fun legacy(): WatchHistoryDao
-        abstract fun epg(): EpgCacheDao
-    }
-
-    private lateinit var db: RegressionDatabase
+    private lateinit var db: AppDatabase
 
     @Before
     fun setUp() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        db = Room.inMemoryDatabaseBuilder(context, RegressionDatabase::class.java)
+        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
             .allowMainThreadQueries()
             .build()
     }
@@ -64,7 +48,7 @@ class BackendDataIsolationRegressionTest {
 
     @Test
     fun identicalRecordIdsFromDifferentBackendsDoNotOverwriteEachOther() = runBlocking {
-        val dao = db.histories()
+        val dao = db.backendWatchHistoryDao()
         dao.upsert(row("KONOMITV", 42, 10L, "kon"))
         dao.upsert(row("EDCB", 42, 20L, "edcb"))
         dao.upsert(row("EPGSTATION", 42, 30L, "epg"))
@@ -78,7 +62,7 @@ class BackendDataIsolationRegressionTest {
 
     @Test
     fun recentHistoryIsFilteredAndOrderedPerBackend() = runBlocking {
-        val dao = db.histories()
+        val dao = db.backendWatchHistoryDao()
         dao.upsertAll(listOf(
             row("KONOMITV", 1, 10L, "old"),
             row("EDCB", 1, 999L, "foreign"),
@@ -92,21 +76,21 @@ class BackendDataIsolationRegressionTest {
 
     @Test
     fun unknownLegacyOwnerIsNotAutomaticallyInsertedIntoNewHistoryTable() = runBlocking {
-        db.legacy().insertOrUpdate(
+        db.watchHistoryDao().insertOrUpdate(
             WatchHistoryEntity(
                 id = 42, title = "legacy", description = "",
                 detailJson = null, startTime = "", endTime = "",
                 duration = 0.0, videoId = 42
             )
         )
-        assertNotNull(db.legacy().getById(42))
-        assertNull(db.histories().findById("KONOMITV", 42))
-        assertNull(db.histories().findById("EDCB", 42))
+        assertNotNull(db.watchHistoryDao().getById(42))
+        assertNull(db.backendWatchHistoryDao().findById("KONOMITV", 42))
+        assertNull(db.backendWatchHistoryDao().findById("EDCB", 42))
     }
 
     @Test
     fun backendQualifiedEpgCacheKeysRemainIndependent() = runBlocking {
-        val dao = db.epg()
+        val dao = db.epgCacheDao()
         dao.insertOrUpdate(EpgCacheEntity("KONOMITV_GR", "kon-payload", 10L))
         dao.insertOrUpdate(EpgCacheEntity("EDCB_GR", "edcb-payload", 20L))
         assertEquals("kon-payload", dao.getCache("KONOMITV_GR")?.dataJson)
@@ -117,7 +101,7 @@ class BackendDataIsolationRegressionTest {
     }
     @Test
     fun recentHistoryIsLimitedToThirtyPerBackend() = runBlocking {
-        val dao = db.histories()
+        val dao = db.backendWatchHistoryDao()
         dao.upsertAll((1..45).map { row("KONOMITV", it, it.toLong(), "p-$it") })
         dao.upsert(row("EDCB", 999, 9999L, "foreign"))
         assertEquals((45 downTo 16).toList(),
@@ -126,7 +110,7 @@ class BackendDataIsolationRegressionTest {
 
     @Test
     fun lookupByIdsNeverReturnsForeignBackendRows() = runBlocking {
-        val dao = db.histories()
+        val dao = db.backendWatchHistoryDao()
         dao.upsertAll(listOf(
             row("KONOMITV", 1, 1L, "own"),
             row("EDCB", 1, 2L, "foreign-duplicate"),
@@ -139,11 +123,11 @@ class BackendDataIsolationRegressionTest {
 
     @Test
     fun clearingHistoryDoesNotEraseEpgCache() = runBlocking {
-        db.histories().upsert(row("KONOMITV", 1, 1L, "one"))
-        db.epg().insertOrUpdate(EpgCacheEntity("KONOMITV_GR", "cached", 1L))
-        db.histories().clearAll()
-        assertNull(db.histories().findById("KONOMITV", 1))
-        assertEquals("cached", db.epg().getCache("KONOMITV_GR")?.dataJson)
+        db.backendWatchHistoryDao().upsert(row("KONOMITV", 1, 1L, "one"))
+        db.epgCacheDao().insertOrUpdate(EpgCacheEntity("KONOMITV_GR", "cached", 1L))
+        db.backendWatchHistoryDao().clearAll()
+        assertNull(db.backendWatchHistoryDao().findById("KONOMITV", 1))
+        assertEquals("cached", db.epgCacheDao().getCache("KONOMITV_GR")?.dataJson)
     }
 
     @Test
@@ -153,11 +137,11 @@ class BackendDataIsolationRegressionTest {
             detailJson = null, startTime = "", endTime = "",
             duration = 0.0, videoId = 77
         )
-        db.legacy().insertOrUpdate(old)
-        db.histories().upsert(row("KONOMITV", 77, 1L, "new"))
-        db.histories().clearAll()
-        assertNotNull(db.legacy().getById(77))
-        assertNull(db.histories().findById("KONOMITV", 77))
+        db.watchHistoryDao().insertOrUpdate(old)
+        db.backendWatchHistoryDao().upsert(row("KONOMITV", 77, 1L, "new"))
+        db.backendWatchHistoryDao().clearAll()
+        assertNotNull(db.watchHistoryDao().getById(77))
+        assertNull(db.backendWatchHistoryDao().findById("KONOMITV", 77))
     }
 
 }
