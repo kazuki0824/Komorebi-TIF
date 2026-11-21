@@ -543,12 +543,6 @@ fun SettingsScreen(
                                         ).any { it == prefs.backendType }
                                     ) prefs.backendType else "KONOMITV"
                                 ) {
-                                    scope.launch(Dispatchers.IO) {
-                                        repository.saveString(
-                                            SettingsRepository.BACKEND_TYPE,
-                                            it
-                                        )
-                                    }
                                     viewModel.updateBackendType(it)
                                 }
                             },

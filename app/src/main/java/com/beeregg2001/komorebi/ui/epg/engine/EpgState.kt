@@ -77,12 +77,34 @@ class EpgState(
 
     val maxScrollMinutes = 60 * 24
 
+    /** 旧backendの描画結果を直ちに破棄する。キャッシュも番組がない状態へ戻す。 */
+    fun clearData() {
+        uiChannelsCache.clear()
+        uiChannels = emptyList()
+        filledChannelWrappers = emptyList()
+        currentFocusedProgram = null
+        focusedCol = 0
+        focusedMin = 0
+        isCalculating = false
+        isInitialized = false
+        targetScrollX = 0f
+        targetScrollY = 0f
+        targetAnimX = 0f
+        targetAnimY = 0f
+    }
+
     suspend fun updateData(
         newData: List<EpgChannelWrapper>,
         targetTime: OffsetDateTime,
         currentType: String, // ★ 追加: キャッシュのキーとして利用
         resetFocus: Boolean = false
     ) {
+        if (newData.isEmpty()) {
+            clearData()
+            baseTime = targetTime
+            limitTime = targetTime
+            return
+        }
         val newBaseTime = targetTime.withHour(4).withMinute(0).withSecond(0).withNano(0).let {
             if (targetTime.hour < 4) it.minusDays(1) else it
         }

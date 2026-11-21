@@ -27,6 +27,8 @@ import com.beeregg2001.komorebi.ColdStartDiag
 import com.beeregg2001.komorebi.ui.home.LoadingScreen
 import com.beeregg2001.komorebi.ui.live.LivePlayerScreen
 import com.beeregg2001.komorebi.ui.video.player.VideoPlayerScreen
+import com.beeregg2001.komorebi.data.model.RecordedProgram
+import com.beeregg2001.komorebi.data.model.RecordedVideo
 import com.beeregg2001.komorebi.viewmodel.*
 import com.beeregg2001.komorebi.ui.theme.AppTheme
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
@@ -57,6 +59,8 @@ fun MainRootScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val state = rememberMainRootState()
+    // 後続の選局を古い非同期録画履歴再開で上書きしないための世代。
+    val recordedSelectionEpoch = remember { mutableIntStateOf(0) }
 
     // =========================================================================================
     // ★ 追加: アプリのバックグラウンド移行（スリープ）と復帰を検知する機構
@@ -120,7 +124,25 @@ fun MainRootScreen(
     }
 
     val backendType by homeViewModel.backendType.collectAsState()
-    LaunchedEffect(backendType) { state.backendType = backendType }
+    var previouslyAppliedBackend by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(backendType) {
+        if (previouslyAppliedBackend != null && previouslyAppliedBackend != backendType) {
+            if (state.selectedChannel != null ||
+                (state.selectedProgram != null && state.selectedSmbItem == null)) {
+                state.isMiniPlayerMode = false
+            }
+            if (state.selectedSmbItem == null) {
+                state.selectedProgram = null
+                state.lastSelectedProgramId = null
+            }
+            state.selectedChannel = null
+            state.lastSelectedChannelId = null
+            state.isReturningFromPlayer = false
+            state.playerShowOverlay = false
+        }
+        previouslyAppliedBackend = backendType
+        state.backendType = backendType
+    }
 
     val favoriteBaseballTeams by homeViewModel.favoriteBaseballTeams.collectAsState()
     val tabs = remember(backendType, favoriteBaseballTeams) {
@@ -369,27 +391,32 @@ fun MainRootScreen(
         isSettingsInitialized,
         isChannelLoading,
         isHomeLoading,
-        lastChannels
+        lastChannels,
+        state.selectedChannel,
+        backendType,
+        startupChannelSetting
     ) {
-        if (isSettingsInitialized && state.hasAppliedStartupTab && !state.hasAppliedStartupChannel && !isChannelLoading && !isHomeLoading && groupedChannels.isNotEmpty()) {
-            state.hasAppliedStartupChannel = true
+        if (isSettingsInitialized && state.hasAppliedStartupTab && !state.hasAppliedStartupChannel &&
+            state.selectedChannel == null && !isChannelLoading && !isHomeLoading && groupedChannels.isNotEmpty()) {
             val flatChannels = groupedChannels.values.flatten()
             if (flatChannels.isNotEmpty() && startupChannelSetting != "OFF") {
                 val targetChannel = if (startupChannelSetting == "LAST_WATCHED") {
-                    val lastHistory = lastChannels.firstOrNull()
-                    flatChannels.find { it.id == lastHistory?.id } ?: flatChannels.first()
+                    homeViewModel.recentStartupChannelIds(flatChannels.map { it.id }).firstNotNullOfOrNull { id ->
+                        flatChannels.find { it.id == id }
+                    } ?: flatChannels.first()
                 } else flatChannels.find { it.id == startupChannelSetting } ?: flatChannels.first()
-
-                state.selectedChannel = targetChannel; state.isBaseballMode =
-                    false; state.lastSelectedChannelId = targetChannel.id
-                state.lastSelectedProgramId =
-                    null; homeViewModel.saveLastChannel(targetChannel); state.isReturningFromPlayer =
-                    false
-
+                recordedSelectionEpoch.intValue++
+                state.selectedChannel = targetChannel
+                state.isBaseballMode = false
+                state.lastSelectedChannelId = targetChannel.id
+                state.lastSelectedProgramId = null
+                homeViewModel.saveLastChannel(targetChannel)
+                state.isReturningFromPlayer = false
                 val liveIndex = tabs.indexOf("ライブ")
                 if (liveIndex != -1) state.currentTabIndex = liveIndex
                 state.isUiReady = true
             }
+            state.hasAppliedStartupChannel = true
         }
     }
 
@@ -491,7 +518,7 @@ fun MainRootScreen(
     // isChannelLoadingはChannelViewModelの初期値がtrueで、取得完了時に一度だけ
     // falseになる(取得の重複起動もChannelViewModel側で抑止済み)ため、
     // この時点でチャンネル一覧・エラー状態はどちらも確定している。待つ必要はない。
-    LaunchedEffect(isChannelLoading, isHomeLoading) {
+    LaunchedEffect(isChannelLoading, isHomeLoading, isChannelError) {
         if (!isChannelLoading && !isHomeLoading) {
             if (isChannelError) {
                 state.showConnectionErrorDialog = true; state.isDataReady = false
@@ -580,6 +607,7 @@ fun MainRootScreen(
 
                     MainRootBackground(
                         state = state,
+                        recordedSelectionEpoch = recordedSelectionEpoch,
                         channelViewModel = channelViewModel,
                         homeViewModel = homeViewModel,
                         epgViewModel = epgViewModel,
@@ -651,6 +679,7 @@ fun MainRootScreen(
                                     isSubMenuOpen = state.playerIsSubMenuOpen,
                                     onSubMenuToggle = { state.playerIsSubMenuOpen = it },
                                     onChannelSelect = { newChannel ->
+                                        recordedSelectionEpoch.intValue++
                                         state.selectedChannel =
                                             newChannel; state.lastSelectedChannelId = newChannel.id
                                         state.lastSelectedProgramId =
@@ -693,17 +722,39 @@ fun MainRootScreen(
                                     }
                                 )
                             } else if (state.selectedSmbItem != null) {
-                                val baseProgram =
-                                    recordViewModel.recentRecordings.collectAsState().value.firstOrNull()
-                                if (baseProgram != null) {
-                                    val dummyProgram = baseProgram.copy(
-                                        id = state.selectedSmbItem!!.path.hashCode(),
-                                        title = state.selectedSmbItem!!.name,
-                                        description = "SMBネットワーク再生: ${state.selectedSmbItem!!.path}"
+                                val smbItem = requireNotNull(state.selectedSmbItem)
+                                // SMB再生に必要な表示モデルはSMB項目から作る。録画履歴は一切参照しない。
+                                // SmbVlcPlayerScreenの既存UI型に合わせるためだけのアダプターであり、
+                                // 放送録画の実データがあるかのように扱わない。
+                                val dummyProgram = remember(smbItem) {
+                                    val fileTime = java.time.Instant.ofEpochMilli(
+                                        smbItem.lastModified.coerceAtLeast(0L)
+                                    ).toString()
+                                    val playbackId = smbItem.path.hashCode()
+                                    RecordedProgram(
+                                        id = playbackId,
+                                        title = smbItem.name,
+                                        description = "SMBネットワーク再生: " + smbItem.path,
+                                        startTime = fileTime,
+                                        endTime = fileTime,
+                                        duration = 0.0,
+                                        isPartiallyRecorded = false,
+                                        recordedVideo = RecordedVideo(
+                                            id = playbackId,
+                                            status = "SMB",
+                                            filePath = smbItem.path,
+                                            recordingStartTime = fileTime,
+                                            recordingEndTime = fileTime,
+                                            duration = 0.0,
+                                            containerFormat = smbItem.name.substringAfterLast('.', ""),
+                                            videoCodec = "",
+                                            audioCodec = ""
+                                        )
                                     )
-                                    com.beeregg2001.komorebi.ui.video.smb.player.SmbVlcPlayerScreen(
+                                }
+                                com.beeregg2001.komorebi.ui.video.smb.player.SmbVlcPlayerScreen(
                                         program = dummyProgram,
-                                        smbItem = state.selectedSmbItem!!,
+                                        smbItem = smbItem,
                                         initialPositionMs = state.initialPlaybackPositionMs,
                                         showControls = state.showPlayerControls,
                                         onShowControlsChange = { state.showPlayerControls = it },
@@ -726,13 +777,6 @@ fun MainRootScreen(
                                         },
                                         settingsViewModel = settingsViewModel
                                     )
-                                } else {
-                                    LaunchedEffect(Unit) {
-                                        state.toastMessage =
-                                            "再生用のダミーデータを生成できませんでした"
-                                        state.selectedSmbItem = null
-                                    }
-                                }
                             }
                         }
                     }
@@ -754,6 +798,7 @@ fun MainRootScreen(
 
             MainRootDialogs(
                 state = state,
+                recordedSelectionEpoch = recordedSelectionEpoch,
                 channelViewModel = channelViewModel,
                 epgViewModel = epgViewModel,
                 homeViewModel = homeViewModel,

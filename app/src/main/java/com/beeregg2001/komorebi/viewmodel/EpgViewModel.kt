@@ -60,13 +60,21 @@ class EpgViewModel @OptIn(UnstableApi::class)
     private var mirakurunPort = ""
 
     private var hasInitialFetched = false
+    private var observedBackend: String? = null
+    // Main/Default workerを跨ぐ非同期検索・スライスの旧backend結果の公開を禁止する。
+    @Volatile private var backendGeneration: Long = 0L
+    private var searchGeneration: Long = 0L
+    private var searchJob: Job? = null
     private var epgJob: Job? = null
+    private var preloadJob: Job? = null
 
     // ★ 追加: DB検索待ちをゼロにするためのメモリキャッシュ群
     private val epgMemoryCache = mutableMapOf<String, List<EpgChannelWrapper>>()
     private val logoMemoryCache = mutableMapOf<String, List<String>>()
 
     private var fullEpgData: List<EpgChannelWrapper> = emptyList()
+    private var displayedBroadcastingType: String = "GR"
+    private var hasDisplayedDataForType = false
     private var fullLogoUrls: List<String> = emptyList()
     private var currentTargetTime: OffsetDateTime = OffsetDateTime.now()
 
@@ -174,7 +182,10 @@ class EpgViewModel @OptIn(UnstableApi::class)
         isLiveOnly: Boolean = false,
         channelName: String? = null
     ) {
-        viewModelScope.launch {
+        searchJob?.cancel()
+        val generation = backendGeneration
+        val request = ++searchGeneration
+        searchJob = viewModelScope.launch {
             _isSearching.value = true
             val displayQuery = listOfNotNull(
                 keyword.takeIf { it.isNotBlank() },
@@ -217,12 +228,20 @@ class EpgViewModel @OptIn(UnstableApi::class)
                     }.awaitAll()
                 }
 
-                _searchResults.value = results
+                if (generation == backendGeneration && request == searchGeneration) {
+                    _searchResults.value = results
+                }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e("EpgViewModel", "Search Error", e)
-                _searchResults.value = emptyList()
+                if (generation == backendGeneration && request == searchGeneration) {
+                    _searchResults.value = emptyList()
+                }
             } finally {
-                _isSearching.value = false
+                if (generation == backendGeneration && request == searchGeneration) {
+                    _isSearching.value = false
+                }
             }
         }
     }
@@ -234,6 +253,8 @@ class EpgViewModel @OptIn(UnstableApi::class)
         isLiveOnly: Boolean = false,
         channelName: String? = null
     ): List<UiSearchResultItem> {
+        val generation = backendGeneration
+        val catalogueGeneration = searchGeneration
         return try {
             val rawResults = withContext(Dispatchers.Default) {
                 repository.searchFuturePrograms(keyword, genre, dateStr, isLiveOnly, channelName)
@@ -247,7 +268,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
                 }
             }.take(100)
 
-            withContext(Dispatchers.IO) {
+            val results = withContext(Dispatchers.IO) {
                 topMatches.map { item ->
                     async {
                         UiSearchResultItem(
@@ -258,30 +279,58 @@ class EpgViewModel @OptIn(UnstableApi::class)
                     }
                 }.awaitAll()
             }
+            // バックエンドや検索世代が変わった場合は旧結果を返さない。
+            if (generation == backendGeneration &&
+                catalogueGeneration == searchGeneration) results else emptyList()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             emptyList()
         }
     }
 
     fun clearSearch() {
+        searchJob?.cancel()
+        searchGeneration++
+        _isSearching.value = false
         _activeSearchQuery.value = ""
         _searchQuery.value = ""
         _searchResults.value = emptyList()
     }
 
-    fun preloadEpgDataForSearch(availableTypes: List<String>) {
+    private fun preloadTypesFor(backend: String): List<String> =
+        listOf("GR", "BS", "CS", "SKY", "BS4K")
+
+    /** 既存の検索範囲を下回らず、最終放送日04:00境界まで含める。 */
+    private fun epgRangeEnd(now: OffsetDateTime, backend: String): OffsetDateTime {
+        val dayStart = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
+        val lastBroadcastDayEnd = dayStart.plusDays(7).plusHours(4)
+        val originalSearchEnd = now.plusDays(7)
+        return if (originalSearchEnd.isAfter(lastBroadcastDayEnd))
+            originalSearchEnd else lastBroadcastDayEnd
+    }
+
+    /** 呼出元のJobへ従属させる。delay後の実取得もcancelが伝播する。 */
+    private suspend fun preloadEpgDataForSearchNow(availableTypes: List<String>) {
+        val backend = settingsRepository.backendType.first()
         val now = OffsetDateTime.now()
         val start = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
-        val end = now.plusDays(7)
-
-        viewModelScope.launch(Dispatchers.IO) {
+        val end = epgRangeEnd(now, backend)
+        coroutineScope {
             availableTypes.map { type ->
-                async {
-                    if (!repository.hasCacheForType(type)) {
-                        repository.fetchAndCacheEpgDataSilently(start, end, type)
-                    }
+                async(Dispatchers.IO) {
+                    // Repositoryがバックエンド別キャッシュを管理する。
+                    repository.fetchAndCacheEpgDataSilently(start, end, type)
                 }
             }.awaitAll()
+        }
+    }
+
+    fun preloadEpgDataForSearch(availableTypes: List<String>) {
+        preloadJob?.cancel()
+        preloadJob = viewModelScope.launch {
+            val backend = settingsRepository.backendType.first()
+            preloadEpgDataForSearchNow(availableTypes.filter { it in preloadTypesFor(backend) })
         }
     }
 
@@ -289,24 +338,46 @@ class EpgViewModel @OptIn(UnstableApi::class)
         viewModelScope.launch {
             combine(
                 settingsRepository.isInitialized,
+                settingsRepository.backendType,
                 settingsRepository.mirakurunIp,
                 settingsRepository.mirakurunPort,
                 _selectedBroadcastingType
-            ) { isInit, mIp, mPort, type ->
+            ) { isInit, backend, mIp, mPort, type ->
+                if (observedBackend != backend) {
+                    backendGeneration++
+                    epgJob?.cancel()
+                    preloadJob?.cancel()
+                    sliceJob?.cancel()
+                    clearSearch()
+                    epgMemoryCache.clear()
+                    logoMemoryCache.clear()
+                    fullEpgData = emptyList()
+                    fullLogoUrls = emptyList()
+                    hasDisplayedDataForType = false
+                    uiState = EpgUiState.Loading
+                    _isInitialLoadComplete.value = false
+                    _isPreloading.value = true
+                    hasInitialFetched = false
+                    observedBackend = backend
+                    // 有効な放送種別は維持する。
+                    val available = preloadTypesFor(backend)
+                    if (type !in available) _selectedBroadcastingType.value = available.first()
+                }
                 mirakurunIp = mIp
                 mirakurunPort = mPort
 
                 if (isInit && !hasInitialFetched) {
                     hasInitialFetched = true
-                    viewModelScope.launch { refreshEpgData(type) }
+                    viewModelScope.launch { refreshEpgData(_selectedBroadcastingType.value) }
 
-                    viewModelScope.launch {
+                    preloadJob = viewModelScope.launch {
                         delay(10000)
-                        preloadEpgDataForSearch(listOf("GR", "BS", "CS", "SKY", "BS4K"))
+                        // 旧backendの遅延ジョブは切替時にcancelし、子の並列取得も一括停止。
+                        preloadEpgDataForSearchNow(preloadTypesFor(backend))
                     }
 
                 } else if (isInit && hasInitialFetched) {
-                    refreshEpgData(type)
+                    refreshEpgData(_selectedBroadcastingType.value)
                 }
             }.collectLatest { }
         }
@@ -318,26 +389,41 @@ class EpgViewModel @OptIn(UnstableApi::class)
 
     fun refreshEpgData(channelType: String? = null) {
         epgJob?.cancel()
+        sliceJob?.cancel()
+        val requestedType = channelType ?: _selectedBroadcastingType.value
+        if (requestedType != _selectedBroadcastingType.value) return
+        displayedBroadcastingType = requestedType
+        hasDisplayedDataForType = false
         epgJob = viewModelScope.launch {
-            val typeToFetch = channelType ?: _selectedBroadcastingType.value
+            val typeToFetch = requestedType
             val now = OffsetDateTime.now()
+            val requestBackend = settingsRepository.backendType.first()
             val start = now.withHour(0).withMinute(0).withSecond(0).withNano(0)
-            val end = now.plusDays(7)
+            val end = epgRangeEnd(now, requestBackend)
 
-            // ★ 修正: メモリキャッシュがあれば即座にUIへ反映（Loadingスピナーすら出さない）
-            if (epgMemoryCache.containsKey(typeToFetch)) {
-                fullEpgData = epgMemoryCache[typeToFetch]!!
+            // 成功を維持できるのは同じ種別のデータを表示した場合だけ。
+            // 前の放送種別のSuccessを新種別の取得失敗へ流用しない。
+            var hasShownRequestedType = false
+            val cachedForType = epgMemoryCache[typeToFetch]
+            if (cachedForType != null) {
+                hasDisplayedDataForType = true
+                fullEpgData = cachedForType
                 fullLogoUrls = logoMemoryCache[typeToFetch] ?: emptyList()
                 sliceAndEmitEpgData()
+                hasShownRequestedType = true
             } else {
-                if (uiState !is EpgUiState.Success) {
-                    uiState = EpgUiState.Loading
-                }
+                fullEpgData = emptyList()
+                fullLogoUrls = emptyList()
+                uiState = EpgUiState.Loading
             }
 
             // キャッシュ表示後も、裏側でRoomから最新情報を取得してキャッシュを更新する
             repository.getEpgDataStream(start, end, typeToFetch).collect { result ->
+                if (typeToFetch != _selectedBroadcastingType.value ||
+                    typeToFetch != displayedBroadcastingType) return@collect
                 result.onSuccess { data ->
+                    hasShownRequestedType = true
+                    hasDisplayedDataForType = true
                     fullEpgData = data
                     epgMemoryCache[typeToFetch] = data
                     // ★ 時刻解析メモが無制限に膨らまないよう、元データ更新時に破棄する
@@ -352,7 +438,7 @@ class EpgViewModel @OptIn(UnstableApi::class)
                     _isInitialLoadComplete.value = true
                     _isPreloading.value = false
                 }.onFailure { e ->
-                    if (uiState !is EpgUiState.Success) {
+                    if (!hasShownRequestedType) {
                         uiState = EpgUiState.Error(e.message ?: "Unknown Error")
                         _isInitialLoadComplete.value = true
                     }
@@ -399,20 +485,38 @@ class EpgViewModel @OptIn(UnstableApi::class)
     private var sliceJob: Job? = null
 
     private fun sliceAndEmitEpgData() {
-        if (fullEpgData.isEmpty()) return
+        sliceJob?.cancel()
+        if (!hasDisplayedDataForType) return
+        if (fullEpgData.isEmpty()) {
+            // 空EPGも取得成功として描画を完了する。
+            uiState = EpgUiState.Success(
+                data = emptyList(),
+                logoUrls = emptyList(),
+                mirakurunIp = mirakurunIp,
+                mirakurunPort = mirakurunPort,
+                targetTime = currentTargetTime
+            )
+            return
+        }
+        val generation = backendGeneration
+        val sourceType = displayedBroadcastingType
+        val sourceData = fullEpgData
+        val sourceLogos = fullLogoUrls
+        val sourceTargetTime = currentTargetTime
+        val sourceMirakurunIp = mirakurunIp
+        val sourceMirakurunPort = mirakurunPort
         // ★ 最適化 + 競合の修正:
         //   従来は呼ばれるたびに新しいコルーチンを起動しっぱなしだったため、
         //   日付を素早く連打すると同じデータに対する重いスライス処理が多重に走り、
         //   さらに完了順が前後すると古い結果が新しい結果を上書きする可能性があった。
-        sliceJob?.cancel()
         sliceJob = viewModelScope.launch(Dispatchers.Default) {
 
-            val tvDayStart = getTvDayStart(currentTargetTime)
+            val tvDayStart = getTvDayStart(sourceTargetTime)
             val tvDayEnd = tvDayStart.plusHours(24)
             val tvDayStartMs = tvDayStart.toInstant().toEpochMilli()
             val tvDayEndMs = tvDayEnd.toInstant().toEpochMilli()
 
-            val slicedData = fullEpgData.map { wrapper ->
+            val slicedData = sourceData.map { wrapper ->
                 val filteredPrograms = wrapper.programs.filter { prog ->
                     val startMs = parseEpochMillis(prog.start_time)
                     val endMs = parseEpochMillis(prog.end_time)
@@ -423,13 +527,21 @@ class EpgViewModel @OptIn(UnstableApi::class)
                 wrapper.copy(programs = filteredPrograms)
             }
 
-            uiState = EpgUiState.Success(
-                data = slicedData,
-                logoUrls = fullLogoUrls,
-                mirakurunIp = mirakurunIp,
-                mirakurunPort = mirakurunPort,
-                targetTime = currentTargetTime
-            )
+            // CPU上のmap/filterはcancel()だけでは即停止しない。
+            // 計算完了後にgenerationとactiveを確認し、Mainでのみ描画状態を公開する。
+            ensureActive()
+            withContext(Dispatchers.Main.immediate) {
+                if (generation != backendGeneration || !isActive ||
+                    sourceType != displayedBroadcastingType ||
+                    sourceType != _selectedBroadcastingType.value) return@withContext
+                uiState = EpgUiState.Success(
+                    data = slicedData,
+                    logoUrls = sourceLogos,
+                    mirakurunIp = sourceMirakurunIp,
+                    mirakurunPort = sourceMirakurunPort,
+                    targetTime = sourceTargetTime
+                )
+            }
         }
     }
 
@@ -440,6 +552,10 @@ class EpgViewModel @OptIn(UnstableApi::class)
 
     fun updateBroadcastingType(type: String) {
         if (_selectedBroadcastingType.value != type) {
+            // combineによる再取得が始まる前にも旧種別の描画結果を無効化する。
+            epgJob?.cancel()
+            sliceJob?.cancel()
+            uiState = EpgUiState.Loading
             _selectedBroadcastingType.value = type
         }
     }
