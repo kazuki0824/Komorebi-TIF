@@ -1,0 +1,60 @@
+name: PR3 Robolectric Regression
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/pr3-robolectric-regression.yml'
+      - 'app/**'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'gradlew.bat'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+  push:
+    branches:
+      - test/pr3-robolectric-regression
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  robolectric:
+    name: Android JVM regression (Robolectric)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ANDROID_HOME: ${{ github.workspace }}/android-sdk
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Android SDK and required build tools
+        uses: android-actions/setup-android@v3
+
+      - name: Run Robolectric regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :app:testDebugUnitTest \
+            --tests 'com.beeregg2001.komorebi.regression.*' \
+            --stacktrace
+
+      - name: Upload JVM test evidence (including failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr3-robolectric-junit
+          path: |
+            app/build/test-results/testDebugUnitTest/**
+            app/build/reports/tests/testDebugUnitTest/**
+          if-no-files-found: warn
+          retention-days: 14
