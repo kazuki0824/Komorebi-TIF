@@ -73,6 +73,9 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
     }
+    // Test-only font stubs: production font binaries are absent from this repo.
+    // Applied to the debug variant only; release resources remain unchanged.
+    sourceSets.getByName("debug").res.srcDir("src/test/fixtures/debug-res")
     buildFeatures {
         compose = true
         buildConfig = true // ★ BuildConfigクラスの生成を有効化
