@@ -75,8 +75,8 @@ jobs:
               failures += sum(1 for case in root.findall(".//testcase") if case.find("failure") is not None or case.find("error") is not None)
               skipped += sum(1 for case in root.findall(".//testcase") if case.find("skipped") is not None)
           print(f"PR3 regression cases: {len(cases)}; failed: {failures}; skipped: {skipped}")
-          if len(cases) < 19 or failures or skipped:
-              raise SystemExit("FAIL: minimum 19 executed cases required, with no failure or skips")
+          if len(cases) < 21 or failures or skipped:
+              raise SystemExit("FAIL: minimum 21 executed cases required, with no failure or skips")
           PY
 
       - name: Upload JVM test evidence (including failures)
