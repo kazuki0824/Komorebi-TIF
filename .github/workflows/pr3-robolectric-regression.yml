@@ -102,6 +102,7 @@ jobs:
               "RecordCacheOwnershipRegressionTest": 5,
               "RecordSyncBackendTransitionRegressionTest": 7,
               "WatchHistoryRepositoryRegressionTest": 4,
+              "VideoPlaybackHistoryOwnershipRegressionTest": 2,
           }
           print(f"PR3 regression cases: {len(cases)}; failed: {failures}; skipped: {skipped}")
           print(f"Test class coverage: {dict(actual)}")
