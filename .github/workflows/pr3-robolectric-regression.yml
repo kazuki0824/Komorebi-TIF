@@ -98,7 +98,7 @@ jobs:
               "EpgInFlightBackendRegressionTest": 2,
               "EpgSearchBackendRegressionTest": 7,
               "EpgStateRegressionTest": 2,
-              "EpgViewModelGenerationRegressionTest": 3,
+              "EpgViewModelGenerationRegressionTest": 4,
               "ExistingHomeNavigationRegressionTest": 4,
               "LastChannelRegressionTest": 5,
               "RecordCacheOwnershipRegressionTest": 5,
