@@ -115,4 +115,49 @@ class BackendDataIsolationRegressionTest {
         dao.insertOrUpdate(EpgCacheEntity("KONOMITV_GR", "updated", 30L))
         assertEquals("edcb-payload", dao.getCache("EDCB_GR")?.dataJson)
     }
+    @Test
+    fun recentHistoryIsLimitedToThirtyPerBackend() = runBlocking {
+        val dao = db.histories()
+        dao.upsertAll((1..45).map { row("KONOMITV", it, it.toLong(), "p-$it") })
+        dao.upsert(row("EDCB", 999, 9999L, "foreign"))
+        assertEquals((45 downTo 16).toList(),
+            dao.observeRecent("KONOMITV").first().map { it.recordId })
+    }
+
+    @Test
+    fun lookupByIdsNeverReturnsForeignBackendRows() = runBlocking {
+        val dao = db.histories()
+        dao.upsertAll(listOf(
+            row("KONOMITV", 1, 1L, "own"),
+            row("EDCB", 1, 2L, "foreign-duplicate"),
+            row("EDCB", 2, 3L, "foreign-only")
+        ))
+        val rows = dao.findByIds("KONOMITV", listOf(1, 2))
+        assertEquals(listOf(1), rows.map { it.recordId })
+        assertEquals("own", rows.single().payloadJson)
+    }
+
+    @Test
+    fun clearingHistoryDoesNotEraseEpgCache() = runBlocking {
+        db.histories().upsert(row("KONOMITV", 1, 1L, "one"))
+        db.epg().insertOrUpdate(EpgCacheEntity("KONOMITV_GR", "cached", 1L))
+        db.histories().clearAll()
+        assertNull(db.histories().findById("KONOMITV", 1))
+        assertEquals("cached", db.epg().getCache("KONOMITV_GR")?.dataJson)
+    }
+
+    @Test
+    fun clearingNewHistoryDoesNotSilentlyMigrateOrEraseLegacyHistory() = runBlocking {
+        val old = WatchHistoryEntity(
+            id = 77, title = "legacy", description = "",
+            detailJson = null, startTime = "", endTime = "",
+            duration = 0.0, videoId = 77
+        )
+        db.legacy().insertOrUpdate(old)
+        db.histories().upsert(row("KONOMITV", 77, 1L, "new"))
+        db.histories().clearAll()
+        assertNotNull(db.legacy().getById(77))
+        assertNull(db.histories().findById("KONOMITV", 77))
+    }
+
 }
