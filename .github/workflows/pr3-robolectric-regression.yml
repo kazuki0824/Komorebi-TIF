@@ -30,6 +30,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Enforce test-only PR scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/fix/tif-pr1-d-stack:refs/remotes/origin/fix/tif-pr1-d-stack
+          git diff --name-only origin/fix/tif-pr1-d-stack HEAD > /tmp/pr3-regression-changed.txt
+          test -s /tmp/pr3-regression-changed.txt
+          while IFS= read -r path; do
+            case "$path" in
+              app/src/test/*|app/build.gradle.kts|.github/workflows/*) ;;
+              *) echo "FAIL: disallowed production-file change: $path"; exit 1 ;;
+            esac
+          done < /tmp/pr3-regression-changed.txt
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
