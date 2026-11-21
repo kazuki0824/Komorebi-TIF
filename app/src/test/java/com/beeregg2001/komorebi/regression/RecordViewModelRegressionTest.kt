@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.local.dao.RecordedProgramDao
 import com.beeregg2001.komorebi.data.local.entity.RecordedProgramEntity
+import com.beeregg2001.komorebi.data.model.RecordedProgram
 import com.beeregg2001.komorebi.data.repository.LiveProvider
 import com.beeregg2001.komorebi.data.repository.RecordProvider
 import com.beeregg2001.komorebi.data.repository.ReserveProvider
@@ -21,6 +22,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -42,6 +47,8 @@ class RecordViewModelRegressionTest {
     private val dispatcher = UnconfinedTestDispatcher()
     private lateinit var provider: RecordProvider
     private lateinit var sync: RecordSyncEngine
+    private lateinit var cacheReady: MutableStateFlow<Boolean>
+    private lateinit var syncState: MutableStateFlow<SyncProgress>
     private lateinit var viewModel: RecordViewModel
 
     @Before
@@ -49,9 +56,11 @@ class RecordViewModelRegressionTest {
         Dispatchers.setMain(dispatcher)
         provider = Mockito.mock(RecordProvider::class.java)
         sync = Mockito.mock(RecordSyncEngine::class.java)
-        Mockito.`when`(sync.recordCacheReady).thenReturn(MutableStateFlow(false))
+        cacheReady = MutableStateFlow(false)
+        syncState = MutableStateFlow(SyncProgress())
+        Mockito.`when`(sync.recordCacheReady).thenReturn(cacheReady)
         Mockito.`when`(sync.recordCacheGeneration).thenReturn(MutableStateFlow(0L))
-        Mockito.`when`(sync.syncProgress).thenReturn(MutableStateFlow(SyncProgress()))
+        Mockito.`when`(sync.syncProgress).thenReturn(syncState)
         Mockito.`when`(sync.recordPublicationLock).thenReturn(Any())
         Mockito.doReturn(false).`when`(sync).isInitialBuildCompleted()
 
@@ -101,4 +110,45 @@ class RecordViewModelRegressionTest {
         viewModel.fetchRecentRecordings(forceRefresh = true)
         Mockito.verify(sync).launchSyncAllRecords(forceFullSync = true)
     }
+    @Test
+    fun recordingDetailAppearsOnlyWhileCacheIsOwnedAndReady() = runBlocking {
+        syncState.value = SyncProgress(isSyncing = true)
+        cacheReady.value = true
+        val program = Mockito.mock(RecordedProgram::class.java)
+        Mockito.doReturn(Result.success(program)).`when`(provider).getRecordedProgram(42)
+        viewModel.fetchProgramDetail(42)
+        withTimeout(10_000L) { viewModel.programDetail.first { it === program } }
+        assertSame(program, viewModel.programDetail.value)
+        cacheReady.value = false
+        withTimeout(10_000L) { viewModel.programDetail.first { it == null } }
+        assertNull(viewModel.programDetail.value)
+    }
+
+    @Test
+    fun inFlightDetailCannotPublishAfterRecordedCacheIsRevoked() = runBlocking {
+        syncState.value = SyncProgress(isSyncing = true)
+        cacheReady.value = true
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val program = Mockito.mock(RecordedProgram::class.java)
+        Mockito.doAnswer {
+            entered.countDown()
+            check(release.await(15, TimeUnit.SECONDS)) { "fixture release timed out" }
+            Result.success(program)
+        }.`when`(provider).getRecordedProgram(43)
+        try {
+            viewModel.fetchProgramDetail(43)
+            assertTrue("record provider never started", entered.await(15, TimeUnit.SECONDS))
+            cacheReady.value = false
+            release.countDown()
+            // The production job is canceled when ownership is revoked.
+            withTimeout(10_000L) {
+                while (viewModel.programDetail.value != null) kotlinx.coroutines.delay(10)
+            }
+            assertNull(viewModel.programDetail.value)
+        } finally {
+            release.countDown()
+        }
+    }
+
 }
