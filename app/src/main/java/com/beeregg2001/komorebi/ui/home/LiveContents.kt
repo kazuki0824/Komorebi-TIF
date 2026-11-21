@@ -85,6 +85,7 @@ fun LiveContent(
     settingsViewModel: SettingsViewModel = hiltViewModel()
 ) {
     val liveRows by channelViewModel.liveRows.collectAsState()
+    val isChannelLoading by channelViewModel.isLoading.collectAsState()
     val listState = rememberLazyListState()
 
     val rowStates = remember { mutableStateMapOf<String, LazyListState>() }
@@ -206,7 +207,12 @@ fun LiveContent(
     Box(modifier = Modifier.fillMaxSize()) {
         if (liveRows.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = colors.textPrimary.copy(alpha = 0.5f))
+                if (isChannelLoading) {
+                    CircularProgressIndicator(color = colors.textPrimary.copy(alpha = 0.5f))
+                } else {
+                    val message = "表示できるチャンネルがありません。"
+                    Text(message, color = colors.textPrimary)
+                }
             }
         } else {
             // ★ 修正: フルスクリーン再生中に上下左右をCancelする指定を削除した。

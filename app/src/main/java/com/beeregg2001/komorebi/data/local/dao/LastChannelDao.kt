@@ -21,8 +21,13 @@ interface LastChannelDao {
         insert(entity)
     }
 
-    @Query("SELECT * FROM last_watched_channel ORDER BY updatedAt DESC LIMIT 10")
+    // 表示可能局で絞った後に上限10件を適用するため、DAOでは切り詰めない。
+    @Query("SELECT * FROM last_watched_channel ORDER BY updatedAt DESC")
     fun getLastChannels(): Flow<List<LastChannelEntity>>
+
+    // SQL変数上限に依存しない。選局可能IDとの照合と件数上限はRepositoryで適用。
+    @Query("SELECT * FROM last_watched_channel ORDER BY updatedAt DESC")
+    suspend fun getStartupCandidates(): List<LastChannelEntity>
 
     @Query("DELETE FROM last_watched_channel")
     suspend fun clearAll()
