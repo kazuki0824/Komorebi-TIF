@@ -1,9 +1,8 @@
 package com.beeregg2001.komorebi.regression
 
 import android.content.Context
-import androidx.room.Database
 import androidx.room.Room
-import androidx.room.RoomDatabase
+import com.beeregg2001.komorebi.data.local.AppDatabase
 import androidx.test.core.app.ApplicationProvider
 import com.beeregg2001.komorebi.data.local.dao.LastChannelDao
 import com.beeregg2001.komorebi.data.local.entity.LastChannelEntity
@@ -22,19 +21,14 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class LastChannelRegressionTest {
-    @Database(entities = [LastChannelEntity::class], version = 1, exportSchema = false)
-    abstract class TestDatabase : RoomDatabase() {
-        abstract fun lastChannelDao(): LastChannelDao
-    }
-
-    private lateinit var db: TestDatabase
+    private lateinit var db: AppDatabase
     private lateinit var repository: LastChannelRepository
 
     @Before
     fun setUp() {
         db = Room.inMemoryDatabaseBuilder(
             ApplicationProvider.getApplicationContext<Context>(),
-            TestDatabase::class.java
+            AppDatabase::class.java
         ).allowMainThreadQueries().build()
         repository = LastChannelRepository(db.lastChannelDao())
     }
