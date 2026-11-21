@@ -23,9 +23,6 @@ jobs:
     name: Android JVM regression (Robolectric)
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    env:
-      ANDROID_HOME: ${{ github.workspace }}/android-sdk
-      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
     steps:
       - uses: actions/checkout@v4
 
@@ -36,8 +33,15 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Install Android SDK and required build tools
-        uses: android-actions/setup-android@v3
+      - name: Verify preinstalled Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME:-}"
+          test -x "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || test "${PIPESTATUS[1]:-0}" -eq 0
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-35" "build-tools;35.0.0" "cmake;3.30.5"
+          test -d "${ANDROID_HOME}/platforms/android-35"
 
       - name: Run Robolectric regressions
         shell: bash
