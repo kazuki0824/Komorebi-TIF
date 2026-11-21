@@ -86,4 +86,49 @@ class EpgSearchBackendRegressionTest {
         cache(repo)["KONOMITV_GR"] = listOf(wrapper("channel one", "needle"))
         assertTrue(repo.searchFuturePrograms(query = "").isEmpty())
     }
+    @Test
+    fun andSearchRequiresEveryKeywordWithinTheSameProgram() = runBlocking {
+        val repo = repository("KONOMITV")
+        cache(repo)["KONOMITV_GR"] = listOf(
+            wrapper("NHK", "baseball live"),
+            wrapper("NHK", "baseball digest")
+        )
+        assertEquals(listOf("baseball live"),
+            repo.searchFuturePrograms(query = "baseball live").map { it.program.title })
+    }
+
+    @Test
+    fun commaDelimitedOrSearchAcceptsEitherKeyword() = runBlocking {
+        val repo = repository("KONOMITV")
+        cache(repo)["KONOMITV_GR"] = listOf(
+            wrapper("NHK", "baseball live"),
+            wrapper("NHK", "soccer live"),
+            wrapper("NHK", "drama")
+        )
+        assertEquals(listOf("baseball live", "soccer live"),
+            repo.searchFuturePrograms(query = "baseball,soccer").map { it.program.title })
+    }
+
+    @Test
+    fun channelNameRestrictionDoesNotLeakOtherChannels() = runBlocking {
+        val repo = repository("KONOMITV")
+        cache(repo)["KONOMITV_GR"] = listOf(
+            wrapper("Tokyo One", "news"),
+            wrapper("Osaka Two", "news")
+        )
+        assertEquals(listOf("Tokyo One"),
+            repo.searchFuturePrograms(query = "news", channelName = "TOKYO")
+                .map { it.channel.name })
+    }
+
+    @Test
+    fun backendSelectionDoesNotLoseOtherChannelTypesOfTheSelectedBackend() = runBlocking {
+        val repo = repository("KONOMITV")
+        cache(repo)["KONOMITV_GR"] = listOf(wrapper("ground", "news one"))
+        cache(repo)["KONOMITV_BS"] = listOf(wrapper("satellite", "news two"))
+        cache(repo)["EDCB_GR"] = listOf(wrapper("foreign", "news three"))
+        assertEquals(setOf("news one", "news two"),
+            repo.searchFuturePrograms(query = "news").map { it.program.title }.toSet())
+    }
+
 }
