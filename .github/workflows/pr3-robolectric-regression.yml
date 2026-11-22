@@ -141,6 +141,7 @@ jobs:
               "HomeHistoryRefreshSourceRegressionTest": 2,
               "HomeGenreBackendIsolationRegressionTest": 2,
               "LiveContentEmptyStateUiRegressionTest": 1,
+              "MainRootDialogEpochUiRegressionTest": 1,
               "RecordCacheOwnershipRegressionTest": 5,
               "RecordSyncBackendTransitionRegressionTest": 7,
               "RecordSyncFullSyncOwnerRegressionTest": 5,
