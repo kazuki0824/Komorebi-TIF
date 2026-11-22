@@ -155,7 +155,9 @@ class HomeLauncherState(
 
             "ビデオ" -> {
                 channelViewModel.stopPolling()
-                recordViewModel.fetchRecentRecordings(forceRefresh = false)
+                if (homeViewModel.backendType.value != "TIF") {
+                    recordViewModel.fetchRecentRecordings(forceRefresh = false)
+                }
             }
 
             "番組表" -> {

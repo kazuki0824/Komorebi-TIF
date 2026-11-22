@@ -29,7 +29,6 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.tv.material3.*
 import com.beeregg2001.komorebi.common.UrlBuilder
-import com.beeregg2001.komorebi.data.mapper.KonomiDataMapper
 import com.beeregg2001.komorebi.data.model.KonomiHistoryProgram
 import com.beeregg2001.komorebi.data.model.RecordedProgram
 import com.beeregg2001.komorebi.common.safeRequestFocus
@@ -58,6 +57,7 @@ fun VideoTabContent(
     getLogoUrl: suspend (String) -> String = { "" },
     shouldCropLogo: Boolean = false,
     onProgramClick: (RecordedProgram) -> Unit,
+    onHistoryClick: (KonomiHistoryProgram) -> Unit = {},
     onShowAllRecordings: () -> Unit,
     onShowSeriesList: () -> Unit,
     openedSeriesTitle: String?,
@@ -72,9 +72,32 @@ fun VideoTabContent(
     timeFormat: String = "24H",
     aiFocusReturnTick: Int = 0,
     onAiReturnConsumed: () -> Unit = {},
-    onShowSmbLibrary: () -> Unit = {} // ★ 追加: SMBライブラリ画面への遷移
+    onShowSmbLibrary: () -> Unit = {}, // ★ 追加: SMBライブラリ画面への遷移
+    isTifMode: Boolean = false
 ) {
     val colors = KomorebiTheme.colors
+
+    if (isTifMode) {
+        // TIFはライブ専用。SMBは独立した機能なので録画画面と一緒に消さない。
+        Column(
+            modifier = Modifier.fillMaxSize().padding(48.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp)
+        ) {
+            Text("ファイルライブラリ", color = colors.textPrimary)
+            Text(
+                "TV Input FrameworkではKomorebiの録画・予約は利用できません。SMB動画の再生は利用できます。",
+                color = colors.textSecondary
+            )
+            SmbLibraryBannerButton(
+                modifier = Modifier
+                    .width(500.dp)
+                    .focusRequester(contentFirstItemRequester)
+                    .focusProperties { up = tabFocusRequester },
+                onClick = onShowSmbLibrary
+            )
+        }
+        return
+    }
 
     val ticketManager = rememberFocusTicketManager()
     val listState = rememberLazyListState()
@@ -387,12 +410,7 @@ fun VideoTabContent(
                                         konomiIp = konomiIp, konomiPort = konomiPort,
                                         ticketManager = ticketManager,
                                         onReturnFocusConsumed = onReturnFocusConsumed,
-                                        onClick = {
-                                            val programToPlay =
-                                                matchedProgram?.copy(playbackPosition = historyItem.playback_position)
-                                                    ?: KonomiDataMapper.toDomainModel(historyItem)
-                                            onProgramClick(programToPlay)
-                                        },
+                                        onClick = { onHistoryClick(historyItem) },
                                         onFocus = {
                                             val videoId = matchedProgram?.id ?: try {
                                                 historyItem.program.id.toString().toInt()

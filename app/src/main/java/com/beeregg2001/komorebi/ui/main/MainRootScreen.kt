@@ -4,6 +4,11 @@ package com.beeregg2001.komorebi.ui.main
 
 import android.os.Build
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
+import com.beeregg2001.komorebi.data.repository.tif.TifInput
 import androidx.annotation.RequiresApi
 import androidx.compose.animation.*
 import androidx.compose.animation.core.animateDpAsState
@@ -27,11 +32,14 @@ import com.beeregg2001.komorebi.ColdStartDiag
 import com.beeregg2001.komorebi.ui.home.LoadingScreen
 import com.beeregg2001.komorebi.ui.live.LivePlayerScreen
 import com.beeregg2001.komorebi.ui.video.player.VideoPlayerScreen
+import com.beeregg2001.komorebi.data.model.RecordedProgram
+import com.beeregg2001.komorebi.data.model.RecordedVideo
 import com.beeregg2001.komorebi.viewmodel.*
 import com.beeregg2001.komorebi.ui.theme.AppTheme
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
 import com.beeregg2001.komorebi.ui.theme.getSeasonalBackgroundBrush
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -57,12 +65,15 @@ fun MainRootScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val state = rememberMainRootState()
+    // 録画再生の後続選択が、背面ホームの遅延履歴照会を上書きしないための世代。
+    val recordedSelectionEpoch = remember { mutableIntStateOf(0) }
 
     // =========================================================================================
     // ★ 追加: アプリのバックグラウンド移行（スリープ）と復帰を検知する機構
     // =========================================================================================
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     var isAppInForeground by remember { mutableStateOf(true) }
+    var resumeGeneration by remember { mutableIntStateOf(0) }
 
     DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
@@ -76,6 +87,8 @@ fun MainRootScreen(
                     // アプリ画面に戻ってきた時（かつ、一度裏に回っていた場合のみ実行）
                     if (!isAppInForeground) {
                         isAppInForeground = true
+                        // ON_STOP/ON_RESUME間に再コンポーズがなくても復帰を検出する。
+                        resumeGeneration++
 
                         Log.i(
                             "KomorebiLifecycle",
@@ -83,16 +96,25 @@ fun MainRootScreen(
                         )
 
                         // 1. プロ野球タブやホーム画面のデータを最新に更新する
-                        homeViewModel.refreshHomeData()
-                        channelViewModel.fetchChannels()
+                        if (state.backendType == TifInput.BACKEND_TYPE)
+                            homeViewModel.refreshAfterTifInputChange()
+                        else homeViewModel.refreshHomeData()
+                        // TIFは旧ジョブへ合流せず、復帰後の入力を強制再照会する。
+                        // 強制要求IDにより削除前の遅延応答を画面へ公開しない。
+                        channelViewModel.fetchChannels(
+                            force = state.backendType == TifInput.BACKEND_TYPE
+                        )
 
                         // 2. プレイヤー（ライブ・ビデオ・SMB）を開いたまま裏に行っていた場合、強制的にホーム画面に戻す
+                        val hasTifPlayback = state.selectedChannel?.id?.startsWith("tif:") == true
                         if (state.selectedChannel != null || state.selectedProgram != null || state.selectedSmbItem != null) {
-                            state.selectedChannel = null
+                            // TIFは子TvViewがON_STOPで解放、ON_STARTで新セッションを再選局する。
+                            // 親が選択中のTIF IDを消してしまうと復帰先自体を失う。
+                            if (!hasTifPlayback) state.selectedChannel = null
                             state.selectedProgram = null
                             state.selectedSmbItem = null
                             state.isMiniPlayerMode = false
-                            state.isReturningFromPlayer = true // ホーム画面側で適切にフォーカスを復元させる
+                            state.isReturningFromPlayer = !hasTifPlayback
                         }
                     }
                 }
@@ -120,12 +142,91 @@ fun MainRootScreen(
     }
 
     val backendType by homeViewModel.backendType.collectAsState()
-    LaunchedEffect(backendType) { state.backendType = backendType }
+    val backendSwitchError by settingsViewModel.backendSwitchError.collectAsState()
+    LaunchedEffect(backendSwitchError) {
+        if (backendSwitchError != null) state.toastMessage = backendSwitchError
+    }
+    var listingsPermissionGranted by remember {
+        mutableStateOf(ContextCompat.checkSelfPermission(context, TifInput.READ_LISTINGS_PERMISSION) ==
+            PackageManager.PERMISSION_GRANTED)
+    }
+    val listingsPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            // 取得中へ移してから許可状態を公開し、部分一覧で起動判定を確定させない。
+            channelViewModel.fetchChannels(force = true)
+            listingsPermissionGranted = true
+            // 権限ダイアログ中に失敗した可視EPGも同じ種別で再取得する。
+            epgViewModel.refreshAfterTifInputChange()
+            // ダイアログ許可だけではON_STOP/RESUMEしない端末でもホームを再集計。
+            homeViewModel.refreshAfterTifInputChange()
+        } else state.toastMessage = "TV番組一覧へのアクセス許可が必要です。アプリの権限設定で許可してください。"
+    }
+    // OS設定から復帰した場合も権限を読み直し、チャンネルと番組表を再取得する。
+    LaunchedEffect(resumeGeneration, backendType) {
+        if (resumeGeneration > 0 && isAppInForeground) {
+            if (backendType == TifInput.BACKEND_TYPE) {
+                val currentlyGranted = ContextCompat.checkSelfPermission(
+                    context, TifInput.READ_LISTINGS_PERMISSION
+                ) == PackageManager.PERMISSION_GRANTED
+                // ON_RESUME側でTIFの局取得は常に強制済み。
+                // 権限状態の更新のみ行い、同一復帰で二重照会しない。
+                listingsPermissionGranted = currentlyGranted
+                // TISスキャン後の復帰では権限に変化がなくてもEPGを更新する。
+                epgViewModel.refreshAfterTifInputChange()
+            }
+        }
+    }
+    var previouslyAppliedBackend by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(backendType) {
+        if (previouslyAppliedBackend != null && previouslyAppliedBackend != backendType) {
+            // どの切替先でも旧backendのライブ／録画プレイヤーを解放する。
+            // SMBはbackendを持たないため選択・ミニプレイヤーを維持する。
+            if (state.selectedChannel != null ||
+                (state.selectedProgram != null && state.selectedSmbItem == null)) {
+                state.isMiniPlayerMode = false
+            }
+            if (state.selectedSmbItem == null) {
+                state.selectedProgram = null
+                state.lastSelectedProgramId = null
+                state.isReturningFromPlayer = false
+            }
+            state.selectedChannel = null
+            state.lastSelectedChannelId = null
+            state.isReturningFromPlayer = false
+            state.playerShowOverlay = false
+        }
+        previouslyAppliedBackend = backendType
+        state.backendType = backendType
+        if (backendType == TifInput.BACKEND_TYPE) {
+            // 既存バックエンドから切替えた際の録画・予約オーバーレイを閉じる。
+            state.isRecordListOpen = false
+            state.isSeriesListOpen = false
+            if (state.selectedProgram != null && state.selectedSmbItem == null) {
+                state.isMiniPlayerMode = false
+            }
+            state.selectedProgram = null // 録画番組再生は旧バックエンドに依存する。SMBは保持する。
+            state.selectedReserve = null
+            state.editingReserveItem = null
+            state.editingNewProgram = null
+            state.reserveToDelete = null
+            state.selectedConditionReserveItem = null
+            state.editingCondition = null
+            state.selectedProgramForAutoReserve = null
+            // パススルー入力のみならTvProvider一覧への権限は不要。
+            val tunerListed = TifInput.inputs(context).any { !it.isPassthroughInput }
+            if (!tunerListed ||
+                ContextCompat.checkSelfPermission(context, TifInput.READ_LISTINGS_PERMISSION) ==
+                PackageManager.PERMISSION_GRANTED) {
+                channelViewModel.fetchChannels()
+            } else {
+                listingsPermission.launch(TifInput.READ_LISTINGS_PERMISSION)
+            }
+        }
+    }
 
-    val baseTabs = state.getVisibleTabs()
     val favoriteBaseballTeams by homeViewModel.favoriteBaseballTeams.collectAsState()
-    val tabs = remember(favoriteBaseballTeams, baseTabs) {
-        if (favoriteBaseballTeams.isNotEmpty() && !baseTabs.contains("プロ野球")) baseTabs + "プロ野球" else baseTabs
+    val tabs = remember(state.backendType, favoriteBaseballTeams) {
+        visibleHomeTabs(state.backendType, favoriteBaseballTeams.isNotEmpty())
     }
 
     val safeTabIndex = state.currentTabIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0))
@@ -142,10 +243,12 @@ fun MainRootScreen(
                     val target = channelViewModel.groupedChannels.value.values.flatten()
                         .find { it.id == action.channelId }
                     if (target != null) {
+                        recordedSelectionEpoch.intValue++
                         state.selectedProgram = null; state.selectedSmbItem = null
                         state.isPlayerMiniListOpen = false; state.playerIsSubMenuOpen = false
                         state.isPlayerSubMenuOpen = false; state.isPlayerSceneSearchOpen = false
                         state.isMiniPlayerMode = false
+                        state.hasAppliedStartupChannel = true
                         state.selectedChannel = target; state.lastSelectedChannelId = target.id
                         homeViewModel.saveLastChannel(target); state.isReturningFromPlayer = false
                     }
@@ -153,6 +256,10 @@ fun MainRootScreen(
 
                 is AiConciergeAction.PlayRecorded -> {
                     closeAiConcierge(false)
+                    if (settingsViewModel.confirmedBackendType.first() == TifInput.BACKEND_TYPE) {
+                        state.toastMessage = "TIFでは録画番組を再生できません。"
+                        return@collect
+                    }
                     val target =
                         recordViewModel.recentRecordings.value.find { it.id == action.videoId }
                     if (target != null) {
@@ -160,6 +267,7 @@ fun MainRootScreen(
                         state.isPlayerMiniListOpen = false; state.playerIsSubMenuOpen = false
                         state.isPlayerSubMenuOpen = false; state.isPlayerSceneSearchOpen = false
                         state.isMiniPlayerMode = false
+                        recordedSelectionEpoch.intValue++
                         state.initialPlaybackPositionMs = 0L; state.selectedProgram = target
                         state.lastSelectedProgramId = target.id.toString()
                         state.showPlayerControls = true; state.isReturningFromPlayer = false
@@ -202,6 +310,10 @@ fun MainRootScreen(
 
                 is AiConciergeAction.SearchRecord -> {
                     closeAiConcierge(false)
+                    if (state.backendType == TifInput.BACKEND_TYPE) {
+                        state.toastMessage = "TIFでは録画検索に対応していません。SMBライブラリはビデオ画面から利用できます。"
+                        return@collect
+                    }
                     val tabIndex = tabs.indexOf("ビデオ")
                     if (tabIndex != -1) {
                         state.currentTabIndex = tabIndex; state.isRecordListOpen = true
@@ -232,6 +344,10 @@ fun MainRootScreen(
                 }
 
                 is AiConciergeAction.ReqRecSearch -> {
+                    if (state.backendType == TifInput.BACKEND_TYPE) {
+                        aiConciergeViewModel.submitSilentRecordSearchResult(action.keyword, emptyList())
+                        return@collect
+                    }
                     scope.launch {
                         val allRecs = recordViewModel.recentRecordings.value
                         val keywords =
@@ -254,6 +370,10 @@ fun MainRootScreen(
 
                 is AiConciergeAction.ReserveSingle -> {
                     closeAiConcierge(true)
+                    if (state.backendType == TifInput.BACKEND_TYPE) {
+                        state.toastMessage = "TIFでは録画・予約に対応していません。"
+                        return@collect
+                    }
                     reserveViewModel.addReserve(
                         programId = action.programId,
                         onFailure = { state.toastMessage = it }
@@ -264,6 +384,10 @@ fun MainRootScreen(
 
                 is AiConciergeAction.ReserveAuto -> {
                     closeAiConcierge(true)
+                    if (state.backendType == TifInput.BACKEND_TYPE) {
+                        state.toastMessage = "TIFでは録画・予約に対応していません。"
+                        return@collect
+                    }
                     reserveViewModel.addEpgReserve(
                         keyword = action.keyword,
                         networkId = 0,
@@ -318,6 +442,18 @@ fun MainRootScreen(
 
     val groupedChannels by channelViewModel.groupedChannels.collectAsState()
     val isChannelLoading by channelViewModel.isLoading.collectAsState()
+    LaunchedEffect(groupedChannels, isChannelLoading, backendType) {
+        if (backendType == TifInput.BACKEND_TYPE && !isChannelLoading) {
+            val selected = state.epgSelectedProgram
+            if (selected != null &&
+                groupedChannels.values.none { channels ->
+                    channels.any { it.id == selected.channel_id }
+                }) {
+                // 削除済みTIF局の詳細と「視聴する」を残さない。
+                state.epgSelectedProgram = null
+            }
+        }
+    }
     val isHomeLoading by homeViewModel.isLoading.collectAsState()
     val isChannelError by channelViewModel.connectionError.collectAsState()
     val isSettingsInitialized by settingsViewModel.isSettingsInitialized.collectAsState()
@@ -356,8 +492,12 @@ fun MainRootScreen(
 
     LaunchedEffect(Unit) {
         if (!state.hasAppliedStartupTab) {
+            // DataStore値確定前のKonomiTV用indexをTIFのタブ一覧へ流用しない。
+            val confirmedBackend = settingsViewModel.confirmedBackendType.first() ?: backendType
+            val confirmedTabs = visibleHomeTabs(confirmedBackend, favoriteBaseballTeams.isNotEmpty())
             val tab = settingsViewModel.getStartupTabOnce()
-            val index = tabs.indexOf(tab)
+            val index = confirmedTabs.indexOf(tab)
+            state.backendType = confirmedBackend
             state.currentTabIndex = if (index != -1) index else 0
             channelViewModel.fetchChannels()
             state.hasAppliedStartupTab = true
@@ -369,32 +509,61 @@ fun MainRootScreen(
         state.hasAppliedStartupTab,
         isSettingsInitialized,
         isChannelLoading,
+        isChannelError,
         isHomeLoading,
-        lastChannels
+        listingsPermissionGranted,
+        lastChannels,
+        state.selectedChannel,
+        backendType,
+        startupChannelSetting
     ) {
-        if (isSettingsInitialized && state.hasAppliedStartupTab && !state.hasAppliedStartupChannel && !isChannelLoading && !isHomeLoading && groupedChannels.isNotEmpty()) {
-            state.hasAppliedStartupChannel = true
+        if (isSettingsInitialized && state.hasAppliedStartupTab && !state.hasAppliedStartupChannel &&
+            state.selectedChannel == null && !isChannelLoading && !isHomeLoading &&
+            (backendType == TifInput.BACKEND_TYPE && !isChannelError &&
+                (listingsPermissionGranted || TifInput.inputs(context).none { !it.isPassthroughInput }) ||
+                backendType != TifInput.BACKEND_TYPE && groupedChannels.isNotEmpty())) {
+            // 0チャンネルのTIFも完了としてホーム・スキャン導線を表示する。
+            // suspend履歴照会前に完了フラグを立てるとキャンセル時に再試行できない。
             val flatChannels = groupedChannels.values.flatten()
             if (flatChannels.isNotEmpty() && startupChannelSetting != "OFF") {
-                val targetChannel = if (startupChannelSetting == "LAST_WATCHED") {
-                    val lastHistory = lastChannels.firstOrNull()
-                    flatChannels.find { it.id == lastHistory?.id } ?: flatChannels.first()
+                val targetChannel = if (backendType == TifInput.BACKEND_TYPE) {
+                    // ユーザーが指定した完全なTIF ID以外へ自動フォールバックしない。
+                    if (startupChannelSetting == "LAST_WATCHED") {
+                        homeViewModel.recentStartupChannelIds(flatChannels.map { it.id }).firstNotNullOfOrNull { id ->
+                            flatChannels.find { it.id == id }
+                        }
+                    } else flatChannels.find { it.id == startupChannelSetting }
+                } else if (startupChannelSetting == "LAST_WATCHED") {
+                    // 両backendの履歴を保持するため、直近の他backend履歴を飛ばす。
+                    homeViewModel.recentStartupChannelIds(flatChannels.map { it.id }).firstNotNullOfOrNull { id ->
+                        flatChannels.find { it.id == id }
+                    } ?: flatChannels.first()
                 } else flatChannels.find { it.id == startupChannelSetting } ?: flatChannels.first()
 
-                state.selectedChannel = targetChannel; state.isBaseballMode =
-                    false; state.lastSelectedChannelId = targetChannel.id
-                state.lastSelectedProgramId =
-                    null; homeViewModel.saveLastChannel(targetChannel); state.isReturningFromPlayer =
-                    false
-
-                val liveIndex = tabs.indexOf("ライブ")
-                if (liveIndex != -1) state.currentTabIndex = liveIndex
-                state.isUiReady = true
+                if (targetChannel != null && !state.hasAppliedStartupChannel && state.selectedChannel == null) {
+                    recordedSelectionEpoch.intValue++
+                    state.selectedChannel = targetChannel
+                    state.isBaseballMode = false
+                    state.lastSelectedChannelId = targetChannel.id
+                    state.lastSelectedProgramId = null
+                    homeViewModel.saveLastChannel(targetChannel)
+                    state.isReturningFromPlayer = false
+                    val liveIndex = tabs.indexOf("ライブ")
+                    if (liveIndex != -1) state.currentTabIndex = liveIndex
+                }
             }
+            // suspendから正常復帰した時だけ完了扱いにする。変更でキャンセルされたら次のeffectに委ねる。
+            state.hasAppliedStartupChannel = true
+            // 未登録・0局・権限拒否でもホームと設定へ進める。
+            state.isUiReady = true
         }
     }
 
-    LaunchedEffect(state.isRecordListOpen) { if (state.isRecordListOpen) recordViewModel.triggerSmartSync() }
+    LaunchedEffect(state.isRecordListOpen, backendType) {
+        if (state.isRecordListOpen && backendType != TifInput.BACKEND_TYPE) {
+            recordViewModel.triggerSmartSync()
+        }
+    }
 
     val closeSettingsAndRefresh = {
         state.isSettingsOpen = false; state.isDataReady = false; state.isUiReady =
@@ -402,7 +571,10 @@ fun MainRootScreen(
         state.currentTabIndex = 0
         // 設定変更を確実に反映させるため、間引きを無視して更新する。
         channelViewModel.fetchChannels(force = true); epgViewModel.preloadAllEpgData(); homeViewModel.refreshHomeData(force = true)
-        recordViewModel.fetchRecentRecordings(forceRefresh = false); reserveViewModel.fetchReserves()
+        if (backendType != TifInput.BACKEND_TYPE) {
+            recordViewModel.fetchRecentRecordings(forceRefresh = false)
+            reserveViewModel.fetchReserves()
+        }
         state.settingsInitialCategoryIndex = 0
         state.settingsInitialFocusItemIndex = null
     }
@@ -492,7 +664,7 @@ fun MainRootScreen(
     // isChannelLoadingはChannelViewModelの初期値がtrueで、取得完了時に一度だけ
     // falseになる(取得の重複起動もChannelViewModel側で抑止済み)ため、
     // この時点でチャンネル一覧・エラー状態はどちらも確定している。待つ必要はない。
-    LaunchedEffect(isChannelLoading, isHomeLoading) {
+    LaunchedEffect(isChannelLoading, isHomeLoading, isChannelError) {
         if (!isChannelLoading && !isHomeLoading) {
             if (isChannelError) {
                 state.showConnectionErrorDialog = true; state.isDataReady = false
@@ -523,7 +695,9 @@ fun MainRootScreen(
 
     val isSystemReady =
         ((state.isDataReady && state.isSplashFinished) || (!isSettingsInitialized && state.isSplashFinished)) &&
-                state.hasAppliedStartupTab && (startupChannelSetting == "OFF" || state.hasAppliedStartupChannel)
+                state.hasAppliedStartupTab && (startupChannelSetting == "OFF" || state.hasAppliedStartupChannel ||
+                    (backendType == TifInput.BACKEND_TYPE && !listingsPermissionGranted &&
+                        TifInput.inputs(context).any { !it.isPassthroughInput }))
 
     KomorebiTheme(theme = currentTheme) {
         val colors = KomorebiTheme.colors
@@ -541,7 +715,8 @@ fun MainRootScreen(
                     // 親玉（MainRoot）がイベントを横取りせず、子要素（PlayerControlsの早送り連打など）にイベントを譲る！
                     val isVideoUiVisible =
                         (state.selectedProgram != null || state.selectedSmbItem != null) && state.showPlayerControls
-                    val isLiveUiVisible = (state.selectedChannel != null) && state.playerShowOverlay
+                    val isLiveUiVisible = (state.selectedChannel != null) &&
+                        (state.playerShowOverlay || backendType == TifInput.BACKEND_TYPE)
                     if ((isVideoUiVisible || isLiveUiVisible) && isCenterKey) {
                         return@onPreviewKeyEvent false // 横取りせず、子要素へスルーさせる
                     }
@@ -581,6 +756,7 @@ fun MainRootScreen(
 
                     MainRootBackground(
                         state = state,
+                        recordedSelectionEpoch = recordedSelectionEpoch,
                         channelViewModel = channelViewModel,
                         homeViewModel = homeViewModel,
                         epgViewModel = epgViewModel,
@@ -652,6 +828,7 @@ fun MainRootScreen(
                                     isSubMenuOpen = state.playerIsSubMenuOpen,
                                     onSubMenuToggle = { state.playerIsSubMenuOpen = it },
                                     onChannelSelect = { newChannel ->
+                                        recordedSelectionEpoch.intValue++
                                         state.selectedChannel =
                                             newChannel; state.lastSelectedChannelId = newChannel.id
                                         state.lastSelectedProgramId =
@@ -694,17 +871,39 @@ fun MainRootScreen(
                                     }
                                 )
                             } else if (state.selectedSmbItem != null) {
-                                val baseProgram =
-                                    recordViewModel.recentRecordings.collectAsState().value.firstOrNull()
-                                if (baseProgram != null) {
-                                    val dummyProgram = baseProgram.copy(
-                                        id = state.selectedSmbItem!!.path.hashCode(),
-                                        title = state.selectedSmbItem!!.name,
-                                        description = "SMBネットワーク再生: ${state.selectedSmbItem!!.path}"
+                                val smbItem = requireNotNull(state.selectedSmbItem)
+                                // SMB再生に必要な表示モデルはSMB項目から作る。録画履歴は一切参照しない。
+                                // SmbVlcPlayerScreenの既存UI型に合わせるためだけのアダプターであり、
+                                // 放送録画の実データがあるかのように扱わない。
+                                val dummyProgram = remember(smbItem) {
+                                    val fileTime = java.time.Instant.ofEpochMilli(
+                                        smbItem.lastModified.coerceAtLeast(0L)
+                                    ).toString()
+                                    val playbackId = smbItem.path.hashCode()
+                                    RecordedProgram(
+                                        id = playbackId,
+                                        title = smbItem.name,
+                                        description = "SMBネットワーク再生: " + smbItem.path,
+                                        startTime = fileTime,
+                                        endTime = fileTime,
+                                        duration = 0.0,
+                                        isPartiallyRecorded = false,
+                                        recordedVideo = RecordedVideo(
+                                            id = playbackId,
+                                            status = "SMB",
+                                            filePath = smbItem.path,
+                                            recordingStartTime = fileTime,
+                                            recordingEndTime = fileTime,
+                                            duration = 0.0,
+                                            containerFormat = smbItem.name.substringAfterLast('.', ""),
+                                            videoCodec = "",
+                                            audioCodec = ""
+                                        )
                                     )
-                                    com.beeregg2001.komorebi.ui.video.smb.player.SmbVlcPlayerScreen(
+                                }
+                                com.beeregg2001.komorebi.ui.video.smb.player.SmbVlcPlayerScreen(
                                         program = dummyProgram,
-                                        smbItem = state.selectedSmbItem!!,
+                                        smbItem = smbItem,
                                         initialPositionMs = state.initialPlaybackPositionMs,
                                         showControls = state.showPlayerControls,
                                         onShowControlsChange = { state.showPlayerControls = it },
@@ -727,13 +926,6 @@ fun MainRootScreen(
                                         },
                                         settingsViewModel = settingsViewModel
                                     )
-                                } else {
-                                    LaunchedEffect(Unit) {
-                                        state.toastMessage =
-                                            "再生用のダミーデータを生成できませんでした"
-                                        state.selectedSmbItem = null
-                                    }
-                                }
                             }
                         }
                     }
@@ -755,6 +947,7 @@ fun MainRootScreen(
 
             MainRootDialogs(
                 state = state,
+                recordedSelectionEpoch = recordedSelectionEpoch,
                 channelViewModel = channelViewModel,
                 epgViewModel = epgViewModel,
                 homeViewModel = homeViewModel,

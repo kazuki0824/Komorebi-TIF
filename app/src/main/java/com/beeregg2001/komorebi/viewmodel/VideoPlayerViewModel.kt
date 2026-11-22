@@ -398,9 +398,11 @@ class VideoPlayerViewModel @Inject constructor(
         }
     }
 
-    fun updateWatchHistory(program: RecordedProgram, positionSeconds: Double) {
+    /** 録画再生セッションを開始したときの取得元を保存まで引き継ぐ。 */
+    fun updateWatchHistory(program: RecordedProgram, positionSeconds: Double, backend: String) {
+        if (backend == "TIF") return
         viewModelScope.launch(Dispatchers.IO) {
-            historyRepository.saveWatchHistory(program, positionSeconds)
+            historyRepository.saveWatchHistory(program, positionSeconds, backend)
         }
     }
 

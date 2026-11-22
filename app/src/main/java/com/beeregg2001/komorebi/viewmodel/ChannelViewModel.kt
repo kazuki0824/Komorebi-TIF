@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.beeregg2001.komorebi.common.LiveChannelCategories
 import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.mapper.KonomiDataMapper
 import com.beeregg2001.komorebi.data.model.*
@@ -138,10 +139,37 @@ class ChannelViewModel @Inject constructor(
     private var isPollingPaused = false
 
     private val logoCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private var observedBackend: String? = null
+    private var backendGeneration = 0L
+    private var loadingRequestId = 0L
 
     init {
         startPolling()
         startProgressUpdater()
+        viewModelScope.launch {
+            settingsRepository.backendType.distinctUntilChanged().collect { backend ->
+                if (observedBackend == null) {
+                    observedBackend = backend
+                    return@collect
+                }
+                if (observedBackend != backend) {
+                    observedBackend = backend
+                    backendGeneration++
+                    val wasPolling = pollingJob?.isActive == true
+                    pollingJob?.cancel()
+                    progressUpdateJob?.cancel()
+                    initialPollFetchJob?.cancel()
+                    fetchJob?.cancel()
+                    _groupedChannels.value = emptyMap()
+                    _liveRows.value = emptyList()
+                    _connectionError.value = false
+                    logoCache.clear()
+                    lastFetchedTimeMillis = System.currentTimeMillis()
+                    if (wasPolling) startPolling()
+                    fetchChannels(force = true)
+                }
+            }
+        }
     }
 
     fun setPollingPaused(paused: Boolean) {
@@ -158,7 +186,7 @@ class ChannelViewModel @Inject constructor(
     private suspend fun transformToUiState(grouped: Map<String, List<Channel>>): List<LiveRowState> =
         withContext(Dispatchers.Default) {
             val now = System.currentTimeMillis()
-            val orderedTypes = listOf("GR", "BS", "CS", "BS4K", "SKY")
+            val orderedTypes = LiveChannelCategories.orderedTypes
 
             val sortedKeys = grouped.keys.sortedBy { key ->
                 val index = orderedTypes.indexOf(key)
@@ -169,9 +197,7 @@ class ChannelViewModel @Inject constructor(
                 val channels = grouped[type] ?: return@mapNotNull null
                 LiveRowState(
                     genreId = type,
-                    genreLabel = when (type) {
-                        "GR" -> "地デジ"; "BS" -> "BS"; "CS" -> "CS"; "BS4K" -> "BS4K"; "SKY" -> "スカパー"; else -> type
-                    },
+                    genreLabel = LiveChannelCategories.label(type),
                     channels = channels.map { ch ->
                         val start = ch.programPresent?.startTime?.let {
                             runCatching {
@@ -187,7 +213,11 @@ class ChannelViewModel @Inject constructor(
                             channel = ch,
                             displayChannelId = ch.displayChannelId,
                             name = ch.name,
-                            programTitle = ch.programPresent?.title ?: "放送休止中",
+                            programTitle = ch.programPresent?.title ?: when {
+                                ch.id.startsWith("tif:input:") -> ch.name
+                                ch.id.startsWith("tif:") -> "番組情報なし"
+                                else -> "放送休止中"
+                            },
                             progress = progress,
                             hasProgram = ch.programPresent != null,
                             jikkyoForce = ch.jikkyoForce
@@ -198,9 +228,15 @@ class ChannelViewModel @Inject constructor(
         }
 
     @RequiresApi(Build.VERSION_CODES.O)
-    private suspend fun fetchChannelsInternal() {
+    private suspend fun fetchChannelsInternal(requestId: Long? = null) {
+        // 先に中断するbackend読取を終え、定期取得の確認・採番を中断なしで行う。
+        val requestBackend = settingsRepository.backendType.first()
+        if (requestId == null && fetchJob?.isActive == true) return
+        val generation = backendGeneration
+        // 定期取得も強制取得も、最後に開始した要求だけが結果・エラーを公開する。
+        val activeRequestId = requestId ?: ++loadingRequestId
         try {
-            _connectionError.value = false
+            // 取得開始だけでは旧エラーを解除しない。最新要求の一覧確定後に解除する。
             val response = liveProvider.getChannels()
 
             // サブチャンネル非表示設定を取得
@@ -208,7 +244,8 @@ class ChannelViewModel @Inject constructor(
 
             val processed = withContext(Dispatchers.Default) {
                 val rawChannels = listOfNotNull(
-                    response.terrestrial, response.bs, response.cs, response.sky, response.bs4k
+                    response.terrestrial, response.bs, response.cs, response.sky, response.bs4k,
+                    response.others, response.inputs
                 ).flatten()
 
                 val allChannels = rawChannels.map { apiChannel ->
@@ -219,6 +256,7 @@ class ChannelViewModel @Inject constructor(
                         channelNumber = apiChannel.channelNumber,
                         networkId = apiChannel.networkId,
                         serviceId = apiChannel.serviceId,
+                        transportStreamId = apiChannel.transportStreamId,
                         displayChannelId = apiChannel.displayChannelId ?: apiChannel.id,
                         isWatchable = apiChannel.isWatchable,
                         isDisplay = apiChannel.isDisplay,
@@ -245,25 +283,27 @@ class ChannelViewModel @Inject constructor(
                 filteredChannels.filter { it.isDisplay }.groupBy { it.type }
             }
 
-            // ★ 最適化: データが完全に同一の場合は更新（UIの再描画）をスキップする
-            if (_groupedChannels.value != processed) {
-                _groupedChannels.value = processed
-            }
-
             val newRows = transformToUiState(processed)
-            if (_liveRows.value != newRows) {
-                _liveRows.value = newRows
-            }
-
+            val currentBackend = settingsRepository.backendType.first()
+            if (generation != backendGeneration || activeRequestId != loadingRequestId ||
+                currentBackend != requestBackend) return
+            if (_groupedChannels.value != processed) _groupedChannels.value = processed
+            if (_liveRows.value != newRows) _liveRows.value = newRows
+            _connectionError.value = false
             lastFetchedTimeMillis = System.currentTimeMillis()
         } catch (e: CancellationException) {
             Log.d("ChannelViewModel", "fetchChannelsInternal cancelled")
             throw e
         } catch (e: Throwable) {
             Log.e("ChannelViewModel", "Error fetching channels", e)
-            _connectionError.value = true
+            val currentBackend = settingsRepository.backendType.first()
+            if (generation == backendGeneration && activeRequestId == loadingRequestId &&
+                currentBackend == requestBackend) {
+                _connectionError.value = true
+            }
         } finally {
-            _isLoading.value = false
+            if (generation == backendGeneration && activeRequestId == loadingRequestId && requestId != null)
+                _isLoading.value = false
         }
     }
 
@@ -274,7 +314,11 @@ class ChannelViewModel @Inject constructor(
             while (isActive) {
                 delay(15_000L)
                 if (_groupedChannels.value.isNotEmpty() && !isPollingPaused) {
+                    val generation = backendGeneration
+                    val backend = settingsRepository.backendType.first()
                     val newRows = transformToUiState(_groupedChannels.value)
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    if (generation != backendGeneration || settingsRepository.backendType.first() != backend) continue
                     // ★ 最適化: プログレスが進行した時のみUIに反映させる
                     if (_liveRows.value != newRows) {
                         _liveRows.value = newRows
@@ -306,10 +350,11 @@ class ChannelViewModel @Inject constructor(
             Log.d("ChannelViewModel", "fetchChannels: 取得中のため要求をスキップします")
             return
         }
+        val requestId = ++loadingRequestId
         _isLoading.value = true
         fetchJob?.cancel()
         fetchJob = viewModelScope.launch {
-            fetchChannelsInternal()
+            fetchChannelsInternal(requestId)
         }
     }
 
@@ -377,8 +422,11 @@ class ChannelViewModel @Inject constructor(
 
     fun saveToHistory(program: RecordedProgram) {
         viewModelScope.launch {
-            val entity = KonomiDataMapper.toEntity(program)
-            watchHistoryRepository.saveToLocalHistory(entity)
+            val backend = settingsRepository.backendType.first()
+            if (backend != "TIF") {
+                val entity = KonomiDataMapper.toEntity(program)
+                watchHistoryRepository.saveToLocalHistory(entity, backend)
+            }
         }
     }
 
