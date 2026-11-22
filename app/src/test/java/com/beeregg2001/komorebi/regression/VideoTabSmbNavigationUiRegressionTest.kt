@@ -7,8 +7,9 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.performScrollToNode
-import androidx.compose.ui.test.performTouchInput
-import androidx.compose.ui.test.click
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasAnyDescendant
 import com.beeregg2001.komorebi.data.model.RecordedProgram
 import com.beeregg2001.komorebi.data.model.KonomiHistoryProgram
 import com.beeregg2001.komorebi.data.model.KonomiProgram
@@ -64,9 +65,11 @@ class VideoTabSmbNavigationUiRegressionTest {
                 )
             }
         }
-        compose.onNodeWithText("ファイルライブラリ", substring = true)
-            .assertIsDisplayed()
-            .performTouchInput { click() }
+        compose.onNodeWithText("ファイルライブラリ", substring = true).assertIsDisplayed()
+        compose.onNode(
+            hasClickAction() and hasAnyDescendant(hasText("ファイルライブラリ")),
+            useUnmergedTree = true
+        ).performClick()
         compose.runOnIdle {
             assertEquals(1, selectedSmb.get())
             assertEquals(0, selectedRecorded.get())
@@ -116,9 +119,11 @@ class VideoTabSmbNavigationUiRegressionTest {
             }
         }
         compose.onAllNodes(hasScrollAction())[0].performScrollToNode(hasText("続きから見る"))
-        compose.onNodeWithText("History verification sentinel")
-            .assertIsDisplayed()
-            .performTouchInput { click() }
+        compose.onNodeWithText("History verification sentinel").assertIsDisplayed()
+        compose.onNode(
+            hasClickAction() and hasAnyDescendant(hasText("History verification sentinel")),
+            useUnmergedTree = true
+        ).performClick()
         compose.runOnIdle {
             assertSame("history click must be delegated for owner validation", history, delegated)
             assertEquals("unverified history must not play immediately", 0, directRecordedPlayback.get())
