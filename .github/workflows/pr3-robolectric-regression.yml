@@ -143,7 +143,7 @@ jobs:
               "LiveContentEmptyStateUiRegressionTest": 1,
               "RecordCacheOwnershipRegressionTest": 5,
               "RecordSyncBackendTransitionRegressionTest": 7,
-              "RecordSyncFullSyncOwnerRegressionTest": 4,
+              "RecordSyncFullSyncOwnerRegressionTest": 5,
               "RecordViewModelRegressionTest": 7,
               "WatchHistoryRepositoryRegressionTest": 4,
               "VideoPlaybackHistoryOwnershipRegressionTest": 2,
