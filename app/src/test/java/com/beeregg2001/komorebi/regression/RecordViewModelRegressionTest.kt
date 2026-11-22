@@ -31,6 +31,8 @@ import kotlinx.coroutines.withTimeout
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -49,6 +51,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class RecordViewModelRegressionTest {
     private val dispatcher = UnconfinedTestDispatcher()
+    private lateinit var recordedRows: MutableStateFlow<List<RecordedProgramEntity>>
     private lateinit var programDaoUnderTest: RecordedProgramDao
     private lateinit var provider: RecordProvider
     private lateinit var sync: RecordSyncEngine
@@ -74,7 +77,8 @@ class RecordViewModelRegressionTest {
         Mockito.`when`(settings.defaultRecordListView).thenReturn(flowOf("LIST"))
         val dao = Mockito.mock(RecordedProgramDao::class.java)
         programDaoUnderTest = dao
-        Mockito.`when`(dao.getRecentRecordingsFlow()).thenReturn(flowOf(emptyList<RecordedProgramEntity>()))
+        recordedRows = MutableStateFlow(emptyList())
+        Mockito.`when`(dao.getRecentRecordingsFlow()).thenReturn(recordedRows)
         Mockito.doReturn(emptyList<SeriesProjection>()).`when`(dao).getGroupedSeries()
         Mockito.doReturn(emptyList<ChannelProjection>()).`when`(dao).getDistinctChannels()
         viewModel = RecordViewModel(
@@ -167,6 +171,37 @@ class RecordViewModelRegressionTest {
         assertTrue("unowned recording cache must not publish any paged row", snapshot.isEmpty())
         Mockito.verify(programDaoUnderTest, Mockito.never()).getAll_DateDesc()
         Mockito.verify(programDaoUnderTest, Mockito.never()).getAll_DateAsc()
+    }
+
+    @Test
+    fun recentRecordingRowsRemainHiddenUntilCacheOwnershipIsConfirmedAndHideAgainAfterRevocation() = runBlocking {
+        val subscription = launch { viewModel.recentRecordings.collect { } }
+        try {
+            recordedRows.value = listOf(
+                RecordedProgramEntity(
+                    id = 42, title = "owner-gated-record", startTime = "2030-01-01T00:00:00+09:00",
+                    endTime = "2030-01-01T01:00:00+09:00", videoDuration = 3600.0,
+                    hasKeyFrames = true, isRecording = false, playbackPosition = 10.0,
+                    channelId = null, channelType = null, channelName = null, genres = null
+                )
+            )
+            // Let the real combine observe a populated DAO while ownership is false.
+            delay(80L)
+            assertTrue("unowned Room rows must not leak", viewModel.recentRecordings.value.isEmpty())
+            cacheReady.value = true
+            val exposed = withTimeout(10_000L) {
+                viewModel.recentRecordings.first { it.size == 1 }
+            }
+            assertEquals(42, exposed.single().id)
+            assertEquals("owner-gated-record", exposed.single().title)
+            cacheReady.value = false
+            withTimeout(10_000L) {
+                viewModel.recentRecordings.first { it.isEmpty() }
+            }
+            assertTrue("revoked cache must hide formerly visible rows", viewModel.recentRecordings.value.isEmpty())
+        } finally {
+            subscription.cancel()
+        }
     }
 
 }
