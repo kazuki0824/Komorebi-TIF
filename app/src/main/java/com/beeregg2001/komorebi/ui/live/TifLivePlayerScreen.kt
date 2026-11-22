@@ -41,6 +41,12 @@ private fun audioLabel(track: TvTrackInfo, index: Int): String =
         ?: track.language?.takeIf { it.isNotBlank() }
         ?: "音声トラック ${index + 1}"
 
+/** TISが公開した字幕トラックの説明を使う。言語や主副をIDから推測しない。 */
+private fun subtitleLabel(track: TvTrackInfo, index: Int): String =
+    track.description?.toString()?.takeIf { it.isNotBlank() }
+        ?: track.language?.takeIf { it.isNotBlank() }
+        ?: "字幕トラック ${index + 1}"
+
 /**
  * Android TV Input Frameworkのライブ視聴画面。
  * ネットワーク配信/Media3/Komorebiネイティブライブラリには依存しない。
@@ -120,6 +126,15 @@ fun TifLivePlayerScreen(
         mutableStateOf<List<TvTrackInfo>>(emptyList())
     }
     var selectedAudioId by remember(channel.id, isStarted, retuneGeneration, sessionGeneration) { mutableStateOf<String?>(null) }
+    var subtitleTracks by remember(channel.id, isStarted, retuneGeneration, sessionGeneration) {
+        mutableStateOf<List<TvTrackInfo>>(emptyList())
+    }
+    var selectedSubtitleId by remember(channel.id, isStarted, retuneGeneration, sessionGeneration) {
+        mutableStateOf<String?>(null)
+    }
+    var captionError by remember(channel.id, isStarted, retuneGeneration, sessionGeneration) {
+        mutableStateOf<String?>(null)
+    }
     var activeView by remember(channel.id, isStarted, retuneGeneration, sessionGeneration) { mutableStateOf<TvView?>(null) }
     var captions by rememberSaveable(channel.id, initialCaptions) { mutableStateOf(initialCaptions) }
 
@@ -250,11 +265,16 @@ fun TifLivePlayerScreen(
 
                                 override fun onTracksChanged(inputId: String, tracks: MutableList<TvTrackInfo>) {
                                     audioTracks = tracks.filter { it.type == TvTrackInfo.TYPE_AUDIO }
+                                    subtitleTracks = tracks.filter { it.type == TvTrackInfo.TYPE_SUBTITLE }
                                     if (audioTracks.none { it.id == selectedAudioId }) selectedAudioId = null
+                                    if (subtitleTracks.none { it.id == selectedSubtitleId }) selectedSubtitleId = null
                                 }
 
                                 override fun onTrackSelected(inputId: String, type: Int, trackId: String?) {
-                                    if (type == TvTrackInfo.TYPE_AUDIO) selectedAudioId = trackId
+                                    when (type) {
+                                        TvTrackInfo.TYPE_AUDIO -> selectedAudioId = trackId
+                                        TvTrackInfo.TYPE_SUBTITLE -> selectedSubtitleId = trackId
+                                    }
                                 }
                             })
                             try {
@@ -268,7 +288,13 @@ fun TifLivePlayerScreen(
                         }
                     },
                     update = { view ->
-                        runCatching { view.setCaptionEnabled(captions) }
+                        try {
+                            view.setCaptionEnabled(captions)
+                            captionError = null
+                        } catch (error: Exception) {
+                            captionError = "TISへの字幕設定の送信に失敗しました: " +
+                                (error.message ?: error.javaClass.simpleName)
+                        }
                     },
                     onRelease = { view ->
                         view.setCallback(null)
@@ -311,6 +337,42 @@ fun TifLivePlayerScreen(
                     Text(if (captions) "字幕: ON" else "字幕: OFF")
                 }
 
+                if (subtitleTracks.isNotEmpty()) {
+                    val selectedIndex = subtitleTracks.indexOfFirst { it.id == selectedSubtitleId }
+                    val labels = subtitleTracks.mapIndexed { index, track -> subtitleLabel(track, index) }
+                    val selection = if (selectedIndex >= 0) {
+                        val name = labels[selectedIndex]
+                        if (labels.count { it == name } > 1) "【${selectedIndex + 1}】$name" else name
+                    } else "選択未通知"
+                    Button(
+                        enabled = captions && subtitleTracks.size > 1,
+                        onClick = {
+                            // TISの最新通知を使い、無効化された旧トラックIDを渡さない。
+                            val tracks = subtitleTracks
+                            val view = activeView
+                            if (captions && view != null && tracks.size > 1) {
+                                val current = tracks.indexOfFirst { it.id == selectedSubtitleId }
+                                val wanted = tracks[(current + 1) % tracks.size].id
+                                try {
+                                    view.selectTrack(TvTrackInfo.TYPE_SUBTITLE, wanted)
+                                    captionError = null
+                                    // 選択確定はonTrackSelected通知のみを正とする。
+                                } catch (error: Exception) {
+                                    captionError = "字幕トラックの切替に失敗しました: " +
+                                        (error.message ?: error.javaClass.simpleName)
+                                }
+                            }
+                        }
+                    ) {
+                        Text(
+                            "字幕言語: " + selection +
+                                (if (subtitleTracks.size > 1) "（切替）" else ""),
+                            modifier = Modifier.widthIn(max = 210.dp),
+                            maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
                 if (audioTracks.isNotEmpty()) {
                     val selectedIndex = audioTracks.indexOfFirst { it.id == selectedAudioId }
                     val selection = if (selectedIndex >= 0) {
@@ -347,6 +409,19 @@ fun TifLivePlayerScreen(
                 Button(onClick = { retuneGeneration++ }) { Text("再選局") }
                 Button(onClick = { onShowOverlayChange(false) }) { Text("操作を隠す") }
             }
+        }
+
+        // 字幕要求の送信失敗を映像ステータスとは独立して表示する。
+        // 成功応答は字幕の描画完了を保証しない。
+        if (target != null && captionError != null) {
+            Text(
+                text = captionError.orEmpty(),
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .background(Color.Black.copy(alpha = 0.8f))
+                    .padding(16.dp)
+            )
         }
 
         // input/URI未解決時は解決失敗だけを表示し、映像受信待ちを重ねない。
