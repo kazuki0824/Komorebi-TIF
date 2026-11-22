@@ -203,4 +203,27 @@ class EpgViewModelGenerationRegressionTest {
         assertSame(com.beeregg2001.komorebi.viewmodel.EpgUiState.Loading, viewModel.uiState)
     }
 
+    @Test
+    fun requestedBroadcastTypeFailureNeverReusesPreviousTypesSuccess() = runBlocking {
+        setPrivate("hasDisplayedDataForType", true)
+        viewModel.updateTargetTime(OffsetDateTime.parse("2030-01-02T18:00:00+09:00"))
+        assertTrue(viewModel.uiState is com.beeregg2001.komorebi.viewmodel.EpgUiState.Success)
+        viewModel.updateBroadcastingType("BS")
+        val now = OffsetDateTime.now()
+        Mockito.doReturn(flowOf(Result.failure<List<com.beeregg2001.komorebi.data.model.EpgChannelWrapper>>(
+            IllegalStateException("BS backend unavailable")
+        ))).`when`(repository).getEpgDataStream(
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.eq("BS") ?: "BS"
+        )
+        viewModel.refreshEpgData("BS")
+        val field = EpgViewModel::class.java.getDeclaredField("epgJob")
+        field.isAccessible = true
+        val request = field.get(viewModel) as kotlinx.coroutines.Job
+        withTimeout(10_000L) { request.join() }
+        assertTrue("BS failure must not leave previous GR Success",
+            viewModel.uiState is com.beeregg2001.komorebi.viewmodel.EpgUiState.Error)
+    }
+
 }
