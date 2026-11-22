@@ -10,9 +10,6 @@ on:
       - 'gradlew.bat'
       - 'build.gradle.kts'
       - 'settings.gradle.kts'
-  push:
-    branches:
-      - test/pr3-robolectric-regression
   workflow_dispatch:
 
 concurrency:
