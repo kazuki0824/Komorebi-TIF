@@ -78,7 +78,7 @@ class HomeViewModelRegressionTest {
     )
 
     @Test
-    fun startupChannelIdsAreTakenFromValidatedRecentHistoryNotRawHistory() = runBlocking {
+    fun startupChannelIdsAreTakenFromValidatedRecentHistoryNotRawHistory() : Unit = runBlocking {
         val available = listOf("valid-a", "valid-b")
         Mockito.doReturn(listOf(row("valid-b"), row("valid-a")))
             .`when`(last).getRecentForChannels(available)
@@ -87,7 +87,7 @@ class HomeViewModelRegressionTest {
     }
 
     @Test
-    fun saveLastChannelPreservesBackendQualifiedFullChannelId() = runBlocking {
+    fun saveLastChannelPreservesBackendQualifiedFullChannelId() : Unit = runBlocking {
         val channel = Mockito.mock(Channel::class.java)
         Mockito.`when`(channel.id).thenReturn("edcb:network:service")
         Mockito.`when`(channel.name).thenReturn("EDCB test")
@@ -104,7 +104,7 @@ class HomeViewModelRegressionTest {
     }
 
     @Test
-    fun clearLastChannelsDelegatesToOnlyTheLastChannelRepository() = runBlocking {
+    fun clearLastChannelsDelegatesToOnlyTheLastChannelRepository() : Unit = runBlocking {
         vm.clearLastChannelHistory()
         Mockito.verify(last, Mockito.timeout(10_000L)).clearLastChannels()
     }
