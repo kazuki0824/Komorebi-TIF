@@ -122,6 +122,7 @@ jobs:
               "ExistingHomeNavigationRegressionTest": 4,
               "LastChannelRegressionTest": 5,
               "HomeViewModelRegressionTest": 3,
+              "HomeGenreBackendIsolationRegressionTest": 2,
               "LiveContentEmptyStateUiRegressionTest": 1,
               "RecordCacheOwnershipRegressionTest": 5,
               "RecordSyncBackendTransitionRegressionTest": 7,
