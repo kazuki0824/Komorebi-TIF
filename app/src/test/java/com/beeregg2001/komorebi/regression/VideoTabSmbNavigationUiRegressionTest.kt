@@ -4,15 +4,21 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.hasScrollAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.click
 import com.beeregg2001.komorebi.data.model.RecordedProgram
+import com.beeregg2001.komorebi.data.model.KonomiHistoryProgram
+import com.beeregg2001.komorebi.data.model.KonomiProgram
 import com.beeregg2001.komorebi.ui.home.VideoTabContent
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
 import com.beeregg2001.komorebi.viewmodel.RecordViewModel
 import com.beeregg2001.komorebi.viewmodel.SettingsViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -66,4 +72,57 @@ class VideoTabSmbNavigationUiRegressionTest {
             assertEquals(0, selectedRecorded.get())
         }
     }
+    @Test
+    @Config(qualifiers = "w1280dp-h720dp")
+    fun historyCardClickInvokesVerifiedHistoryCallbackNotDirectRecordingPlayback() {
+        val records = Mockito.mock(RecordViewModel::class.java)
+        Mockito.`when`(records.recentRecordings)
+            .thenReturn(MutableStateFlow(emptyList<RecordedProgram>()))
+        Mockito.`when`(records.groupedSeries).thenReturn(MutableStateFlow(emptyMap()))
+        Mockito.`when`(records.availableGenres).thenReturn(MutableStateFlow(emptyList()))
+        Mockito.`when`(records.selectedSeriesGenre).thenReturn(MutableStateFlow(null))
+        Mockito.`when`(records.programDetail).thenReturn(MutableStateFlow(null))
+        val settings = Mockito.mock(SettingsViewModel::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(MutableStateFlow("EPGSTATION"))
+        val history = KonomiHistoryProgram(
+            program = KonomiProgram(
+                id = "42", title = "History verification sentinel",
+                description = "", detail = null,
+                start_time = "2026-11-20T00:00:00+09:00",
+                end_time = "2026-11-20T01:00:00+09:00",
+                channel_id = "network-42"
+            ),
+            playback_position = 30.0,
+            last_watched_at = "2026-11-21T00:00:00+09:00"
+        )
+        var delegated: KonomiHistoryProgram? = null
+        val directRecordedPlayback = AtomicInteger()
+        compose.setContent {
+            KomorebiTheme {
+                VideoTabContent(
+                    konomiIp = "", konomiPort = "",
+                    tabFocusRequester = FocusRequester(),
+                    contentFirstItemRequester = FocusRequester(),
+                    onProgramClick = { directRecordedPlayback.incrementAndGet() },
+                    onHistoryClick = { delegated = it },
+                    onShowAllRecordings = {},
+                    onShowSeriesList = {},
+                    openedSeriesTitle = null,
+                    onOpenedSeriesTitleChange = {},
+                    recordViewModel = records,
+                    settingViewModel = settings,
+                    watchHistory = listOf(history)
+                )
+            }
+        }
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText("続きから見る"))
+        compose.onNodeWithText("History verification sentinel")
+            .assertIsDisplayed()
+            .performTouchInput { click() }
+        compose.runOnIdle {
+            assertSame("history click must be delegated for owner validation", history, delegated)
+            assertEquals("unverified history must not play immediately", 0, directRecordedPlayback.get())
+        }
+    }
+
 }
