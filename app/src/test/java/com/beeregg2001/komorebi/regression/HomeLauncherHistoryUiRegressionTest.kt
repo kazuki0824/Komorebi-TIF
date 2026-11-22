@@ -11,6 +11,8 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasScrollAction
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
@@ -42,6 +44,9 @@ import java.util.concurrent.atomic.AtomicReference
 class HomeLauncherHistoryUiRegressionTest {
     @get:Rule val compose = createComposeRule()
     private val store = ViewModelStore()
+    private val verticalScrollMatcher = SemanticsMatcher("vertical LazyColumn") {
+        it.config.contains(SemanticsProperties.VerticalScrollAxisRange)
+    }
     private val owner = object : ViewModelStoreOwner {
         override val viewModelStore = store
     }
@@ -165,7 +170,7 @@ class HomeLauncherHistoryUiRegressionTest {
         Mockito.doReturn(verified).`when`(records)
             .getResumableHistoryProgram(42, "EDCB")
         render()
-        compose.onAllNodes(hasScrollAction())[0]
+        compose.onAllNodes(hasScrollAction() and verticalScrollMatcher)[0]
             .performScrollToNode(hasText("続きから見る"))
         compose.onNodeWithText("Owner verified test recording").assertIsDisplayed()
         historyCard().performClick()
@@ -212,7 +217,7 @@ class HomeLauncherHistoryUiRegressionTest {
         val state = MainRootState()
         val epoch = mutableIntStateOf(7)
         renderThroughMainRootBackground(state, epoch)
-        compose.onAllNodes(hasScrollAction())[0]
+        compose.onAllNodes(hasScrollAction() and verticalScrollMatcher)[0]
             .performScrollToNode(hasText("続きから見る"))
         compose.onNodeWithText("Owner verified test recording").assertIsDisplayed()
         historyCard().performClick()
@@ -240,7 +245,7 @@ class HomeLauncherHistoryUiRegressionTest {
         Mockito.`when`(verified.playbackPosition).thenReturn(46.5)
         Mockito.doReturn(verified).`when`(records).getResumableHistoryProgram(42, "EDCB")
         render(initialTabIndex = 0)
-        compose.onAllNodes(hasScrollAction())[0].performScrollToNode(
+        compose.onAllNodes(hasScrollAction() and verticalScrollMatcher)[0].performScrollToNode(
             hasText("Owner verified test recording")
         )
         compose.onNodeWithText("Owner verified test recording").assertIsDisplayed()
