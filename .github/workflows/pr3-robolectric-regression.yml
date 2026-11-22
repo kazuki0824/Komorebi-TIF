@@ -142,7 +142,7 @@ jobs:
               "MainRootDialogEpochUiRegressionTest": 1,
               "RecordCacheOwnershipRegressionTest": 5,
               "RecordSyncBackendTransitionRegressionTest": 7,
-              "RecordSyncFullSyncOwnerRegressionTest": 5,
+              "RecordSyncFullSyncOwnerRegressionTest": 6,
               "RecordViewModelRegressionTest": 7,
               "WatchHistoryRepositoryRegressionTest": 4,
               "VideoPlaybackHistoryOwnershipRegressionTest": 2,
