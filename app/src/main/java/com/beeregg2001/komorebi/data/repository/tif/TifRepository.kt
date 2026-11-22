@@ -498,7 +498,32 @@ class TifRepository @Inject constructor(
     // TIFのchannel URIはMedia3が受け取るストリームURLではない。
     override suspend fun getLiveStreamUrl(channelId: String, quality: String, streamNumber: Int): String =
         throw UnsupportedOperationException("TIFはTvView.tune()によって視聴します。")
-    override suspend fun getChannelLogoUrl(channelId: String): String = ""
+    /**
+     * TISがTvProviderへ公開したチャンネルロゴをAndroid標準URIで取得する。
+     * 放送波のCDT等をKomorebi側で再解析せず、所有入力・公開状態を再検証する。
+     */
+    override suspend fun getChannelLogoUrl(channelId: String): String = withContext(Dispatchers.IO) {
+        // HDMI等のパススルー入力にはチャンネルロゴURIを割り当てない。
+        if (!hasListingsPermission()) return@withContext ""
+        val target = TifInput.resolveTarget(context, channelId) ?: return@withContext ""
+        val logoUri = TvContract.buildChannelLogoUri(target.channelUri)
+        try {
+            // URIを組み立てるだけでは画像の存在を保証できない。
+            // 未登録ロゴをキャッシュして後の登録・再スキャンを妨げないよう、読取可能性を確かめる。
+            context.contentResolver.openAssetFileDescriptor(logoUri, "r")?.use {
+                logoUri.toString()
+            } ?: ""
+        } catch (error: java.io.FileNotFoundException) {
+            // チャンネル登録済みでも局ロゴが未提供のTISは正常に存在する。
+            ""
+        } catch (error: SecurityException) {
+            // 権限拒否を「ロゴがない」と誤認しない。上位の既存エラー経路へ伝播する。
+            throw error
+        } catch (error: java.io.IOException) {
+            Log.w("TifRepository", "局ロゴ取得失敗 channelId=$channelId", error)
+            ""
+        }
+    }
 
     private fun toEpgWrapper(
         row: ChannelRow, programs: List<ProgramRow>, displayName: String
