@@ -51,6 +51,7 @@ class HomeLauncherHistoryUiRegressionTest {
     private lateinit var epg: EpgViewModel
     private lateinit var reserves: ReserveViewModel
     private lateinit var settings: SettingsViewModel
+    private lateinit var lastChannelFlow: MutableStateFlow<List<Channel>>
     private lateinit var backend: MutableStateFlow<String>
     private lateinit var owned: MutableStateFlow<Pair<String?, List<KonomiHistoryProgram>>>
     private val resumed = AtomicReference<RecordedProgram?>()
@@ -75,7 +76,8 @@ class HomeLauncherHistoryUiRegressionTest {
         Mockito.`when`(home.backendType).thenReturn(backend)
         Mockito.`when`(home.ownedWatchHistory).thenReturn(owned)
         Mockito.`when`(home.watchHistory).thenReturn(MutableStateFlow(owned.value.second))
-        Mockito.`when`(home.lastWatchedChannelFlow).thenReturn(MutableStateFlow(emptyList<Channel>()))
+        lastChannelFlow = MutableStateFlow(emptyList())
+        Mockito.`when`(home.lastWatchedChannelFlow).thenReturn(lastChannelFlow)
         Mockito.`when`(home.favoriteBaseballTeams).thenReturn(MutableStateFlow(emptySet()))
         Mockito.`when`(home.favoriteBaseballGames).thenReturn(
             MutableStateFlow(emptyList<Pair<String, List<BaseballGameInfo>>>())
@@ -108,12 +110,13 @@ class HomeLauncherHistoryUiRegressionTest {
         settings = Mockito.mock(SettingsViewModel::class.java)
         Mockito.`when`(settings.backendType).thenReturn(backend)
         store.put("androidx.lifecycle.ViewModelProvider.DefaultKey:${SettingsViewModel::class.java.canonicalName}", settings)
+        store.put("androidx.lifecycle.ViewModelProvider.DefaultKey:${RecordViewModel::class.java.canonicalName}", records)
     }
 
     @After
     fun teardown() { store.clear() }
 
-    private fun render() {
+    private fun render(initialTabIndex: Int = 2, groupedChannels: Map<String, List<Channel>> = emptyMap()) {
         compose.setContent {
             CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
                 KomorebiTheme {
@@ -121,12 +124,12 @@ class HomeLauncherHistoryUiRegressionTest {
                         channelViewModel = live, homeViewModel = home, epgViewModel = epg,
                         recordViewModel = records, reserveViewModel = reserves,
                         settingsViewModel = settings,
-                        groupedChannels = emptyMap(),
+                        groupedChannels = groupedChannels,
                         mirakurunIp = "", mirakurunPort = "",
                         konomiIp = "", konomiPort = "",
                         onChannelClick = { _, _ -> },
                         selectedChannel = null, onTabChange = {},
-                        initialTabIndex = 2, selectedProgram = null,
+                        initialTabIndex = initialTabIndex, selectedProgram = null,
                         onProgramSelected = {},
                         onVerifiedHistorySelected = { p, _ -> resumed.set(p) },
                         recordedSelectionEpoch = mutableIntStateOf(0),
@@ -221,6 +224,55 @@ class HomeLauncherHistoryUiRegressionTest {
             assertEquals(32500L, state.initialPlaybackPositionMs)
             assertNull(state.selectedChannel)
         }
+    }
+
+    @Test
+    fun homeTabHidesHistoryWhenSourceBackendDiffersEvenIfLegacyFlowStillContainsItems() {
+        owned.value = "KONOMITV" to listOf(history())
+        render(initialTabIndex = 0)
+        compose.onNodeWithText("Owner verified test recording").assertDoesNotExist()
+        assertNull(resumed.get())
+    }
+
+    @Test
+    fun homeTabClickMustVerifyOwnerBeforePublishingRecording(): Unit = runBlocking {
+        val verified = Mockito.mock(RecordedProgram::class.java)
+        Mockito.`when`(verified.playbackPosition).thenReturn(46.5)
+        Mockito.doReturn(verified).`when`(records).getResumableHistoryProgram(42, "EDCB")
+        render(initialTabIndex = 0)
+        compose.onAllNodes(hasScrollAction())[0].performScrollToNode(
+            hasText("Owner verified test recording")
+        )
+        compose.onNodeWithText("Owner verified test recording").assertIsDisplayed()
+        historyCard().performClick()
+        Mockito.verify(records, Mockito.timeout(10_000L)).getResumableHistoryProgram(42, "EDCB")
+        compose.waitUntil(10_000L) { resumed.get() != null }
+        assertSame(verified, resumed.get())
+    }
+
+    private fun channel(id: String, name: String) = Channel(
+        id = id, name = name, displayChannelId = id, type = "GR",
+        channelNumber = "101", networkId = 10L, serviceId = 20L,
+        transportStreamId = 30L, isWatchable = true, isDisplay = true,
+        programPresent = null, programFollowing = null, remocon_Id = 1
+    )
+
+    @Test
+    fun homeTabRefusesSavedChannelFromOtherBackendEvenWithSameNetworkAndService() {
+        owned.value = "EDCB" to emptyList()
+        lastChannelFlow.value = listOf(channel("legacy-kon-101", "old Konomi channel"))
+        val available = channel("edcb-101", "EDCB channel")
+        render(initialTabIndex = 0, groupedChannels = mapOf("GR" to listOf(available)))
+        compose.onNodeWithText("前回視聴したチャンネル").assertDoesNotExist()
+    }
+
+    @Test
+    fun homeTabStillShowsExactChannelIdFromSelectedBackend() {
+        owned.value = "EDCB" to emptyList()
+        val available = channel("edcb-101", "EDCB channel")
+        lastChannelFlow.value = listOf(available)
+        render(initialTabIndex = 0, groupedChannels = mapOf("GR" to listOf(available)))
+        compose.onNodeWithText("前回視聴したチャンネル").assertIsDisplayed()
     }
 
 }
