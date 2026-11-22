@@ -2,6 +2,11 @@ package com.beeregg2001.komorebi.regression
 
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.MutableIntState
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import com.beeregg2001.komorebi.ui.main.MainRootBackground
+import com.beeregg2001.komorebi.ui.main.MainRootState
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasClickAction
@@ -165,4 +170,57 @@ class HomeLauncherHistoryUiRegressionTest {
         compose.waitUntil(10_000L) { resumed.get() != null }
         assertSame("must only publish the verified recording instance", verified, resumed.get())
     }
+    private fun renderThroughMainRootBackground(state: MainRootState, epoch: MutableIntState) {
+        compose.setContent {
+            CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                KomorebiTheme {
+                    MainRootBackground(
+                        state = state, recordedSelectionEpoch = epoch,
+                        channelViewModel = live, homeViewModel = home,
+                        epgViewModel = epg, recordViewModel = records,
+                        reserveViewModel = reserves, settingsViewModel = settings,
+                        groupedChannels = emptyMap(),
+                        watchHistory = owned.value.second,
+                        conditions = emptyList(), reserves = emptyList(),
+                        autoReserveKeywords = emptyList(),
+                        mirakurunIp = "", mirakurunPort = "",
+                        konomiIp = "", konomiPort = "",
+                        timeFormat = "24H", safeTabIndex = 2,
+                        isSyncingInitial = false,
+                        backgroundBrush = SolidColor(Color.Black),
+                        onExitApp = {}
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun mainRootBackgroundAcceptsOnlyVerifiedHistoryAndAdvancesEpochBeforePlayback(): Unit = runBlocking {
+        val verified = Mockito.mock(RecordedProgram::class.java)
+        val video = Mockito.mock(RecordedVideo::class.java)
+        Mockito.`when`(verified.id).thenReturn(42)
+        Mockito.`when`(verified.playbackPosition).thenReturn(32.5)
+        Mockito.`when`(verified.recordedVideo).thenReturn(video)
+        Mockito.`when`(video.hasKeyFrames).thenReturn(true)
+        Mockito.`when`(video.duration).thenReturn(3600.0)
+        Mockito.doReturn(verified).`when`(records)
+            .getResumableHistoryProgram(42, "EDCB")
+        val state = MainRootState()
+        val epoch = mutableIntStateOf(7)
+        renderThroughMainRootBackground(state, epoch)
+        compose.onAllNodes(hasScrollAction())[0]
+            .performScrollToNode(hasText("続きから見る"))
+        compose.onNodeWithText("Owner verified test recording").assertIsDisplayed()
+        historyCard().performClick()
+        compose.waitUntil(10_000L) { state.selectedProgram != null }
+        compose.runOnIdle {
+            assertEquals(8, epoch.intValue)
+            assertSame("only the verified recording may be selected", verified, state.selectedProgram)
+            assertEquals("42", state.lastSelectedProgramId)
+            assertEquals(32500L, state.initialPlaybackPositionMs)
+            assertNull(state.selectedChannel)
+        }
+    }
+
 }
