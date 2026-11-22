@@ -70,6 +70,23 @@ jobs:
             --tests 'com.beeregg2001.komorebi.regression.*' \
             --stacktrace
 
+      - name: Print detailed JUnit failures
+        if: failure()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import glob
+          import xml.etree.ElementTree as ET
+          for path in glob.glob("app/build/test-results/testDebugUnitTest/TEST-*.xml"):
+              root = ET.parse(path).getroot()
+              for case in root.findall(".//testcase"):
+                  for tag in ("failure", "error"):
+                      failed = case.find(tag)
+                      if failed is not None:
+                          print(f"FAIL {case.get('classname')}.{case.get('name')}: {failed.get('message')}")
+                          print((failed.text or "")[:6000])
+          PY
+
       - name: Verify complete regression suite executed
         if: success()
         shell: bash
