@@ -33,6 +33,9 @@ data class EpgProgram(
     val event_id: Int, val title: String, val description: String, val extended: String? = null,
     val detail: Map<String, String>?, val start_time: String, val end_time: String,
     val duration: Int, val is_free: Boolean, val genres: List<EpgGenre>?, val video_type: String?,
-    val audio_type: String?, val audio_sampling_rate: String?
+    val audio_type: String?, val audio_sampling_rate: String?,
+    // TIFの公開scrambled列。null=未提供、false=非スクランブル、true=スクランブル。
+    // 有料・無料の料金区分とは異なる。既存ネットワークAPIには追加フィールド不要。
+    val is_scrambled: Boolean? = null
 )
 data class EpgGenre(val major: String, val middle: String)

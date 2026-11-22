@@ -280,9 +280,14 @@ class RecordViewModel @Inject constructor(
             // 起動直後に走らせると、Room への書き込みのたびに録画一覧の Flow が
             // 発火し、ホーム画面の初回描画と CPU / ディスクを奪い合って
             // 「起動直後だけ操作が極端に重い」状態を作っていた。
-            val alreadyBuilt = syncEngine.isInitialBuildCompleted()
-            delay(if (alreadyBuilt) 6000L else 1500L)
-            syncEngine.launchSyncAllRecords()
+            // TIFには録画セッションがない。空録画一覧を初期DB構築成功と誤認しない。
+            if (settingsRepository.backendType.first() != "TIF") {
+                val alreadyBuilt = syncEngine.isInitialBuildCompleted()
+                delay(if (alreadyBuilt) 6000L else 1500L)
+                if (settingsRepository.backendType.first() != "TIF") {
+                    syncEngine.launchSyncAllRecords()
+                }
+            }
         }
     }
 
@@ -502,7 +507,7 @@ class RecordViewModel @Inject constructor(
     fun updateWatchHistory(program: RecordedProgram, positionSeconds: Double) {
         viewModelScope.launch {
             val backend = settingsRepository.backendType.first()
-            historyRepository.saveWatchHistory(program, positionSeconds, backend)
+            if (backend != "TIF") historyRepository.saveWatchHistory(program, positionSeconds, backend)
         }
     }
 
@@ -517,7 +522,7 @@ class RecordViewModel @Inject constructor(
         programId: Int, backend: String
     ): RecordedProgram? {
         _historyResumeError.value = null
-        if (settingsRepository.backendType.first() != backend) {
+        if (backend == "TIF" || settingsRepository.backendType.first() != backend) {
             _historyResumeError.value = "録画履歴の取得元が現在のバックエンドと一致しません。"
             return null
         }
