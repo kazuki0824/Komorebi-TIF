@@ -13,6 +13,7 @@ import com.beeregg2001.komorebi.ui.main.MainRootState
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
 import com.beeregg2001.komorebi.util.UpdateState
 import com.beeregg2001.komorebi.viewmodel.AiConciergeViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
 import com.beeregg2001.komorebi.viewmodel.ChannelViewModel
 import com.beeregg2001.komorebi.viewmodel.EpgViewModel
 import com.beeregg2001.komorebi.viewmodel.HomeViewModel
@@ -56,6 +57,8 @@ class MainRootDialogEpochUiRegressionTest {
         state.epgSelectedProgram = program
         val epoch = mutableIntStateOf(7)
         val homeVm = Mockito.mock(HomeViewModel::class.java)
+        val aiVm = Mockito.mock(AiConciergeViewModel::class.java)
+        Mockito.`when`(aiVm.chatHistory).thenReturn(MutableStateFlow(emptyList()))
         compose.setContent {
             KomorebiTheme {
                 MainRootDialogs(
@@ -66,7 +69,7 @@ class MainRootDialogEpochUiRegressionTest {
                     homeViewModel = homeVm,
                     recordViewModel = Mockito.mock(RecordViewModel::class.java),
                     reserveViewModel = Mockito.mock(ReserveViewModel::class.java),
-                    aiConciergeViewModel = Mockito.mock(AiConciergeViewModel::class.java),
+                    aiConciergeViewModel = aiVm,
                     groupedChannels = mapOf("GR" to listOf(channel)),
                     reserves = emptyList(),
                     updateState = UpdateState.Idle,
