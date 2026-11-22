@@ -10,6 +10,7 @@ import com.beeregg2001.komorebi.data.local.entity.SyncMetaEntity
 import com.beeregg2001.komorebi.data.model.RecordedApiResponse
 import com.beeregg2001.komorebi.data.repository.RecordProvider
 import com.beeregg2001.komorebi.data.sync.RecordSyncEngine
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -169,6 +170,40 @@ class RecordSyncFullSyncOwnerRegressionTest {
             Mockito.verify(provider).getRecordedPrograms(1)
         } finally {
             existingJob.cancel()
+        }
+    }
+
+    @Test
+    fun completedSyncMustNotStartSecondDictionaryJobWhenOneBecameActiveDuringFetch(): Unit = runBlocking {
+        prefs().edit().putString("backend", "EDCB").putBoolean("pending", false).commit()
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        Mockito.doAnswer {
+            entered.countDown()
+            check(release.await(15, java.util.concurrent.TimeUnit.SECONDS))
+            RecordedApiResponse(total = 0, recordedPrograms = emptyList())
+        }.`when`(provider).getRecordedPrograms(Mockito.anyInt(), Mockito.anyInt())
+        val sync = engine()
+        val jobField = RecordSyncEngine::class.java.getDeclaredField("dictionaryJob")
+        jobField.isAccessible = true
+        val activeDictionary = kotlinx.coroutines.Job()
+        try {
+            val current = kotlinx.coroutines.async(Dispatchers.IO) {
+                sync.syncAllRecords(forceFullSync = false)
+            }
+            assertTrue("record fetch must be in flight", entered.await(15, java.util.concurrent.TimeUnit.SECONDS))
+            // Inject a concurrent dictionary worker after syncAllRecords has passed
+            // its initial cancel+join, but before the final post-sync launch gate.
+            jobField.set(sync, activeDictionary)
+            release.countDown()
+            kotlinx.coroutines.withTimeout(15_000L) { current.await() }
+            assertSame("post-sync gate must retain the already-active worker",
+                activeDictionary, jobField.get(sync))
+            assertTrue(activeDictionary.isActive)
+            assertTrue(sync.recordCacheReady.value)
+        } finally {
+            release.countDown()
+            activeDictionary.cancel()
         }
     }
 
