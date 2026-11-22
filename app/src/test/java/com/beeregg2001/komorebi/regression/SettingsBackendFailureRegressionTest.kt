@@ -46,6 +46,7 @@ import org.robolectric.annotation.Config
 class SettingsBackendFailureRegressionTest {
     private val dispatcher = UnconfinedTestDispatcher()
     private lateinit var selectedBackend: MutableStateFlow<String>
+    private lateinit var settingsRepositoryUnderTest: SettingsRepository
     private lateinit var sync: RecordSyncEngine
     private lateinit var viewModel: SettingsViewModel
 
@@ -63,6 +64,7 @@ class SettingsBackendFailureRegressionTest {
                 }
             }
         })
+        settingsRepositoryUnderTest = settings
         sync = Mockito.mock(RecordSyncEngine::class.java)
         val db = Mockito.mock(AppDatabase::class.java)
         val recordedDao = Mockito.mock(RecordedProgramDao::class.java)
@@ -147,6 +149,22 @@ class SettingsBackendFailureRegressionTest {
         assertEquals(1, completed.get())
         Mockito.verify(sync, Mockito.times(1))
             .switchBackend(Mockito.any<suspend () -> Unit>() ?: {})
+    }
+
+    @Test
+    fun confirmedBackendFlowUsesPersistedSelectionWithoutSyntheticStartupBackend() = runBlocking {
+        selectedBackend.value = "EPGSTATION"
+        assertEquals(
+            "EPGSTATION",
+            viewModel.confirmedBackendType.first()
+        )
+        selectedBackend.value = "EDCB"
+        assertEquals(
+            "EDCB",
+            viewModel.confirmedBackendType.first()
+        )
+        Mockito.verify(settingsRepositoryUnderTest, Mockito.atLeastOnce()).backendType
+        Mockito.verifyNoInteractions(sync)
     }
 
 }
