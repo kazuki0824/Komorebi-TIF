@@ -1,6 +1,8 @@
 package com.beeregg2001.komorebi.regression
 
 import com.beeregg2001.komorebi.data.SettingsRepository
+import com.beeregg2001.komorebi.data.model.ChannelApiResponse
+import kotlinx.coroutines.CancellationException
 import com.beeregg2001.komorebi.data.repository.DtvProviderProxy
 import com.beeregg2001.komorebi.data.repository.KonomiRepository
 import com.beeregg2001.komorebi.data.repository.edcb.EdcbEpgRepository
@@ -86,4 +88,34 @@ class DtvProviderProxyRoutingRegressionTest {
         }.exceptionOrNull()
         assertSame(cause, thrown)
     }
+    @Test
+    fun liveChannelsRequestIsRoutedToCurrentlySelectedBackend() = runBlocking {
+        selectedBackend.value = "EDCB"
+        val expected = ChannelApiResponse()
+        Mockito.doReturn(expected).`when`(edcbLive).getChannels()
+        assertSame(expected, proxy.getChannels())
+        Mockito.verify(edcbLive).getChannels()
+        Mockito.verifyNoInteractions(konomi)
+    }
+
+    @Test
+    fun liveChannelsTransportFailureReturnsEmptyFallback() = runBlocking {
+        selectedBackend.value = "EDCB"
+        Mockito.doAnswer { throw IllegalStateException("network unavailable") }
+            .`when`(edcbLive).getChannels()
+        val actual = proxy.getChannels()
+        assertTrue(actual.terrestrial.isNullOrEmpty())
+        assertTrue(actual.bs.isNullOrEmpty())
+        assertTrue(actual.cs.isNullOrEmpty())
+    }
+
+    @Test
+    fun liveChannelsCancellationIsNeverSwallowedAsEmptySuccess() = runBlocking {
+        selectedBackend.value = "EDCB"
+        Mockito.doAnswer { throw CancellationException("backend switched") }
+            .`when`(edcbLive).getChannels()
+        val error = runCatching { proxy.getChannels() }.exceptionOrNull()
+        assertTrue(error is CancellationException)
+    }
+
 }
