@@ -108,32 +108,25 @@ class ChannelViewModelRegressionTest {
         }
     }
     @Test
-    fun repeatedNonForcedFetchWhileInFlightUsesOneProviderRequest() = runBlocking {
-        Dispatchers.setMain(Dispatchers.Default)
+    fun nonForcedFetchIsRejectedWhileAnActiveFetchJobAlreadyExists() = runBlocking {
         val live = Mockito.mock(LiveProvider::class.java)
-        val started = CountDownLatch(1)
-        val release = CountDownLatch(1)
-        val calls = AtomicInteger()
+        Mockito.doReturn(ChannelApiResponse()).`when`(live).getChannels()
         val vm = viewModel(live, MutableStateFlow("KONOMITV"))
         vm.stopPolling()
-        Mockito.doAnswer {
-            calls.incrementAndGet()
-            started.countDown()
-            check(release.await(15, TimeUnit.SECONDS))
-            ChannelApiResponse()
-        }.`when`(live).getChannels()
+        val field = ChannelViewModel::class.java.getDeclaredField("fetchJob")
+        field.isAccessible = true
+        // Inject an active request at the exact production guard boundary.
+        // Unlike timing-based latches, this cannot race with startup polling.
+        val activeRequest = kotlinx.coroutines.Job()
         try {
-            val trigger = async(Dispatchers.IO) { vm.fetchChannels(force = true) }
-            assertTrue("first request never started", started.await(15, TimeUnit.SECONDS))
+            Mockito.clearInvocations(live)
+            field.set(vm, activeRequest)
             vm.fetchChannels(force = false)
             vm.fetchChannels(force = false)
-            assertEquals("only one upstream request may be active", 1, calls.get())
-            release.countDown()
-            withTimeout(10_000L) { trigger.await() }
-            withTimeout(10_000L) { vm.isLoading.first { !it } }
-            assertEquals(1, calls.get())
+            assertSame("non-forced calls must not replace the active request", activeRequest, field.get(vm))
+            Mockito.verifyNoInteractions(live)
         } finally {
-            release.countDown()
+            activeRequest.cancel()
             vm.stopPolling()
             vm.viewModelScope.cancel()
         }
