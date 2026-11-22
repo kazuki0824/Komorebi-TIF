@@ -10,6 +10,7 @@ import com.beeregg2001.komorebi.data.local.entity.SyncMetaEntity
 import com.beeregg2001.komorebi.data.model.RecordedApiResponse
 import com.beeregg2001.komorebi.data.repository.RecordProvider
 import com.beeregg2001.komorebi.data.sync.RecordSyncEngine
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
@@ -188,7 +189,7 @@ class RecordSyncFullSyncOwnerRegressionTest {
         jobField.isAccessible = true
         val activeDictionary = kotlinx.coroutines.Job()
         try {
-            val current = kotlinx.coroutines.async(Dispatchers.IO) {
+            val current = async(Dispatchers.IO) {
                 sync.syncAllRecords(forceFullSync = false)
             }
             assertTrue("record fetch must be in flight", entered.await(15, java.util.concurrent.TimeUnit.SECONDS))
