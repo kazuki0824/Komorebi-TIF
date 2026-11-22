@@ -119,6 +119,7 @@ jobs:
               "EpgViewModelGenerationRegressionTest": 4,
               "ExistingHomeNavigationRegressionTest": 4,
               "LastChannelRegressionTest": 5,
+              "HomeViewModelRegressionTest": 3,
               "LiveContentEmptyStateUiRegressionTest": 1,
               "RecordCacheOwnershipRegressionTest": 5,
               "RecordSyncBackendTransitionRegressionTest": 7,
