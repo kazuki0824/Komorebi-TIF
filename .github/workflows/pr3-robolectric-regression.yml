@@ -94,7 +94,7 @@ jobs:
               "BackendDataIsolationRegressionTest": 8,
               "ChannelViewModelRegressionTest": 4,
               "DatabaseMigrationRegressionTest": 1,
-              "DtvProviderProxyRoutingRegressionTest": 4,
+              "DtvProviderProxyRoutingRegressionTest": 7,
               "EpgInFlightBackendRegressionTest": 2,
               "EpgSearchBackendRegressionTest": 7,
               "EpgStateRegressionTest": 2,
