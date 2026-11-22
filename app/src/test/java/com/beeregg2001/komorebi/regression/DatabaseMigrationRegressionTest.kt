@@ -6,6 +6,8 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.beeregg2001.komorebi.data.local.AppDatabase
 import com.beeregg2001.komorebi.data.local.entity.LastChannelEntity
+import com.beeregg2001.komorebi.data.local.entity.EpgCacheEntity
+import com.beeregg2001.komorebi.data.local.entity.SyncMetaEntity
 import com.beeregg2001.komorebi.data.local.entity.WatchHistoryEntity
 import com.beeregg2001.komorebi.di.DatabaseModule
 import kotlinx.coroutines.runBlocking
@@ -65,6 +67,8 @@ class DatabaseMigrationRegressionTest {
                 networkId = 10L, serviceId = 20L, updatedAt = 100L
             )
         )
+        created.epgCacheDao().insertOrUpdate(EpgCacheEntity("GR", "legacy-cache", 10L))
+        created.syncMetaDao().upsert(SyncMetaEntity(id = 1, lastSyncedPage = 12, lastSyncedAt = 123L, isInitialBuildCompleted = true))
         created.close()
 
         // PR #3 introduces backend_watch_history, leaving other v15 tables intact.
@@ -84,6 +88,9 @@ class DatabaseMigrationRegressionTest {
         assertEquals("existing recording", old?.title)
         val candidates = migrated.lastChannelDao().getStartupCandidates()
         assertEquals("existing-channel", candidates.single().channelId)
+        assertEquals("legacy-cache", migrated.epgCacheDao().getCache("GR")?.dataJson)
+        assertEquals(12, migrated.syncMetaDao().getSyncMeta()?.lastSyncedPage)
+        assertEquals(true, migrated.syncMetaDao().getSyncMeta()?.isInitialBuildCompleted)
         assertNull(migrated.backendWatchHistoryDao().findById("KONOMITV", 84))
         migrated.backendWatchHistoryDao().upsert(
             com.beeregg2001.komorebi.data.local.entity.BackendWatchHistoryEntity(
