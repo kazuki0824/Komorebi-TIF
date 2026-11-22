@@ -99,7 +99,7 @@ class EpgFileCacheRegressionTest {
     }
 
     @Test
-    fun switchingBackendCreatesIndependentFilesInsteadOfOverwriting() = runBlocking {
+    fun switchingBackendCreatesIndependentFilesInsteadOfOverwriting(): Unit = runBlocking {
         fetch("KONOMITV")
         backend.value = "EDCB"
         fetch("EDCB")
