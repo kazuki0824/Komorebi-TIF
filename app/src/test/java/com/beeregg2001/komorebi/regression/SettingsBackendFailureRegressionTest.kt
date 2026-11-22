@@ -111,4 +111,42 @@ class SettingsBackendFailureRegressionTest {
         Mockito.verify(sync, Mockito.timeout(10_000L).times(1))
             .launchSyncAllRecords(forceFullSync = true)
     }
+    @Test
+    fun selectingAlreadyActiveBackendDoesNotStartAnotherSwitch() = runBlocking {
+        viewModel.updateBackendType("KONOMITV")
+        // Wait for the ViewModel's IO coroutine to acquire/release its mutex.
+        val mutexField = SettingsViewModel::class.java.getDeclaredField("backendSelectionMutex")
+        mutexField.isAccessible = true
+        val mutex = mutexField.get(viewModel) as kotlinx.coroutines.sync.Mutex
+        withTimeout(15_000L) { mutex.lock(); mutex.unlock() }
+        Mockito.verifyNoInteractions(sync)
+        assertEquals("KONOMITV", selectedBackend.value)
+    }
+
+    @Test
+    fun twoConsecutiveSelectionsOfSameBackendDoNotDoubleSwitchAfterCommit() = runBlocking {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val completed = java.util.concurrent.atomic.AtomicInteger()
+        Mockito.doAnswer {
+            entered.countDown()
+            check(release.await(15, java.util.concurrent.TimeUnit.SECONDS))
+            selectedBackend.value = "EDCB"
+            completed.incrementAndGet()
+            null
+        }.`when`(sync).switchBackend(Mockito.any<suspend () -> Unit>() ?: {})
+        viewModel.updateBackendType("EDCB")
+        assertTrue("first switch never started", entered.await(15, java.util.concurrent.TimeUnit.SECONDS))
+        viewModel.updateBackendType("EDCB")
+        release.countDown()
+        val mutexField = SettingsViewModel::class.java.getDeclaredField("backendSelectionMutex")
+        mutexField.isAccessible = true
+        val mutex = mutexField.get(viewModel) as kotlinx.coroutines.sync.Mutex
+        withTimeout(15_000L) { mutex.lock(); mutex.unlock() }
+        assertEquals("EDCB", selectedBackend.value)
+        assertEquals(1, completed.get())
+        Mockito.verify(sync, Mockito.times(1))
+            .switchBackend(Mockito.any<suspend () -> Unit>() ?: {})
+    }
+
 }
