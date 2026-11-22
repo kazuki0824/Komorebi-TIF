@@ -165,4 +165,34 @@ class ChannelViewModelRegressionTest {
         }
     }
 
+    @Test
+    fun fetchedChannelRetainsOriginalTransportStreamIdWithoutReconstructingIdentity() = runBlocking {
+        val live = Mockito.mock(LiveProvider::class.java)
+        val input = com.beeregg2001.komorebi.data.model.Channel(
+            id = "edcb:network:service", displayChannelId = "101",
+            name = "Transport stream fixture", channelNumber = "101",
+            networkId = 1234L, serviceId = 5678L, transportStreamId = 0x1234L,
+            type = "GR", isWatchable = true, isDisplay = true,
+            programPresent = null, programFollowing = null, remocon_Id = 1
+        )
+        Mockito.doReturn(ChannelApiResponse(terrestrial = listOf(input)))
+            .`when`(live).getChannels()
+        val vm = viewModel(live, MutableStateFlow("EDCB"))
+        try {
+            vm.stopPolling()
+            vm.fetchChannels(force = true)
+            val channel = withTimeout(10_000L) {
+                vm.groupedChannels.first { it["GR"]?.isNotEmpty() == true }
+                    .getValue("GR").single()
+            }
+            assertEquals("edcb:network:service", channel.id)
+            assertEquals(0x1234L, channel.transportStreamId)
+            assertEquals(1234L, channel.networkId)
+            assertEquals(5678L, channel.serviceId)
+        } finally {
+            vm.stopPolling()
+            vm.viewModelScope.cancel()
+        }
+    }
+
 }
