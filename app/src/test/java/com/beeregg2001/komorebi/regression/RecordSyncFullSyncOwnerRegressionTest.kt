@@ -87,7 +87,7 @@ class RecordSyncFullSyncOwnerRegressionTest {
     )
 
     @Test
-    fun unknownOwnerForcesFullSyncAndDropsUnownedRowsBeforePublishing() = runBlocking {
+    fun unknownOwnerForcesFullSyncAndDropsUnownedRowsBeforePublishing(): Unit = runBlocking {
         val sync = engine()
         sync.syncAllRecords(forceFullSync = false)
         assertTrue(db.recordedProgramDao().getAllIds().isEmpty())
