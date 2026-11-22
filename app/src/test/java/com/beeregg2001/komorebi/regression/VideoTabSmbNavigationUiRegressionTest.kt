@@ -115,7 +115,7 @@ class VideoTabSmbNavigationUiRegressionTest {
                 )
             }
         }
-        compose.onNode(hasScrollAction()).performScrollToNode(hasText("続きから見る"))
+        compose.onAllNodes(hasScrollAction())[0].performScrollToNode(hasText("続きから見る"))
         compose.onNodeWithText("History verification sentinel")
             .assertIsDisplayed()
             .performTouchInput { click() }
