@@ -22,6 +22,7 @@ import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import com.beeregg2001.komorebi.data.model.*
+import com.beeregg2001.komorebi.data.sync.SyncProgress
 import com.beeregg2001.komorebi.ui.home.HomeLauncherScreen
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
 import com.beeregg2001.komorebi.viewmodel.*
@@ -106,6 +107,7 @@ class HomeLauncherHistoryUiRegressionTest {
         Mockito.`when`(reserves.isLoading).thenReturn(MutableStateFlow(false))
 
         records = Mockito.mock(RecordViewModel::class.java)
+        Mockito.`when`(records.syncProgress).thenReturn(MutableStateFlow(SyncProgress(isSyncing = false)))
         Mockito.`when`(records.recentRecordings).thenReturn(MutableStateFlow(emptyList()))
         Mockito.`when`(records.groupedSeries).thenReturn(MutableStateFlow(emptyMap()))
         Mockito.`when`(records.availableGenres).thenReturn(MutableStateFlow(emptyList()))
