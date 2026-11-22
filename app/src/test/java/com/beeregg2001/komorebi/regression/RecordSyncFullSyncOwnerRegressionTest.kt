@@ -135,4 +135,41 @@ class RecordSyncFullSyncOwnerRegressionTest {
         assertFalse(sync.recordCacheReady.value)
         assertNotNull(sync.syncProgress.value.error)
     }
+    @Test
+    fun smartSyncDoesNotLaunchSecondDictionaryJobWhileExistingJobIsActive(): Unit = runBlocking {
+        prefs().edit().putString("backend", "EDCB").putBoolean("pending", false).commit()
+        val program = com.beeregg2001.komorebi.data.model.RecordedProgram(
+            id = 77, title = "latest recorded", description = "",
+            startTime = "2026-11-10T00:00:00+09:00",
+            endTime = "2026-11-10T01:00:00+09:00",
+            duration = 3600.0, isPartiallyRecorded = false,
+            recordedVideo = com.beeregg2001.komorebi.data.model.RecordedVideo(
+                id = 77, status = "Recorded", filePath = "recorded.ts",
+                recordingStartTime = "2026-11-10T00:00:00+09:00",
+                recordingEndTime = "2026-11-10T01:00:00+09:00",
+                duration = 3600.0, containerFormat = "MPEG-TS",
+                videoCodec = "H264", audioCodec = "AAC"
+            )
+        )
+        Mockito.doReturn(RecordedApiResponse(total = 1, recordedPrograms = listOf(program)))
+            .`when`(provider).getRecordedPrograms(1)
+        val sync = engine()
+        val gate = RecordSyncEngine::class.java.getDeclaredField("ownerInitialized")
+        gate.isAccessible = true
+        (gate.get(sync) as kotlinx.coroutines.CompletableDeferred<*>).await()
+        assertTrue("owned cache must allow smart sync", sync.recordCacheReady.value)
+        val dictionary = RecordSyncEngine::class.java.getDeclaredField("dictionaryJob")
+        dictionary.isAccessible = true
+        val existingJob = kotlinx.coroutines.Job()
+        try {
+            dictionary.set(sync, existingJob)
+            sync.smartSync()
+            assertSame("smartSync must not replace active dictionaryJob", existingJob, dictionary.get(sync))
+            assertTrue(existingJob.isActive)
+            Mockito.verify(provider).getRecordedPrograms(1)
+        } finally {
+            existingJob.cancel()
+        }
+    }
+
 }
