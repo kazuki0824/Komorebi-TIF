@@ -137,6 +137,7 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("androidx.test:core:1.6.1")
     testImplementation("androidx.room:room-testing:2.7.0-alpha11")
+    testImplementation("androidx.paging:paging-testing:3.3.0")
 
     // 1. Compose BOM を最新に近いバージョンに更新 (ここが最重要)
     // 2023.10.01 だと Tv-Foundation 1.0.0-alpha11 と互換性がありません
