@@ -10,6 +10,7 @@ KomorebiはAndroid標準のTV Input Framework（TIF）を介し、OSに登録さ
 
 - 入力は`TvInputManager.tvInputList`から列挙し、非表示の入力は除く。TISのpackage/classは固定しない。
 - チューナーは許可された`TvContract.Channels`を用い、所有`COLUMN_INPUT_ID`と行IDを合わせて保持する。表示は`browsable`かつ`searchable`の行に限定し、ワンセグなど特定サービスを独自に除外しない。
+- 局ロゴはTISがTvProviderに登録した画像を`TvContract.buildChannelLogoUri(channelUri)`で参照し、`ContentResolver.openAssetFileDescriptor(uri, "r")`によって読取可能な場合のみ`content://` URIを既存ロゴ表示経路に返す。読み取り前に公開チャンネルのinputId・行ID・browsable・searchableを再確認し、別入力のロゴへ誤接続しない。パススルー入力・未公開・権限未許可・画像未登録は空表示とする。Komorebi自身はCDT解析やロゴ作成を行わない。画像未登録を恒久キャッシュせず、TIS側がロゴを後から登録すれば再取得できるようにする。
 - HDMIなどの`TvInputInfo.isPassthroughInput`は実チャンネル行を生成せず`TvContract.buildChannelUriForPassthroughInput()`で選局する。
 - 選局直前に登録入力、row所有者、可視性を再照合する。保存済み入力が削除されても別入力へ黙って切り替えない。
 - TIFチャンネルは`tif:`から始まる完全な`channel.id`（所有するinputIdを含む）が同一性の正本。ONID/SIDが等しくても別のTIS・HDMIへ置換しない。
@@ -89,6 +90,7 @@ TIS自体の変更、HAL/CAS直接操作、TIF録画・予約、デュアルTIF�
 | ジャンル・料金 | #116複数ARIBジャンル・単一アニメ、canonicalのみ、未知broadcast＋canonical SPORTS、API32/33のscrambled不明／NULL／0／1、料金絞り込みと表示 | 未実施 |
 | 切替・非同期 | A→B→A、切替中にA→B→Aと連続確定した最後の選択、起動時TIFの旧録画予約タブ名のホームフォールバック、旧polling／force完了、停止中pollingの非再開、10秒先読み・TIF入力照会1取得1回、検索・描画slice、KonomiTVにしかない番組のTIF検索非混入、野球の日付変更と通常集計競合、旧辞書Jobと新同期エラーの競合、旧TIS query取消し・入力世代破棄後の共有照会停止・片側表示取消し時の先読み継続、録画テーブル・辞書・同期メタデータだけの切替リセット、視聴履歴保持、権限ダイアログでTV番組一覧を許可した直後にホームのジャンル・野球候補を強制更新、入力削除後は既に開いたTIF番組詳細を閉じる、TIF復帰時は進行中の旧チャンネル照会に合流せず強制再取得して削除前応答を破棄、切替先の同期前・失敗中は旧録画一覧・操作候補を出さないこと、DataStore保存失敗時のRoomロールバック・公開状態復元・UI通知、B設定保存後のRoom確定失敗時のB再同期、切替中の強制終了／再起動で旧録画非表示、旧版帰属不明キャッシュの再構築、同一backendの未完了ページ再開、待機中同期のバックエンド所有者再判定、所有者保存失敗時の同期エラー保持、EPGStationシリーズ応答の遅延・集計中の切替、キャッシュ公開開始時のシリーズ再集計、DB差分 | 未実施 |
 | 既存バックエンド | KonomiTV・EDCB・EPGStationのライブ／録画／予約、SMB再生（録画DB空）、TIF録画／AI要求拒否。アップデート前のbackend帰属不明EPGキャッシュを失効する影響（更新直後のオフライン表示不可）と、オンライン再取得を確認 | 未実施 |
+| 局ロゴ | TISが登録したロゴがある局／ない局、別TISが同じONID・SIDを持つ局、削除・非公開・再スキャンで行IDを再利用した局、パススルー入力、権限取消・再許可、初回ロゴ未登録から後刻登録の動作、Coilの`content://`表示を実機確認する | 未実施（標準ロゴURI読出し経路のみ静的に追加） |
 | ヘルスチェックと最小取得 | 全局番組クエリなし、1局ピン留め時の対象局のみ取得、権限拒否を隠さない、エラーとquery回数 | 未実施 |
 
 ### 静的確認項目
