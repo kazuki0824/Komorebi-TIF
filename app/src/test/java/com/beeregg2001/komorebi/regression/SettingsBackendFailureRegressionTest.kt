@@ -89,7 +89,7 @@ class SettingsBackendFailureRegressionTest {
     @Test
     fun failureBeforeSettingsCommitRetainsOriginalBackendAndReportsRollback() = runBlocking {
         Mockito.doAnswer { throw IllegalStateException("injected before persistence") }
-            .`when`(sync).switchBackend(Mockito.any())
+            .`when`(sync).switchBackend(Mockito.any<suspend () -> Unit>() ?: {})
         viewModel.updateBackendType("EDCB")
         val error = withTimeout(15_000L) { viewModel.backendSwitchError.first { it != null } }
         assertTrue(error!!.contains("元の設定"))
@@ -102,7 +102,7 @@ class SettingsBackendFailureRegressionTest {
         Mockito.doAnswer {
             selectedBackend.value = "EDCB"
             throw IllegalStateException("injected after setting persistence")
-        }.`when`(sync).switchBackend(Mockito.any())
+        }.`when`(sync).switchBackend(Mockito.any<suspend () -> Unit>() ?: {})
         viewModel.updateBackendType("EDCB")
         val error = withTimeout(15_000L) { viewModel.backendSwitchError.first { it != null } }
         assertTrue(error!!.contains("切替済み"))
