@@ -110,6 +110,7 @@ jobs:
           expected = {
               "BackendDataIsolationRegressionTest": 8,
               "ChannelViewModelRegressionTest": 4,
+              "ChannelListOverlayUiRegressionTest": 2,
               "DatabaseMigrationRegressionTest": 1,
               "DtvProviderProxyRoutingRegressionTest": 7,
               "SettingsBackendFailureRegressionTest": 4,
