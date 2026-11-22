@@ -27,6 +27,9 @@ import org.mockito.Mockito
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Tests real ChannelViewModel fetch and backend-switch error handling.
@@ -103,4 +106,63 @@ class ChannelViewModelRegressionTest {
             vm.viewModelScope.cancel()
         }
     }
+    @Test
+    fun repeatedNonForcedFetchWhileInFlightUsesOneProviderRequest() = runBlocking {
+        val live = Mockito.mock(LiveProvider::class.java)
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val calls = AtomicInteger()
+        Mockito.doAnswer {
+            calls.incrementAndGet()
+            started.countDown()
+            check(release.await(15, TimeUnit.SECONDS))
+            ChannelApiResponse()
+        }.`when`(live).getChannels()
+        val vm = viewModel(live, MutableStateFlow("KONOMITV"))
+        try {
+            vm.fetchChannels(force = true)
+            assertTrue("first request never started", started.await(15, TimeUnit.SECONDS))
+            vm.fetchChannels(force = false)
+            vm.fetchChannels(force = false)
+            assertEquals("only one upstream request may be active", 1, calls.get())
+            release.countDown()
+            withTimeout(10_000L) { vm.isLoading.first { !it } }
+            assertEquals(1, calls.get())
+        } finally {
+            release.countDown()
+            vm.stopPolling()
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun backendChangeWhileOldFetchBlockedRejectsOldBackendTransportFailure() = runBlocking {
+        val live = Mockito.mock(LiveProvider::class.java)
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val calls = AtomicInteger()
+        Mockito.doAnswer {
+            if (calls.incrementAndGet() == 1) {
+                started.countDown()
+                check(release.await(15, TimeUnit.SECONDS))
+                throw IllegalStateException("obsolete backend error")
+            }
+            ChannelApiResponse()
+        }.`when`(live).getChannels()
+        val backend = MutableStateFlow("KONOMITV")
+        val vm = viewModel(live, backend)
+        try {
+            vm.fetchChannels(force = true)
+            assertTrue("old provider request never started", started.await(15, TimeUnit.SECONDS))
+            backend.value = "EDCB"
+            release.countDown()
+            withTimeout(10_000L) { vm.isLoading.first { !it } }
+            assertFalse("old provider failure cannot contaminate new backend", vm.connectionError.value)
+        } finally {
+            release.countDown()
+            vm.stopPolling()
+            vm.viewModelScope.cancel()
+        }
+    }
+
 }
