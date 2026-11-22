@@ -1,5 +1,6 @@
 package com.beeregg2001.komorebi.regression
 
+import androidx.paging.testing.asSnapshot
 import android.content.Context
 import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
@@ -48,6 +49,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class RecordViewModelRegressionTest {
     private val dispatcher = UnconfinedTestDispatcher()
+    private lateinit var programDaoUnderTest: RecordedProgramDao
     private lateinit var provider: RecordProvider
     private lateinit var sync: RecordSyncEngine
     private lateinit var cacheReady: MutableStateFlow<Boolean>
@@ -71,6 +73,7 @@ class RecordViewModelRegressionTest {
         Mockito.`when`(settings.backendType).thenReturn(flowOf("KONOMITV"))
         Mockito.`when`(settings.defaultRecordListView).thenReturn(flowOf("LIST"))
         val dao = Mockito.mock(RecordedProgramDao::class.java)
+        programDaoUnderTest = dao
         Mockito.`when`(dao.getRecentRecordingsFlow()).thenReturn(flowOf(emptyList<RecordedProgramEntity>()))
         Mockito.doReturn(emptyList<SeriesProjection>()).`when`(dao).getGroupedSeries()
         Mockito.doReturn(emptyList<ChannelProjection>()).`when`(dao).getDistinctChannels()
@@ -155,6 +158,15 @@ class RecordViewModelRegressionTest {
         } finally {
             release.countDown()
         }
+    }
+
+    @Test
+    fun unownedRecordedCacheProducesEmptyPagedSnapshotWithoutQueryingRecordedRows() = runBlocking {
+        assertFalse(cacheReady.value)
+        val snapshot = withTimeout(10_000L) { viewModel.pagedRecordings.asSnapshot() }
+        assertTrue("unowned recording cache must not publish any paged row", snapshot.isEmpty())
+        Mockito.verify(programDaoUnderTest, Mockito.never()).getAllPagingSourceDesc()
+        Mockito.verify(programDaoUnderTest, Mockito.never()).getAllPagingSourceAsc()
     }
 
 }
