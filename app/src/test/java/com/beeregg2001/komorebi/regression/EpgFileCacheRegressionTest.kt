@@ -94,7 +94,7 @@ class EpgFileCacheRegressionTest {
         fetch("KONOMITV")
         assertTrue(filename("KONOMITV_GR").exists())
         Mockito.verify(dao).insertOrUpdate(
-            Mockito.argThat { it.channelType == "KONOMITV_GR" && it.dataJson == "FILE_BASED" }
+            Mockito.argThat<EpgCacheEntity> { it.channelType == "KONOMITV_GR" && it.dataJson == "FILE_BASED" } ?: EpgCacheEntity("", "", 0L)
         )
     }
 
