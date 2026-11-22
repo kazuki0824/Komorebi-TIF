@@ -116,7 +116,7 @@ class RecordViewModelRegressionTest {
         syncState.value = SyncProgress(isSyncing = true)
         cacheReady.value = true
         val program = Mockito.mock(RecordedProgram::class.java)
-        Mockito.doReturn(Result.success(program)).`when`(provider).getRecordedProgram(42)
+        Mockito.doReturn(program).`when`(provider).getRecordedProgram(42)
         viewModel.fetchProgramDetail(42)
         withTimeout(10_000L) { viewModel.programDetail.first { it === program } }
         assertSame(program, viewModel.programDetail.value)
@@ -135,7 +135,7 @@ class RecordViewModelRegressionTest {
         Mockito.doAnswer {
             entered.countDown()
             check(release.await(15, TimeUnit.SECONDS)) { "fixture release timed out" }
-            Result.success(program)
+            program
         }.`when`(provider).getRecordedProgram(43)
         try {
             viewModel.fetchProgramDetail(43)
