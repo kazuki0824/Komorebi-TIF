@@ -66,9 +66,23 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x ./gradlew
-          ./gradlew --no-daemon :app:testDebugUnitTest \
-            --tests 'com.beeregg2001.komorebi.regression.*' \
-            --stacktrace
+          # Retry only the known external KSP plugin-resolution outage.
+          # A test failure, compilation error, or assertion failure must never be retried as success.
+          for attempt in 1 2 3; do
+            set +e
+            ./gradlew --no-daemon :app:testDebugUnitTest \
+              --tests 'com.beeregg2001.komorebi.regression.*' \
+              --stacktrace 2>&1 | tee "/tmp/pr3-gradle-attempt-${attempt}.log"
+            result=${PIPESTATUS[0]}
+            set -e
+            if [ "${result}" -eq 0 ]; then exit 0; fi
+            if ! grep -Eq "Plugin \\[id: 'com\\.google\\.devtools\\.ksp'.*was not found" "/tmp/pr3-gradle-attempt-${attempt}.log"; then
+              exit "${result}"
+            fi
+            if [ "${attempt}" -eq 3 ]; then exit "${result}"; fi
+            echo "KSP marker repository temporarily unavailable; retrying plugin resolution (attempt ${attempt})"
+            sleep 15
+          done
 
       - name: Print detailed JUnit failures
         if: failure()
