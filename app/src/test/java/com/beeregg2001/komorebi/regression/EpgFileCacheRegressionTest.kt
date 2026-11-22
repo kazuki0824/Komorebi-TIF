@@ -90,7 +90,7 @@ class EpgFileCacheRegressionTest {
     }
 
     @Test
-    fun cacheFileAndRoomMarkerContainBackendQualifiedKey() {
+    fun cacheFileAndRoomMarkerContainBackendQualifiedKey() = runBlocking {
         fetch("KONOMITV")
         assertTrue(filename("KONOMITV_GR").exists())
         Mockito.verify(dao).insertOrUpdate(
@@ -99,7 +99,7 @@ class EpgFileCacheRegressionTest {
     }
 
     @Test
-    fun switchingBackendCreatesIndependentFilesInsteadOfOverwriting() {
+    fun switchingBackendCreatesIndependentFilesInsteadOfOverwriting() = runBlocking {
         fetch("KONOMITV")
         backend.value = "EDCB"
         fetch("EDCB")
