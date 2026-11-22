@@ -113,13 +113,14 @@ class ChannelViewModelRegressionTest {
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
         val calls = AtomicInteger()
+        val vm = viewModel(live, MutableStateFlow("KONOMITV"))
+        vm.stopPolling()
         Mockito.doAnswer {
             calls.incrementAndGet()
             started.countDown()
             check(release.await(15, TimeUnit.SECONDS))
             ChannelApiResponse()
         }.`when`(live).getChannels()
-        val vm = viewModel(live, MutableStateFlow("KONOMITV"))
         try {
             val trigger = async(Dispatchers.IO) { vm.fetchChannels(force = true) }
             assertTrue("first request never started", started.await(15, TimeUnit.SECONDS))
@@ -143,6 +144,9 @@ class ChannelViewModelRegressionTest {
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
         val calls = AtomicInteger()
+        val backend = MutableStateFlow("KONOMITV")
+        val vm = viewModel(live, backend)
+        vm.stopPolling()
         Mockito.doAnswer {
             if (calls.incrementAndGet() == 1) {
                 started.countDown()
@@ -151,8 +155,6 @@ class ChannelViewModelRegressionTest {
             }
             ChannelApiResponse()
         }.`when`(live).getChannels()
-        val backend = MutableStateFlow("KONOMITV")
-        val vm = viewModel(live, backend)
         try {
             val trigger = async(Dispatchers.IO) { vm.fetchChannels(force = true) }
             assertTrue("old provider request never started", started.await(15, TimeUnit.SECONDS))
