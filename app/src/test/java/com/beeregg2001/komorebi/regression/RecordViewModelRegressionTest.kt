@@ -165,7 +165,7 @@ class RecordViewModelRegressionTest {
     }
 
     @Test
-    fun unownedRecordedCacheProducesEmptyPagedSnapshotWithoutQueryingRecordedRows() = runBlocking {
+    fun unownedRecordedCacheProducesEmptyPagedSnapshotWithoutQueryingRecordedRows(): Unit = runBlocking {
         assertFalse(cacheReady.value)
         val snapshot = withTimeout(10_000L) { viewModel.pagedRecordings.asSnapshot() }
         assertTrue("unowned recording cache must not publish any paged row", snapshot.isEmpty())
