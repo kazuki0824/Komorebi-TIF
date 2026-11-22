@@ -165,8 +165,8 @@ class RecordViewModelRegressionTest {
         assertFalse(cacheReady.value)
         val snapshot = withTimeout(10_000L) { viewModel.pagedRecordings.asSnapshot() }
         assertTrue("unowned recording cache must not publish any paged row", snapshot.isEmpty())
-        Mockito.verify(programDaoUnderTest, Mockito.never()).getAllPagingSourceDesc()
-        Mockito.verify(programDaoUnderTest, Mockito.never()).getAllPagingSourceAsc()
+        Mockito.verify(programDaoUnderTest, Mockito.never()).getAll_DateDesc()
+        Mockito.verify(programDaoUnderTest, Mockito.never()).getAll_DateAsc()
     }
 
 }
