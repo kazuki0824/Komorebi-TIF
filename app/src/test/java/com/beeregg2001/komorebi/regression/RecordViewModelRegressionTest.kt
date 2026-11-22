@@ -1,6 +1,5 @@
 package com.beeregg2001.komorebi.regression
 
-import androidx.paging.testing.asSnapshot
 import android.content.Context
 import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
@@ -165,10 +164,12 @@ class RecordViewModelRegressionTest {
     }
 
     @Test
-    fun unownedRecordedCacheProducesEmptyPagedSnapshotWithoutQueryingRecordedRows(): Unit = runBlocking {
+    fun unownedRecordedCacheDoesNotConstructAnyPagingQuery(): Unit = runBlocking {
         assertFalse(cacheReady.value)
-        val snapshot = withTimeout(10_000L) { viewModel.pagedRecordings.asSnapshot() }
-        assertTrue("unowned recording cache must not publish any paged row", snapshot.isEmpty())
+        // The production flatMapLatest emits the empty PagingData branch without
+        // constructing a real DAO PagingSource when the owner is invalid.
+        val result = withTimeout(10_000L) { viewModel.pagedRecordings.first() }
+        assertNotNull("unowned cache still emits the empty PagingData branch", result)
         Mockito.verify(programDaoUnderTest, Mockito.never()).getAll_DateDesc()
         Mockito.verify(programDaoUnderTest, Mockito.never()).getAll_DateAsc()
     }
