@@ -102,4 +102,24 @@ class EpgInFlightBackendRegressionTest {
             f.releaseProvider.countDown()
         }
     }
+    @Test
+    fun unchangedBackendPublishesAndCachesItsOwnStreamResult() = runBlocking {
+        val f = fixture()
+        try {
+            val result = async(Dispatchers.IO) {
+                f.repo.getEpgDataStream(start, end, "GR").toList()
+            }
+            assertTrue("provider request must start", f.enteredProvider.await(15, TimeUnit.SECONDS))
+            f.releaseProvider.countDown()
+            val emissions = withTimeout(15_000L) { result.await() }
+            assertEquals(1, emissions.size)
+            assertTrue("valid selected backend result must publish", emissions.single().isSuccess)
+            assertEquals(emptyList<EpgChannelWrapper>(), emissions.single().getOrNull())
+            assertTrue(memoryCache(f.repo).containsKey("KONOMITV_GR"))
+            assertFalse(memoryCache(f.repo).containsKey("EDCB_GR"))
+        } finally {
+            f.releaseProvider.countDown()
+        }
+    }
+
 }
