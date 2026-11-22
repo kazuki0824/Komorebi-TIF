@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.local.dao.RecordedProgramDao
+import com.beeregg2001.komorebi.data.local.dao.ChannelProjection
+import com.beeregg2001.komorebi.data.local.dao.SeriesProjection
 import com.beeregg2001.komorebi.data.local.entity.RecordedProgramEntity
 import com.beeregg2001.komorebi.data.model.RecordedProgram
 import com.beeregg2001.komorebi.data.repository.LiveProvider
@@ -58,7 +60,7 @@ class RecordViewModelRegressionTest {
         provider = Mockito.mock(RecordProvider::class.java)
         sync = Mockito.mock(RecordSyncEngine::class.java)
         cacheReady = MutableStateFlow(false)
-        syncState = MutableStateFlow(SyncProgress())
+        syncState = MutableStateFlow(SyncProgress(isSyncing = true))
         Mockito.`when`(sync.recordCacheReady).thenReturn(cacheReady)
         Mockito.`when`(sync.recordCacheGeneration).thenReturn(MutableStateFlow(0L))
         Mockito.`when`(sync.syncProgress).thenReturn(syncState)
@@ -70,6 +72,8 @@ class RecordViewModelRegressionTest {
         Mockito.`when`(settings.defaultRecordListView).thenReturn(flowOf("LIST"))
         val dao = Mockito.mock(RecordedProgramDao::class.java)
         Mockito.`when`(dao.getRecentRecordingsFlow()).thenReturn(flowOf(emptyList<RecordedProgramEntity>()))
+        Mockito.doReturn(emptyList<SeriesProjection>()).`when`(dao).getGroupedSeries()
+        Mockito.doReturn(emptyList<ChannelProjection>()).`when`(dao).getDistinctChannels()
         viewModel = RecordViewModel(
             Mockito.mock(LiveProvider::class.java), provider,
             Mockito.mock(EpgStationRecordRepository::class.java),
