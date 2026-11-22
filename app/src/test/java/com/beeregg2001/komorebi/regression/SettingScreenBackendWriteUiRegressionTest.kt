@@ -8,6 +8,11 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.test.core.app.ApplicationProvider
 import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.ui.setting.SettingsScreen
@@ -69,11 +74,22 @@ class SettingScreenBackendWriteUiRegressionTest {
             }
         }
         compose.onNodeWithText("利用するシステム").assertExists()
-        compose.onNode(
+        val backendItem = compose.onNode(
             hasClickAction() and hasAnyDescendant(hasText("利用するシステム")),
             useUnmergedTree = true
-        ).performClick()
-        compose.onNodeWithText("EDCB (EpgTimerSrv)").performClick()
+        )
+        backendItem.performSemanticsAction(SemanticsActions.RequestFocus)
+        backendItem.performKeyInput { pressKey(Key.DirectionCenter) }
+        compose.waitUntil(10_000L) {
+            compose.onAllNodes(hasText("EDCB (EpgTimerSrv)"))
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        val selectedOption = compose.onNode(
+            hasClickAction() and hasAnyDescendant(hasText("EDCB (EpgTimerSrv)")),
+            useUnmergedTree = true
+        )
+        selectedOption.performSemanticsAction(SemanticsActions.RequestFocus)
+        selectedOption.performKeyInput { pressKey(Key.DirectionCenter) }
         Mockito.verify(vm, Mockito.timeout(10_000L).times(1)).updateBackendType("EDCB")
         // The mock deliberately does NOT write. The previous UI's second write
         // would still have changed DataStore independently on Dispatchers.IO.
