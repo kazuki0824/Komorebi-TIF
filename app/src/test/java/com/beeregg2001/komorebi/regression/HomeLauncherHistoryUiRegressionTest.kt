@@ -68,7 +68,7 @@ class HomeLauncherHistoryUiRegressionTest {
     @Before
     fun setup() {
         backend = MutableStateFlow("EDCB")
-        owned = MutableStateFlow("EDCB" to listOf(history()))
+        owned = MutableStateFlow<Pair<String?, List<KonomiHistoryProgram>>>("EDCB" to listOf(history()))
         home = Mockito.mock(HomeViewModel::class.java)
         Mockito.`when`(home.backendType).thenReturn(backend)
         Mockito.`when`(home.ownedWatchHistory).thenReturn(owned)
