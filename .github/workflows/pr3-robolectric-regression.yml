@@ -112,7 +112,7 @@ jobs:
               "ChannelViewModelRegressionTest": 4,
               "DatabaseMigrationRegressionTest": 1,
               "DtvProviderProxyRoutingRegressionTest": 7,
-              "SettingsBackendFailureRegressionTest": 2,
+              "SettingsBackendFailureRegressionTest": 4,
               "EpgInFlightBackendRegressionTest": 2,
               "EpgSearchBackendRegressionTest": 7,
               "EpgStateRegressionTest": 2,
