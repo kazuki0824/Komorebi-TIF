@@ -76,11 +76,11 @@ jobs:
             result=${PIPESTATUS[0]}
             set -e
             if [ "${result}" -eq 0 ]; then exit 0; fi
-            if ! grep -Eq "Plugin \\[id: 'com\\.google\\.devtools\\.ksp'.*was not found" "/tmp/pr3-gradle-attempt-${attempt}.log"; then
+            if ! grep -Eq "Plugin \\[id: 'com\\.google\\.devtools\\.ksp'.*was not found|Received status code 429 from server: Too Many Requests" "/tmp/pr3-gradle-attempt-${attempt}.log"; then
               exit "${result}"
             fi
             if [ "${attempt}" -eq 3 ]; then exit "${result}"; fi
-            echo "KSP marker repository temporarily unavailable; retrying plugin resolution (attempt ${attempt})"
+            echo "External Gradle plugin/JAR repository unavailable (KSP or HTTP 429); retrying dependency resolution (attempt ${attempt})"
             sleep 15
           done
 
