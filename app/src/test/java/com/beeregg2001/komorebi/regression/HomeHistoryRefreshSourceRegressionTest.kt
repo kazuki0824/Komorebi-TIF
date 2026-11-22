@@ -1,6 +1,7 @@
 package com.beeregg2001.komorebi.regression
 
 import androidx.lifecycle.viewModelScope
+import com.beeregg2001.komorebi.data.api.KonomiApi
 import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.local.entity.WatchHistoryEntity
 import com.beeregg2001.komorebi.data.model.KonomiHistoryProgram
@@ -45,6 +46,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 class HomeHistoryRefreshSourceRegressionTest {
     private lateinit var backend: MutableStateFlow<String>
     private lateinit var konomi: KonomiRepository
+    private lateinit var api: KonomiApi
     private lateinit var history: WatchHistoryRepository
     private lateinit var vm: HomeViewModel
     private val lookupOwners = CopyOnWriteArrayList<String>()
@@ -60,7 +62,8 @@ class HomeHistoryRefreshSourceRegressionTest {
         Mockito.`when`(settings.homePickupTime).thenReturn(flowOf("昼"))
         Mockito.`when`(settings.excludePaidBroadcasts).thenReturn(flowOf("OFF"))
         Mockito.`when`(settings.favoriteBaseballTeams).thenReturn(flowOf("[]"))
-        konomi = Mockito.mock(KonomiRepository::class.java)
+        api = Mockito.mock(KonomiApi::class.java)
+        konomi = KonomiRepository(api, settings)
         history = Mockito.mock(WatchHistoryRepository::class.java, Answer { call ->
             when (call.method.name) {
                 "getOwnedLocalWatchHistory" -> flowOf("KONOMITV" to emptyList<WatchHistoryEntity>())
@@ -123,8 +126,8 @@ class HomeHistoryRefreshSourceRegressionTest {
         Mockito.doAnswer {
             reachedProvider.countDown()
             check(releaseProvider.await(12, TimeUnit.SECONDS))
-            Result.success(listOf(sampleHistory()))
-        }.`when`(konomi).getWatchHistory()
+            listOf(sampleHistory())
+        }.`when`(api).getWatchHistory()
         try {
             vm.refreshHomeData(force = true)
             assertTrue("history fetch did not begin", reachedProvider.await(12, TimeUnit.SECONDS))
@@ -146,7 +149,7 @@ class HomeHistoryRefreshSourceRegressionTest {
         backend.value = "EDCB"
         vm.refreshHomeData(force = true)
         awaitRefresh()
-        Mockito.verify(konomi, Mockito.never()).getWatchHistory()
+        Mockito.verify(api, Mockito.never()).getWatchHistory()
         assertTrue(saved.isEmpty())
         assertTrue(lookupOwners.isEmpty())
     }
