@@ -26,7 +26,8 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.mockito.ArgumentCaptor
+import org.mockito.Answers
+import org.mockito.stubbing.Answer
 import org.mockito.Mockito
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -39,6 +40,7 @@ class HomeViewModelRegressionTest {
     private val main = UnconfinedTestDispatcher()
     private lateinit var vm: HomeViewModel
     private lateinit var last: LastChannelRepository
+    private val lastSaved = java.util.concurrent.atomic.AtomicReference<LastChannelEntity?>()
 
     @Before
     fun setup() {
@@ -50,7 +52,13 @@ class HomeViewModelRegressionTest {
         Mockito.`when`(settings.excludePaidBroadcasts).thenReturn(flowOf("ON"))
         Mockito.`when`(settings.favoriteBaseballTeams).thenReturn(flowOf("[]"))
         Mockito.`when`(settings.receiveBetaUpdates).thenReturn(flowOf(false))
-        last = Mockito.mock(LastChannelRepository::class.java)
+        lastSaved.set(null)
+        last = Mockito.mock(LastChannelRepository::class.java, Answer { invocation ->
+            if (invocation.method.name == "saveLastChannel") {
+                lastSaved.set(invocation.arguments[0] as LastChannelEntity)
+                Unit
+            } else Answers.RETURNS_DEFAULTS.answer(invocation)
+        })
         val history = Mockito.mock(WatchHistoryRepository::class.java)
         Mockito.`when`(history.getOwnedLocalWatchHistory()).thenReturn(
             flowOf("EDCB" to emptyList())
@@ -96,11 +104,13 @@ class HomeViewModelRegressionTest {
         Mockito.`when`(channel.networkId).thenReturn(10L)
         Mockito.`when`(channel.serviceId).thenReturn(20L)
         vm.saveLastChannel(channel)
-        val captor = ArgumentCaptor.forClass(LastChannelEntity::class.java)
-        Mockito.verify(last, Mockito.timeout(10_000L)).saveLastChannel(captor.capture())
-        assertEquals("edcb:network:service", captor.value.channelId)
-        assertEquals(10L, captor.value.networkId)
-        assertEquals(20L, captor.value.serviceId)
+        val saved = kotlinx.coroutines.withTimeout(10_000L) {
+            while (lastSaved.get() == null) kotlinx.coroutines.delay(10)
+            lastSaved.get()!!
+        }
+        assertEquals("edcb:network:service", saved.channelId)
+        assertEquals(10L, saved.networkId)
+        assertEquals(20L, saved.serviceId)
     }
 
     @Test
