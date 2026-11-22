@@ -140,4 +140,67 @@ class EpgViewModelGenerationRegressionTest {
         assertEquals("test-logo", results.single().logoUrl)
     }
 
+    private fun setPrivate(name: String, value: Any) {
+        val field = EpgViewModel::class.java.getDeclaredField(name)
+        field.isAccessible = true
+        field.set(viewModel, value)
+    }
+
+    @Test
+    fun refreshForDifferentUnselectedTypeDoesNotLaunchNewEpgRequest() {
+        assertEquals("GR", viewModel.selectedBroadcastingType.value)
+        viewModel.refreshEpgData("BS")
+        assertEquals("GR", viewModel.selectedBroadcastingType.value)
+        assertSame(com.beeregg2001.komorebi.viewmodel.EpgUiState.Loading, viewModel.uiState)
+        Mockito.verifyNoInteractions(repository)
+    }
+
+    @Test
+    fun successfulEmptyEpgDataProducesSuccessInsteadOfStuckLoading() {
+        val target = OffsetDateTime.parse("2030-01-02T18:30:00+09:00")
+        setPrivate("hasDisplayedDataForType", true)
+        setPrivate("fullEpgData", emptyList<com.beeregg2001.komorebi.data.model.EpgChannelWrapper>())
+        viewModel.updateTargetTime(target)
+        val state = viewModel.uiState
+        assertTrue("valid empty result must not remain Loading", state is com.beeregg2001.komorebi.viewmodel.EpgUiState.Success)
+        val success = state as com.beeregg2001.komorebi.viewmodel.EpgUiState.Success
+        assertEquals(target, success.targetTime)
+        assertTrue(success.data.isEmpty())
+        assertTrue(success.logoUrls.isEmpty())
+    }
+
+    @Test
+    fun latestDateSliceWinsWhenTargetTimeChangesTwice() = runBlocking {
+        val target1 = OffsetDateTime.parse("2030-01-02T18:30:00+09:00")
+        val target2 = target1.plusDays(1)
+        val channel = Mockito.mock(EpgChannel::class.java)
+        val program = Mockito.mock(EpgProgram::class.java)
+        Mockito.`when`(program.start_time).thenReturn(target2.plusHours(2).toString())
+        Mockito.`when`(program.end_time).thenReturn(target2.plusHours(3).toString())
+        setPrivate("hasDisplayedDataForType", true)
+        setPrivate("displayedBroadcastingType", "GR")
+        setPrivate("fullEpgData", listOf(com.beeregg2001.komorebi.data.model.EpgChannelWrapper(channel, listOf(program))))
+        viewModel.updateTargetTime(target1)
+        viewModel.updateTargetTime(target2)
+        val field = EpgViewModel::class.java.getDeclaredField("sliceJob")
+        field.isAccessible = true
+        val job = field.get(viewModel) as kotlinx.coroutines.Job
+        withTimeout(10_000L) { job.join() }
+        val ui = viewModel.uiState
+        assertTrue(ui is com.beeregg2001.komorebi.viewmodel.EpgUiState.Success)
+        val success = ui as com.beeregg2001.komorebi.viewmodel.EpgUiState.Success
+        assertEquals("stale date must not overwrite latest", target2, success.targetTime)
+        assertEquals(1, success.data.single().programs.size)
+    }
+
+    @Test
+    fun broadcastingTypeSwitchImmediatelyInvalidatesPreviousSuccess() {
+        setPrivate("hasDisplayedDataForType", true)
+        viewModel.updateTargetTime(OffsetDateTime.parse("2030-01-02T18:00:00+09:00"))
+        assertTrue(viewModel.uiState is com.beeregg2001.komorebi.viewmodel.EpgUiState.Success)
+        viewModel.updateBroadcastingType("BS")
+        assertEquals("BS", viewModel.selectedBroadcastingType.value)
+        assertSame(com.beeregg2001.komorebi.viewmodel.EpgUiState.Loading, viewModel.uiState)
+    }
+
 }
