@@ -7,7 +7,12 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.performScrollToNode
-import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasAnyDescendant
 import com.beeregg2001.komorebi.data.model.RecordedProgram
@@ -66,10 +71,13 @@ class VideoTabSmbNavigationUiRegressionTest {
             }
         }
         compose.onNodeWithText("ファイルライブラリ", substring = true).assertIsDisplayed()
-        compose.onNode(
+        val smbButton = compose.onNode(
             hasClickAction() and hasAnyDescendant(hasText("ファイルライブラリ")),
             useUnmergedTree = true
-        ).performClick()
+        )
+        smbButton.performSemanticsAction(SemanticsActions.RequestFocus)
+        smbButton.performKeyInput { pressKey(Key.DirectionCenter) }
+        if (selectedSmb.get() == 0) println("SMB button semantics:\n" + compose.onRoot(useUnmergedTree = true).printToString())
         compose.runOnIdle {
             assertEquals(1, selectedSmb.get())
             assertEquals(0, selectedRecorded.get())
@@ -120,10 +128,13 @@ class VideoTabSmbNavigationUiRegressionTest {
         }
         compose.onAllNodes(hasScrollAction())[0].performScrollToNode(hasText("続きから見る"))
         compose.onNodeWithText("History verification sentinel").assertIsDisplayed()
-        compose.onNode(
+        val historyCard = compose.onNode(
             hasClickAction() and hasAnyDescendant(hasText("History verification sentinel")),
             useUnmergedTree = true
-        ).performClick()
+        )
+        historyCard.performSemanticsAction(SemanticsActions.RequestFocus)
+        historyCard.performKeyInput { pressKey(Key.DirectionCenter) }
+        if (delegated == null) println("History card semantics:\n" + compose.onRoot(useUnmergedTree = true).printToString())
         compose.runOnIdle {
             assertSame("history click must be delegated for owner validation", history, delegated)
             assertEquals("unverified history must not play immediately", 0, directRecordedPlayback.get())
