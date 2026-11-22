@@ -138,6 +138,12 @@ class DtvProviderProxy @Inject constructor(
     override suspend fun getChannelLogoUrl(channelId: String): String {
         return try {
             val backend = settingsRepository.backendType.first()
+            // TIFは行ID再利用・入力削除・公開状態変更があるため、
+            // URLキャッシュを使うと再検証を迂回して別入力の旧ロゴを出し得る。
+            // TIFだけ毎回TifRepositoryの所有者・公開状態検証を通す。
+            if (backend == TifInput.BACKEND_TYPE) {
+                return tifRepository.getChannelLogoUrl(channelId)
+            }
             ChannelLogoUrlCache.get(backend, channelId)?.let { return it }
 
             val provider = liveProviderFor(backend)
