@@ -10,6 +10,7 @@ import com.beeregg2001.komorebi.viewmodel.ChannelViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
@@ -120,12 +121,13 @@ class ChannelViewModelRegressionTest {
         }.`when`(live).getChannels()
         val vm = viewModel(live, MutableStateFlow("KONOMITV"))
         try {
-            vm.fetchChannels(force = true)
+            val trigger = async(Dispatchers.IO) { vm.fetchChannels(force = true) }
             assertTrue("first request never started", started.await(15, TimeUnit.SECONDS))
             vm.fetchChannels(force = false)
             vm.fetchChannels(force = false)
             assertEquals("only one upstream request may be active", 1, calls.get())
             release.countDown()
+            withTimeout(10_000L) { trigger.await() }
             withTimeout(10_000L) { vm.isLoading.first { !it } }
             assertEquals(1, calls.get())
         } finally {
@@ -152,10 +154,11 @@ class ChannelViewModelRegressionTest {
         val backend = MutableStateFlow("KONOMITV")
         val vm = viewModel(live, backend)
         try {
-            vm.fetchChannels(force = true)
+            val trigger = async(Dispatchers.IO) { vm.fetchChannels(force = true) }
             assertTrue("old provider request never started", started.await(15, TimeUnit.SECONDS))
             backend.value = "EDCB"
             release.countDown()
+            withTimeout(10_000L) { trigger.await() }
             withTimeout(10_000L) { vm.isLoading.first { !it } }
             assertFalse("old provider failure cannot contaminate new backend", vm.connectionError.value)
         } finally {
