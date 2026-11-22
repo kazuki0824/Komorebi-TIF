@@ -4,7 +4,8 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.click
 import com.beeregg2001.komorebi.data.model.RecordedProgram
 import com.beeregg2001.komorebi.ui.home.VideoTabContent
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
@@ -59,7 +60,7 @@ class VideoTabSmbNavigationUiRegressionTest {
         }
         compose.onNodeWithText("ファイルライブラリ", substring = true)
             .assertIsDisplayed()
-            .performClick()
+            .performTouchInput { click() }
         compose.runOnIdle {
             assertEquals(1, selectedSmb.get())
             assertEquals(0, selectedRecorded.get())
