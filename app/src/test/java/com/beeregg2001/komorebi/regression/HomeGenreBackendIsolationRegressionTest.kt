@@ -100,8 +100,8 @@ class HomeGenreBackendIsolationRegressionTest {
                 }
             } else flowOf(Result.success(emptyList<EpgChannelWrapper>()))
         }.`when`(epg).getEpgDataStream(
-            Mockito.any(OffsetDateTime::class.java),
-            Mockito.any(OffsetDateTime::class.java),
+            Mockito.any(OffsetDateTime::class.java) ?: OffsetDateTime.now(),
+            Mockito.any(OffsetDateTime::class.java) ?: OffsetDateTime.now(),
             Mockito.anyString()
         )
         val updater = Mockito.mock(AppUpdater::class.java)
