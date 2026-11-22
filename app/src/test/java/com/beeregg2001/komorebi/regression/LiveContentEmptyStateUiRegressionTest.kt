@@ -2,7 +2,6 @@ package com.beeregg2001.komorebi.regression
 
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.assertDoesNotExist
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import com.beeregg2001.komorebi.data.model.LiveRowState
