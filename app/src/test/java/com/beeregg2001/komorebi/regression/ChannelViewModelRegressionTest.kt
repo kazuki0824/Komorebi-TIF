@@ -109,6 +109,7 @@ class ChannelViewModelRegressionTest {
     }
     @Test
     fun repeatedNonForcedFetchWhileInFlightUsesOneProviderRequest() = runBlocking {
+        Dispatchers.setMain(Dispatchers.Default)
         val live = Mockito.mock(LiveProvider::class.java)
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
@@ -140,6 +141,7 @@ class ChannelViewModelRegressionTest {
 
     @Test
     fun backendChangeWhileOldFetchBlockedRejectsOldBackendTransportFailure() = runBlocking {
+        Dispatchers.setMain(Dispatchers.Default)
         val live = Mockito.mock(LiveProvider::class.java)
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
