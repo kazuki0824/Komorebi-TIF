@@ -1,0 +1,68 @@
+package com.beeregg2001.komorebi.regression
+
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import com.beeregg2001.komorebi.data.model.RecordedProgram
+import com.beeregg2001.komorebi.ui.home.VideoTabContent
+import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
+import com.beeregg2001.komorebi.viewmodel.RecordViewModel
+import com.beeregg2001.komorebi.viewmodel.SettingsViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
+import org.junit.Assert.assertEquals
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.mockito.Mockito
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import java.util.concurrent.atomic.AtomicInteger
+
+/** Existing video tab must expose SMB navigation without a network recording history. */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
+class VideoTabSmbNavigationUiRegressionTest {
+    @get:Rule val compose = createComposeRule()
+
+    @Test
+    fun smbLibraryIsReachableWhenThereAreNoRecordingsOrHistory() {
+        val records = Mockito.mock(RecordViewModel::class.java)
+        Mockito.`when`(records.recentRecordings)
+            .thenReturn(MutableStateFlow(emptyList<RecordedProgram>()))
+        Mockito.`when`(records.groupedSeries).thenReturn(MutableStateFlow(emptyMap()))
+        Mockito.`when`(records.availableGenres).thenReturn(MutableStateFlow(emptyList()))
+        Mockito.`when`(records.selectedSeriesGenre).thenReturn(MutableStateFlow(null))
+        Mockito.`when`(records.programDetail).thenReturn(MutableStateFlow(null))
+        val settings = Mockito.mock(SettingsViewModel::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(MutableStateFlow("EDCB"))
+        val selectedSmb = AtomicInteger()
+        val selectedRecorded = AtomicInteger()
+        compose.setContent {
+            KomorebiTheme {
+                VideoTabContent(
+                    konomiIp = "", konomiPort = "",
+                    tabFocusRequester = FocusRequester(),
+                    contentFirstItemRequester = FocusRequester(),
+                    onProgramClick = { selectedRecorded.incrementAndGet() },
+                    onShowAllRecordings = {},
+                    onShowSeriesList = {},
+                    openedSeriesTitle = null,
+                    onOpenedSeriesTitleChange = {},
+                    recordViewModel = records,
+                    settingViewModel = settings,
+                    watchHistory = emptyList(),
+                    onShowSmbLibrary = { selectedSmb.incrementAndGet() }
+                )
+            }
+        }
+        compose.onNodeWithText("ファイルライブラリ", substring = true)
+            .assertIsDisplayed()
+            .performClick()
+        compose.runOnIdle {
+            assertEquals(1, selectedSmb.get())
+            assertEquals(0, selectedRecorded.get())
+        }
+    }
+}
