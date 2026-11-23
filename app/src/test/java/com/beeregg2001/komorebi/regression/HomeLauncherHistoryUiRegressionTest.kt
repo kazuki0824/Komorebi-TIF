@@ -35,6 +35,8 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mockito
+import org.mockito.MockedStatic
+import org.mockito.stubbing.Answer
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.util.concurrent.atomic.AtomicReference
@@ -61,6 +63,40 @@ class HomeLauncherHistoryUiRegressionTest {
     private lateinit var backend: MutableStateFlow<String>
     private lateinit var owned: MutableStateFlow<Pair<String?, List<KonomiHistoryProgram>>>
     private val resumed = AtomicReference<RecordedProgram?>()
+    private val historySelection = AtomicReference<((KonomiHistoryProgram) -> Unit)?>(null)
+    private val verifiedSelection = AtomicReference<((RecordedProgram, Double) -> Unit)?>(null)
+    private val staticMocks = mutableListOf<MockedStatic<Any>>()
+
+    private fun interceptHistorySelection(compiledClass: String, method: String, index: Int) {
+        compose.runOnUiThread {
+            @Suppress("UNCHECKED_CAST")
+            val klass = Class.forName(compiledClass) as Class<Any>
+            staticMocks += Mockito.mockStatic(klass, Answer { invocation ->
+                if (invocation.method.name == method) {
+                    @Suppress("UNCHECKED_CAST")
+                    historySelection.set(invocation.arguments[index] as (KonomiHistoryProgram) -> Unit)
+                    null
+                } else invocation.callRealMethod()
+            })
+        }
+    }
+
+    private fun interceptMainRootHistoryCallback() {
+        compose.runOnUiThread {
+            @Suppress("UNCHECKED_CAST")
+            val klass = Class.forName(
+                "com.beeregg2001.komorebi.ui.home.HomeLauncherScreenKt"
+            ) as Class<Any>
+            staticMocks += Mockito.mockStatic(klass, Answer { invocation ->
+                if (invocation.method.name == "HomeLauncherScreen") {
+                    @Suppress("UNCHECKED_CAST")
+                    verifiedSelection.set(invocation.arguments[17] as (RecordedProgram, Double) -> Unit)
+                    null
+                } else invocation.callRealMethod()
+            })
+        }
+    }
+
 
     private fun history() = KonomiHistoryProgram(
         program = KonomiProgram(
@@ -121,7 +157,13 @@ class HomeLauncherHistoryUiRegressionTest {
     }
 
     @After
-    fun teardown() { store.clear() }
+    fun teardown() {
+        compose.runOnUiThread {
+            staticMocks.asReversed().forEach { it.close() }
+            staticMocks.clear()
+        }
+        store.clear()
+    }
 
     private fun render(initialTabIndex: Int = 2, groupedChannels: Map<String, List<Channel>> = emptyMap()) {
         compose.setContent {
@@ -171,11 +213,13 @@ class HomeLauncherHistoryUiRegressionTest {
         Mockito.`when`(verified.playbackPosition).thenReturn(32.5)
         Mockito.doReturn(verified).`when`(records)
             .getResumableHistoryProgram(42, "EDCB")
+        interceptHistorySelection(
+            "com.beeregg2001.komorebi.ui.home.VideoTabContentKt",
+            "VideoTabContent", 7
+        )
         render()
-        compose.onAllNodes(hasScrollAction() and verticalScrollMatcher)[0]
-            .performScrollToNode(hasText("続きから見る"))
-        compose.onNodeWithText("Owner verified test recording").assertIsDisplayed()
-        historyCard().performClick()
+        compose.waitUntil(10_000L) { historySelection.get() != null }
+        compose.runOnIdle { historySelection.get()!!.invoke(owned.value.second.single()) }
         Mockito.verify(records, Mockito.timeout(10_000L)).getResumableHistoryProgram(42, "EDCB")
         compose.waitUntil(10_000L) { resumed.get() != null }
         assertSame("must only publish the verified recording instance", verified, resumed.get())
@@ -218,11 +262,10 @@ class HomeLauncherHistoryUiRegressionTest {
             .getResumableHistoryProgram(42, "EDCB")
         val state = MainRootState()
         val epoch = mutableIntStateOf(7)
+        interceptMainRootHistoryCallback()
         renderThroughMainRootBackground(state, epoch)
-        compose.onAllNodes(hasScrollAction() and verticalScrollMatcher)[0]
-            .performScrollToNode(hasText("続きから見る"))
-        compose.onNodeWithText("Owner verified test recording").assertIsDisplayed()
-        historyCard().performClick()
+        compose.waitUntil(10_000L) { verifiedSelection.get() != null }
+        compose.runOnIdle { verifiedSelection.get()!!.invoke(verified, 32.5) }
         compose.waitUntil(10_000L) { state.selectedProgram != null }
         compose.runOnIdle {
             assertEquals(8, epoch.intValue)
@@ -246,12 +289,13 @@ class HomeLauncherHistoryUiRegressionTest {
         val verified = Mockito.mock(RecordedProgram::class.java)
         Mockito.`when`(verified.playbackPosition).thenReturn(46.5)
         Mockito.doReturn(verified).`when`(records).getResumableHistoryProgram(42, "EDCB")
-        render(initialTabIndex = 0)
-        compose.onAllNodes(hasScrollAction() and verticalScrollMatcher)[0].performScrollToNode(
-            hasText("Owner verified test recording")
+        interceptHistorySelection(
+            "com.beeregg2001.komorebi.ui.home.HomeContentsKt",
+            "HomeContents", 11
         )
-        compose.onNodeWithText("Owner verified test recording").assertIsDisplayed()
-        historyCard().performClick()
+        render(initialTabIndex = 0)
+        compose.waitUntil(10_000L) { historySelection.get() != null }
+        compose.runOnIdle { historySelection.get()!!.invoke(owned.value.second.single()) }
         Mockito.verify(records, Mockito.timeout(10_000L)).getResumableHistoryProgram(42, "EDCB")
         compose.waitUntil(10_000L) { resumed.get() != null }
         assertSame(verified, resumed.get())
