@@ -393,7 +393,7 @@ class HomeLauncherHistoryUiRegressionTest {
     }
 
     @Test
-    fun sameBackendReplacementWithSameRecordIdCannotActivateOldHistoryCard() {
+    fun sameBackendReplacementWithSameRecordIdCannotActivateOldHistoryCard(): Unit = runBlocking {
         interceptHistorySelection(
             "com.beeregg2001.komorebi.ui.home.VideoTabContentKt",
             "VideoTabContent", 7
@@ -411,7 +411,7 @@ class HomeLauncherHistoryUiRegressionTest {
     }
 
     @Test
-    fun callbackFromOtherBackendCannotInterpretReusedRecordIdAsNewRecording() {
+    fun callbackFromOtherBackendCannotInterpretReusedRecordIdAsNewRecording(): Unit = runBlocking {
         interceptHistorySelection(
             "com.beeregg2001.komorebi.ui.home.VideoTabContentKt",
             "VideoTabContent", 7
