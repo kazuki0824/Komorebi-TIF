@@ -35,6 +35,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /** Exercise SettingsScreen's real backend selection; only SettingsViewModel owns persistence. */
+@OptIn(ExperimentalTestApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w1280dp-h720dp")
 class SettingScreenBackendWriteUiRegressionTest {
