@@ -63,11 +63,28 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x ./gradlew
+          # Maven Central intermittently rate-limits the 150MB Robolectric native
+          # JAR on shared GitHub runners (HTTP 429). Use Google's documented
+          # Maven Central mirror ONLY for this CI test invocation, not production
+          # repository settings. Preserve Google Android and JitPack repositories.
+          cat > /tmp/pr3-maven-central-mirror.init.gradle <<'GRADLE'
+          gradle.settingsEvaluated { settings ->
+              settings.dependencyResolutionManagement.repositories.withType(
+                  org.gradle.api.artifacts.repositories.MavenArtifactRepository
+              ).all { repository ->
+                  if (repository.url.toString().startsWith("https://repo.maven.apache.org/maven2")) {
+                      repository.url = java.net.URI.create(
+                          "https://maven-central.storage-download.googleapis.com/maven2/"
+                      )
+                  }
+              }
+          }
+          GRADLE
           # Retry only the known external KSP plugin-resolution outage.
           # A test failure, compilation error, or assertion failure must never be retried as success.
           for attempt in 1 2 3; do
             set +e
-            ./gradlew --no-daemon :app:testDebugUnitTest \
+            ./gradlew --no-daemon --init-script /tmp/pr3-maven-central-mirror.init.gradle :app:testDebugUnitTest \
               --tests 'com.beeregg2001.komorebi.regression.*' \
               --stacktrace 2>&1 | tee "/tmp/pr3-gradle-attempt-${attempt}.log"
             result=${PIPESTATUS[0]}
