@@ -40,6 +40,9 @@ import org.mockito.stubbing.Answer
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.resume
+import kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED
 
 /** Real HomeLauncherScreen history ownership routing, not VideoTabContent alone. */
 @RunWith(RobolectricTestRunner::class)
@@ -64,6 +67,8 @@ class HomeLauncherHistoryUiRegressionTest {
     private lateinit var owned: MutableStateFlow<Pair<String?, List<KonomiHistoryProgram>>>
     private val resumed = AtomicReference<RecordedProgram?>()
     private val historySelection = AtomicReference<((KonomiHistoryProgram) -> Unit)?>(null)
+    private val recordedCardSelection = AtomicReference<((RecordedProgram) -> Unit)?>(null)
+    private val selectedProgramAfterClick = AtomicReference<RecordedProgram?>()
     private val verifiedSelection = AtomicReference<((RecordedProgram, Double) -> Unit)?>(null)
     private val liveSelection = AtomicReference<((Channel?, Boolean) -> Unit)?>(null)
     private val recordingSelection = AtomicReference<((RecordedProgram?) -> Unit)?>(null)
@@ -78,6 +83,9 @@ class HomeLauncherHistoryUiRegressionTest {
                 if (invocation.method.name == method) {
                     @Suppress("UNCHECKED_CAST")
                     historySelection.set(invocation.arguments[index] as (KonomiHistoryProgram) -> Unit)
+                    if (method == "VideoTabContent") {
+                        recordedCardSelection.set(invocation.arguments[6] as (RecordedProgram) -> Unit)
+                    }
                     null
                 } else invocation.callRealMethod()
             })
@@ -185,7 +193,7 @@ class HomeLauncherHistoryUiRegressionTest {
                         onChannelClick = { _, _ -> },
                         selectedChannel = null, onTabChange = {},
                         initialTabIndex = initialTabIndex, selectedProgram = null,
-                        onProgramSelected = {},
+                        onProgramSelected = { selectedProgramAfterClick.set(it) },
                         onVerifiedHistorySelected = { p, _ -> resumed.set(p) },
                         recordedSelectionEpoch = mutableIntStateOf(0),
                         epgSelectedProgram = null, onEpgProgramSelected = {},
@@ -382,6 +390,74 @@ class HomeLauncherHistoryUiRegressionTest {
         assertSame(channel, state.selectedChannel)
         assertEquals(channel.id, state.lastSelectedChannelId)
         Mockito.verify(home).saveLastChannel(channel)
+    }
+
+    @Test
+    fun sameBackendReplacementWithSameRecordIdCannotActivateOldHistoryCard() {
+        interceptHistorySelection(
+            "com.beeregg2001.komorebi.ui.home.VideoTabContentKt",
+            "VideoTabContent", 7
+        )
+        val obsolete = owned.value.second.single()
+        render()
+        compose.waitUntil(10_000L) { historySelection.get() != null }
+        val oldCardCallback = historySelection.get()!!
+        compose.runOnIdle { owned.value = "EDCB" to listOf(history()) }
+        compose.runOnIdle { oldCardCallback.invoke(obsolete) }
+        Mockito.verify(records, Mockito.never()).getResumableHistoryProgram(
+            Mockito.anyInt(), Mockito.anyString()
+        )
+        assertNull(resumed.get())
+    }
+
+    @Test
+    fun callbackFromOtherBackendCannotInterpretReusedRecordIdAsNewRecording() {
+        interceptHistorySelection(
+            "com.beeregg2001.komorebi.ui.home.VideoTabContentKt",
+            "VideoTabContent", 7
+        )
+        val old = owned.value.second.single()
+        render()
+        compose.waitUntil(10_000L) { historySelection.get() != null }
+        val oldCallback = historySelection.get()!!
+        compose.runOnIdle {
+            backend.value = "KONOMITV"
+            owned.value = "KONOMITV" to listOf(history())
+        }
+        compose.runOnIdle { oldCallback.invoke(old) }
+        Mockito.verify(records, Mockito.never()).getResumableHistoryProgram(
+            Mockito.anyInt(), Mockito.anyString()
+        )
+        assertNull(resumed.get())
+    }
+
+    @Test
+    fun laterRecordingClickCancelsPendingHistoryAndBlocksItsStaleReply(): Unit = runBlocking {
+        val suspended = AtomicReference<Continuation<RecordedProgram?>?>()
+        val staleProgram = Mockito.mock(RecordedProgram::class.java)
+        Mockito.doAnswer { invocation ->
+            @Suppress("UNCHECKED_CAST")
+            val continuation = invocation.rawArguments.last() as Continuation<RecordedProgram?>
+            suspended.set(continuation)
+            COROUTINE_SUSPENDED
+        }.`when`(records).getResumableHistoryProgram(42, "EDCB")
+        interceptHistorySelection(
+            "com.beeregg2001.komorebi.ui.home.VideoTabContentKt",
+            "VideoTabContent", 7
+        )
+        render()
+        compose.waitUntil(10_000L) {
+            historySelection.get() != null && recordedCardSelection.get() != null
+        }
+        val selected = owned.value.second.single()
+        compose.runOnIdle { historySelection.get()!!.invoke(selected) }
+        compose.waitUntil(10_000L) { suspended.get() != null }
+        val later = Mockito.mock(RecordedProgram::class.java)
+        compose.runOnIdle { recordedCardSelection.get()!!.invoke(later) }
+        suspended.get()!!.resume(staleProgram)
+        compose.waitForIdle()
+        assertSame("the later click must win", later, selectedProgramAfterClick.get())
+        assertNull("late history response must never override later selection", resumed.get())
     }
 
 }
