@@ -65,6 +65,9 @@ class HomeLauncherHistoryUiRegressionTest {
     private val resumed = AtomicReference<RecordedProgram?>()
     private val historySelection = AtomicReference<((KonomiHistoryProgram) -> Unit)?>(null)
     private val verifiedSelection = AtomicReference<((RecordedProgram, Double) -> Unit)?>(null)
+    private val liveSelection = AtomicReference<((Channel?, Boolean) -> Unit)?>(null)
+    private val recordingSelection = AtomicReference<((RecordedProgram?) -> Unit)?>(null)
+    private val epgNavigation = AtomicReference<((String, String, String) -> Unit)?>(null)
     private val staticMocks = mutableListOf<MockedStatic<Any>>()
 
     private fun interceptHistorySelection(compiledClass: String, method: String, index: Int) {
@@ -91,6 +94,9 @@ class HomeLauncherHistoryUiRegressionTest {
                 if (invocation.method.name == "HomeLauncherScreen") {
                     @Suppress("UNCHECKED_CAST")
                     verifiedSelection.set(invocation.arguments[17] as (RecordedProgram, Double) -> Unit)
+                    liveSelection.set(invocation.arguments[11] as (Channel?, Boolean) -> Unit)
+                    recordingSelection.set(invocation.arguments[16] as (RecordedProgram?) -> Unit)
+                    epgNavigation.set(invocation.arguments[31] as (String, String, String) -> Unit)
                     null
                 } else invocation.callRealMethod()
             })
@@ -224,7 +230,7 @@ class HomeLauncherHistoryUiRegressionTest {
         compose.waitUntil(10_000L) { resumed.get() != null }
         assertSame("must only publish the verified recording instance", verified, resumed.get())
     }
-    private fun renderThroughMainRootBackground(state: MainRootState, epoch: MutableIntState) {
+    private fun renderThroughMainRootBackground(state: MainRootState, epoch: MutableIntState, displayed: Map<String, List<Channel>> = emptyMap()) {
         compose.setContent {
             CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
                 KomorebiTheme {
@@ -233,7 +239,7 @@ class HomeLauncherHistoryUiRegressionTest {
                         channelViewModel = live, homeViewModel = home,
                         epgViewModel = epg, recordViewModel = records,
                         reserveViewModel = reserves, settingsViewModel = settings,
-                        groupedChannels = emptyMap(),
+                        groupedChannels = displayed,
                         watchHistory = owned.value.second,
                         conditions = emptyList(), reserves = emptyList(),
                         autoReserveKeywords = emptyList(),
@@ -324,6 +330,58 @@ class HomeLauncherHistoryUiRegressionTest {
         lastChannelFlow.value = listOf(available)
         render(initialTabIndex = 0, groupedChannels = mapOf("GR" to listOf(available)))
         compose.onNodeWithText("前回視聴したチャンネル").assertIsDisplayed()
+    }
+
+    @Test
+    fun mainRootBackgroundLiveSelectionAdvancesEpochAndStoresChannel() {
+        val state = MainRootState()
+        val epoch = mutableIntStateOf(5)
+        val channel = channel("edcb-live-101", "live channel")
+        interceptMainRootHistoryCallback()
+        renderThroughMainRootBackground(state, epoch)
+        compose.waitUntil(10_000L) { liveSelection.get() != null }
+        compose.runOnIdle { liveSelection.get()!!.invoke(channel, false) }
+        assertEquals(6, epoch.intValue)
+        assertSame(channel, state.selectedChannel)
+        assertEquals(channel.id, state.lastSelectedChannelId)
+        Mockito.verify(home).saveLastChannel(channel)
+    }
+
+    @Test
+    fun mainRootBackgroundRecordingSelectionInvalidatesPendingHistoryEpoch() {
+        val state = MainRootState()
+        val epoch = mutableIntStateOf(3)
+        val recording = Mockito.mock(RecordedProgram::class.java)
+        val video = Mockito.mock(RecordedVideo::class.java)
+        Mockito.`when`(recording.id).thenReturn(98)
+        Mockito.`when`(recording.recordedVideo).thenReturn(video)
+        Mockito.`when`(video.hasKeyFrames).thenReturn(true)
+        Mockito.`when`(video.duration).thenReturn(3600.0)
+        interceptMainRootHistoryCallback()
+        renderThroughMainRootBackground(state, epoch)
+        compose.waitUntil(10_000L) { recordingSelection.get() != null }
+        compose.runOnIdle { recordingSelection.get()!!.invoke(recording) }
+        assertEquals(4, epoch.intValue)
+        assertSame(recording, state.selectedProgram)
+        assertEquals("98", state.lastSelectedProgramId)
+        assertNull(state.lastSelectedChannelId)
+    }
+
+    @Test
+    fun mainRootBackgroundEpgNavigationAdvancesEpochBeforeSelectingLiveChannel() {
+        val state = MainRootState()
+        val epoch = mutableIntStateOf(10)
+        val channel = channel("edcb-epg-3", "EPG channel")
+        interceptMainRootHistoryCallback()
+        renderThroughMainRootBackground(state, epoch, mapOf("GR" to listOf(channel)))
+        compose.waitUntil(10_000L) { epgNavigation.get() != null }
+        compose.runOnIdle {
+            epgNavigation.get()!!.invoke(channel.id, "", "")
+        }
+        assertEquals(11, epoch.intValue)
+        assertSame(channel, state.selectedChannel)
+        assertEquals(channel.id, state.lastSelectedChannelId)
+        Mockito.verify(home).saveLastChannel(channel)
     }
 
 }
