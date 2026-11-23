@@ -8,10 +8,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performKeyInput
-import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.performSemanticsAction
-import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.test.core.app.ApplicationProvider
 import com.beeregg2001.komorebi.data.SettingsRepository
@@ -21,6 +18,9 @@ import com.beeregg2001.komorebi.util.UpdateState
 import com.beeregg2001.komorebi.viewmodel.ChannelViewModel
 import com.beeregg2001.komorebi.viewmodel.SettingsViewModel
 import kotlinx.coroutines.delay
+import java.util.concurrent.atomic.AtomicReference
+import org.mockito.stubbing.Answer
+import org.mockito.MockedStatic
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -42,9 +42,12 @@ class SettingScreenBackendWriteUiRegressionTest {
     @get:Rule val compose = createComposeRule()
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val store = SettingsRepository(context)
+    private val backendDialogSelection = AtomicReference<((String) -> Unit)?>(null)
+    private var dialogMock: MockedStatic<Any>? = null
 
     @After
     fun clean() = runBlocking {
+        compose.runOnUiThread { dialogMock?.close(); dialogMock = null }
         store.saveString(SettingsRepository.BACKEND_TYPE, "KONOMITV")
     }
 
@@ -66,6 +69,21 @@ class SettingScreenBackendWriteUiRegressionTest {
         val channelVm = Mockito.mock(ChannelViewModel::class.java)
         Mockito.`when`(channelVm.groupedChannels).thenReturn(MutableStateFlow(emptyMap()))
 
+        // Keep the actual SettingsScreen selection callback, but replace the
+        // animated TV dialog with a captured callback (not the persistence path).
+        compose.runOnUiThread {
+            @Suppress("UNCHECKED_CAST")
+            val owner = Class.forName(
+                "com.beeregg2001.komorebi.ui.setting.SettingComponentsKt"
+            ) as Class<Any>
+            dialogMock = Mockito.mockStatic(owner, Answer { invocation ->
+                if (invocation.method.name == "SelectionDialog") {
+                    @Suppress("UNCHECKED_CAST")
+                    backendDialogSelection.set(invocation.arguments[4] as (String) -> Unit)
+                    null
+                } else invocation.callRealMethod()
+            })
+        }
         compose.setContent {
             KomorebiTheme {
                 SettingsScreen(
@@ -79,18 +97,9 @@ class SettingScreenBackendWriteUiRegressionTest {
             hasClickAction() and hasAnyDescendant(hasText("利用するシステム")),
             useUnmergedTree = true
         )
-        backendItem.performSemanticsAction(SemanticsActions.RequestFocus)
-        backendItem.performKeyInput { pressKey(Key.DirectionCenter) }
-        compose.waitUntil(10_000L) {
-            compose.onAllNodes(hasText("EDCB (EpgTimerSrv)"))
-                .fetchSemanticsNodes().isNotEmpty()
-        }
-        val selectedOption = compose.onNode(
-            hasClickAction() and hasAnyDescendant(hasText("EDCB (EpgTimerSrv)")),
-            useUnmergedTree = true
-        )
-        selectedOption.performSemanticsAction(SemanticsActions.RequestFocus)
-        selectedOption.performKeyInput { pressKey(Key.DirectionCenter) }
+        backendItem.performSemanticsAction(SemanticsActions.OnClick)
+        compose.waitUntil(10_000L) { backendDialogSelection.get() != null }
+        compose.runOnIdle { backendDialogSelection.get()!!.invoke("EDCB") }
         Mockito.verify(vm, Mockito.timeout(10_000L).times(1)).updateBackendType("EDCB")
         // The mock deliberately does NOT write. The previous UI's second write
         // would still have changed DataStore independently on Dispatchers.IO.
