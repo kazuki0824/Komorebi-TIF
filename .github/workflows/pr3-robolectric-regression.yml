@@ -147,7 +147,7 @@ jobs:
               "EpgFileCacheRegressionTest": 4,
               "EpgSearchBackendRegressionTest": 7,
               "EpgStateRegressionTest": 2,
-              "EpgCanvasOverlayUiRegressionTest": 3,
+              "EpgCanvasOverlayUiRegressionTest": 4,
               "EpgViewModelGenerationRegressionTest": 9,
               "ExistingHomeNavigationRegressionTest": 4,
               "LastChannelRegressionTest": 5,
