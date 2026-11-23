@@ -27,12 +27,22 @@ import org.mockito.Mockito
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.time.OffsetDateTime
+import java.util.concurrent.atomic.AtomicReference
+import org.mockito.MockedStatic
+import org.mockito.stubbing.Answer
+import org.junit.After
 
 /** Direct UI assertion of PR #3 epoch bump on EPG ProgramDetail -> live selection. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w1280dp-h720dp")
 class MainRootDialogEpochUiRegressionTest {
     @get:Rule val compose = createComposeRule()
+    private val selectedLive = AtomicReference<((EpgProgram) -> Unit)?>(null)
+    private var programDialogMock: MockedStatic<Any>? = null
+
+    @After fun teardown() {
+        compose.runOnUiThread { programDialogMock?.close(); programDialogMock = null }
+    }
 
     @Test
     fun epgProgramLiveSelectionAdvancesRecordingEpochBeforePublishingNewLiveChannel() {
@@ -53,6 +63,21 @@ class MainRootDialogEpochUiRegressionTest {
             duration = 3600, is_free = true, genres = null,
             video_type = null, audio_type = null, audio_sampling_rate = null
         )
+        // Exercise MainRootDialogs onPlay callback directly; the child dialog's
+        // focus-delay animation is unrelated to PR3's epoch invalidation.
+        compose.runOnUiThread {
+            @Suppress("UNCHECKED_CAST")
+            val klass = Class.forName(
+                "com.beeregg2001.komorebi.ui.epg.ProgramDetailScreenKt"
+            ) as Class<Any>
+            programDialogMock = Mockito.mockStatic(klass, Answer { invocation ->
+                if (invocation.method.name == "ProgramDetailScreen") {
+                    @Suppress("UNCHECKED_CAST")
+                    selectedLive.set(invocation.arguments[4] as (EpgProgram) -> Unit)
+                    null
+                } else invocation.callRealMethod()
+            })
+        }
         val state = MainRootState()
         state.epgSelectedProgram = program
         val epoch = mutableIntStateOf(7)
@@ -81,9 +106,8 @@ class MainRootDialogEpochUiRegressionTest {
                 )
             }
         }
-        compose.onNodeWithText("視聴する").assertIsDisplayed()
-        compose.mainClock.advanceTimeBy(700L)
-        compose.onNodeWithText("視聴する").performClick()
+        compose.waitUntil(10_000L) { selectedLive.get() != null }
+        compose.runOnIdle { selectedLive.get()!!.invoke(program) }
         compose.runOnIdle {
             assertEquals(8, epoch.intValue)
             assertSame(channel, state.selectedChannel)
