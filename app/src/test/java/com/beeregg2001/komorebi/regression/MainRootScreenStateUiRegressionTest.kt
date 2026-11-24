@@ -273,7 +273,7 @@ class MainRootScreenStateUiRegressionTest {
         compose.runOnIdle { liveSelect.get()!!.invoke(second) }
         assertSame(second, state.selectedChannel)
         assertEquals(second.id, state.lastSelectedChannelId)
-        assertEquals(1, exposedEpoch.get().intValue)
+        assertEquals(1, requireNotNull(exposedEpoch.get()).intValue)
         Mockito.verify(home).saveLastChannel(second)
     }
 }
