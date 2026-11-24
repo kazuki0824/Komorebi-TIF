@@ -59,7 +59,7 @@ class MainRootScreenStateUiRegressionTest {
     private val liveSelect = AtomicReference<((Channel) -> Unit)?>(null)
 
     @Before
-    fun setup() = runBlocking {
+    fun setup(): Unit = runBlocking {
         state = MainRootState()
         backend = MutableStateFlow("KONOMITV")
         channels = MutableStateFlow(emptyMap())
