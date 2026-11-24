@@ -59,7 +59,7 @@ class VideoPlayerSessionBackendUiRegressionTest {
     )
 
     @Before
-    fun setUp() = runBlocking {
+    fun setUp(): Unit = runBlocking {
         vm = Mockito.mock(VideoPlayerViewModel::class.java)
         Mockito.`when`(vm.programDetail).thenReturn(MutableStateFlow(null))
         Mockito.`when`(vm.tiledThumbnailUrl).thenReturn(MutableStateFlow(null))
