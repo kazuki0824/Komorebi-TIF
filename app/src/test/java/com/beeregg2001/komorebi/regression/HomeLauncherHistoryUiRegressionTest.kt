@@ -402,7 +402,7 @@ class HomeLauncherHistoryUiRegressionTest {
         render()
         compose.waitUntil(10_000L) { historySelection.get() != null }
         val oldCardCallback = historySelection.get()!!
-        compose.runOnIdle { owned.value = "EDCB" to listOf(history()) }
+        compose.runOnIdle { owned.value = "EDCB" to listOf(history().copy(playback_position = 18.0)) }
         compose.runOnIdle { oldCardCallback.invoke(obsolete) }
         Mockito.verify(records, Mockito.never()).getResumableHistoryProgram(
             Mockito.anyInt(), Mockito.anyString()
