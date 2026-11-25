@@ -312,4 +312,34 @@ class ChannelViewModelRegressionTest {
         }
     }
 
+    @Test
+    fun backendChangeReplacesOldProgressUpdaterWithNewGenerationWorker() = runBlocking {
+        val live = Mockito.mock(LiveProvider::class.java)
+        Mockito.doReturn(ChannelApiResponse()).`when`(live).getChannels()
+        val backend = MutableStateFlow("KONOMITV")
+        val vm = viewModel(live, backend)
+        val field = ChannelViewModel::class.java.getDeclaredField("progressUpdateJob")
+        field.isAccessible = true
+        try {
+            vm.stopPolling()
+            vm.startPolling()
+            val old = field.get(vm) as kotlinx.coroutines.Job
+            assertTrue(old.isActive)
+            backend.value = "EDCB"
+            val newJob = withTimeout(10_000L) {
+                while (true) {
+                    val current = field.get(vm) as kotlinx.coroutines.Job
+                    if (current !== old) break
+                    kotlinx.coroutines.delay(10L)
+                }
+                field.get(vm) as kotlinx.coroutines.Job
+            }
+            assertTrue("old backend progress updater must stop", old.isCancelled)
+            assertTrue("new backend must have fresh progress updater", newJob.isActive)
+        } finally {
+            vm.stopPolling()
+            vm.viewModelScope.cancel()
+        }
+    }
+
 }
