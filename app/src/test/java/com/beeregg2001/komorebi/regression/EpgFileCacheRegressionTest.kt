@@ -140,7 +140,8 @@ class EpgFileCacheRegressionTest {
         assertTrue("Room read errors must not crash or block refresh", filename("KONOMITV_GR").exists())
         assertEquals("[]", readCompressed("KONOMITV_GR"))
         Mockito.verify(provider).getEpgProgramsForBackend(
-            "KONOMITV", start.toString(), end.toString(), "GR"
+            "KONOMITV", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+            end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "GR"
         )
         Mockito.verify(dao, Mockito.never()).getCache("GR")
     }
