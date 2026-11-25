@@ -133,7 +133,7 @@ class EpgFileCacheRegressionTest {
         }
     }
     @Test
-    fun sqliteCacheReadFailureForQualifiedBackendFallsBackToProvider() = runBlocking {
+    fun sqliteCacheReadFailureForQualifiedBackendFallsBackToProvider(): Unit = runBlocking {
         Mockito.doAnswer { throw SQLiteException("injected large legacy blob") }
             .`when`(dao).getCache("KONOMITV_GR")
         fetch("KONOMITV")
