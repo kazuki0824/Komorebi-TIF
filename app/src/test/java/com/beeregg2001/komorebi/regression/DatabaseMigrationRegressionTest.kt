@@ -101,4 +101,61 @@ class DatabaseMigrationRegressionTest {
         assertEquals("migrated-table-ready",
             migrated.backendWatchHistoryDao().findById("KONOMITV", 84)?.payloadJson)
     }
+    @Test
+    fun v15SyntheticFixtureKeepsRecordedProgramsAndSeparatesSameIdBackendHistory(): Unit = runBlocking {
+        val original = Room.databaseBuilder(context, AppDatabase::class.java, name)
+            .allowMainThreadQueries().build()
+        original.openHelper.writableDatabase
+        original.watchHistoryDao().insertOrUpdate(
+            WatchHistoryEntity(
+                id = 55, title = "preupgrade history", description = "",
+                detailJson = null, startTime = "2030-01-01T00:00:00+09:00",
+                endTime = "2030-01-01T01:00:00+09:00",
+                duration = 3600.0, videoId = 55, watchedAt = 500L
+            )
+        )
+        original.recordedProgramDao().upsertAll(
+            listOf(com.beeregg2001.komorebi.data.local.entity.RecordedProgramEntity(
+                id = 55, title = "preupgrade recording",
+                startTime = "2030-01-01T00:00:00+09:00",
+                endTime = "2030-01-01T01:00:00+09:00",
+                videoDuration = 3600.0, hasKeyFrames = true,
+                isRecording = false, playbackPosition = 18.0,
+                channelId = null, channelType = null, channelName = null, genres = null
+            ))
+        )
+        original.close()
+
+        val disk = SQLiteDatabase.openDatabase(
+            context.getDatabasePath(name).absolutePath,
+            null, SQLiteDatabase.OPEN_READWRITE
+        )
+        disk.execSQL("DROP TABLE backend_watch_history")
+        disk.version = 15
+        disk.close()
+
+        val migrated = DatabaseModule.provideAppDatabase(context)
+        current = migrated
+        assertEquals("preupgrade recording",
+            migrated.recordedProgramDao().getById(55)?.title)
+        assertEquals("preupgrade history",
+            migrated.watchHistoryDao().getById(55)?.title)
+        val history = migrated.backendWatchHistoryDao()
+        history.upsert(
+            com.beeregg2001.komorebi.data.local.entity.BackendWatchHistoryEntity(
+                "KONOMITV", 55, "source K", 1000L
+            )
+        )
+        history.upsert(
+            com.beeregg2001.komorebi.data.local.entity.BackendWatchHistoryEntity(
+                "EDCB", 55, "source E", 2000L
+            )
+        )
+        assertEquals("source K", history.findById("KONOMITV", 55)?.payloadJson)
+        assertEquals("source E", history.findById("EDCB", 55)?.payloadJson)
+        assertEquals("preupgrade history",
+            migrated.watchHistoryDao().getById(55)?.title)
+        assertEquals(listOf(55), migrated.recordedProgramDao().getAllIds())
+    }
+
 }
