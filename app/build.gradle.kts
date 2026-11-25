@@ -72,6 +72,15 @@ android {
     }
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        // Robolectric resolves its SDK JAR at test runtime, outside Gradle's
+        // repository resolution. Avoid Maven Central's shared-runner 429s.
+        unitTests.all {
+            it.systemProperty(
+                "robolectric.dependency.repo.url",
+                "https://maven-central.storage-download.googleapis.com/maven2/"
+            )
+            it.systemProperty("robolectric.dependency.repo.id", "google-maven-central-mirror")
+        }
     }
     // Test-only font stubs: production font binaries are absent from this repo.
     // Applied to the debug variant only; release resources remain unchanged.
