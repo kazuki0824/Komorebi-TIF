@@ -227,10 +227,14 @@ class RecordSyncBackendTransitionRegressionTest {
     }
 
     @Test
-    fun backendSwitchAdvancesDictionaryEpochSoPreviousWorkerCannotResetNewMessage() = runBlocking {
+    fun nextFullSyncAfterBackendSwitchAdvancesDictionaryEpochAndRejectsOldProgress() = runBlocking {
         val state = progressState()
         val oldEpoch = epochCounter().get()
         engine.switchBackend { }
+        // Switching cancels and joins the old dictionary Job. The actual
+        // progress generation advances at the start of the next sync, not
+        // inside switchBackend itself.
+        engine.syncAllRecords(forceFullSync = true)
         assertTrue(epochCounter().get() > oldEpoch)
         state.value = SyncProgress(isSyncing = true, message = "シリーズ辞書を準備中...", current = 9)
         finishDictionary(oldEpoch)
