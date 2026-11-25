@@ -84,7 +84,7 @@ class HomeGenreBackendIsolationRegressionTest {
         Mockito.`when`(settings.homePickupGenre).thenReturn(flowOf("アニメ"))
         Mockito.`when`(settings.homePickupTime).thenReturn(flowOf(slot))
         Mockito.`when`(settings.excludePaidBroadcasts).thenReturn(flowOf("OFF"))
-        Mockito.`when`(settings.favoriteBaseballTeams).thenReturn(flowOf("[\\\"巨人\\\"]"))
+        Mockito.`when`(settings.favoriteBaseballTeams).thenReturn(flowOf("[\"巨人\"]"))
         val history = Mockito.mock(WatchHistoryRepository::class.java)
         Mockito.`when`(history.getOwnedLocalWatchHistory())
             .thenReturn(flowOf("KONOMITV" to emptyList()))
