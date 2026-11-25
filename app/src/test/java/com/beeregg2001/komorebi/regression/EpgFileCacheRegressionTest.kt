@@ -11,6 +11,13 @@ import com.beeregg2001.komorebi.data.repository.EpgRepository
 import com.google.gson.Gson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withTimeout
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import android.database.sqlite.SQLiteException
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -125,4 +132,63 @@ class EpgFileCacheRegressionTest {
             assertEquals("[]", readCompressed("KONOMITV_GR"))
         }
     }
+    @Test
+    fun sqliteCacheReadFailureForQualifiedBackendFallsBackToProvider() = runBlocking {
+        Mockito.doAnswer { throw SQLiteException("injected large legacy blob") }
+            .`when`(dao).getCache("KONOMITV_GR")
+        fetch("KONOMITV")
+        assertTrue("Room read errors must not crash or block refresh", filename("KONOMITV_GR").exists())
+        assertEquals("[]", readCompressed("KONOMITV_GR"))
+        Mockito.verify(provider).getEpgProgramsForBackend(
+            "KONOMITV", start.toString(), end.toString(), "GR"
+        )
+        Mockito.verify(dao, Mockito.never()).getCache("GR")
+    }
+
+    @Test
+    fun roomCacheMarkerWriteFailureDoesNotDiscardFetchedPrograms() = runBlocking {
+        Mockito.doAnswer { throw SQLiteException("marker insert failed") }
+            .`when`(dao).insertOrUpdate(
+                Mockito.any(EpgCacheEntity::class.java)
+                    ?: EpgCacheEntity("", "", 0L)
+            )
+        fetch("KONOMITV")
+        assertEquals("[]", readCompressed("KONOMITV_GR"))
+        assertFalse(filename("EDCB_GR").exists())
+        // The failed marker must not be mistaken for a new backend's cache.
+        backend.value = "EDCB"
+        fetch("EDCB")
+        assertEquals("[]", readCompressed("EDCB_GR"))
+    }
+
+    @Test
+    fun diskReadCompletingAfterBackendSwitchCannotPopulateOldSelection() = runBlocking {
+        writeCompressed("KONOMITV_GR", "[]")
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        Mockito.doAnswer {
+            entered.countDown()
+            check(release.await(15, TimeUnit.SECONDS))
+            EpgCacheEntity("KONOMITV_GR", "FILE_BASED", System.currentTimeMillis())
+        }.`when`(dao).getCache("KONOMITV_GR")
+        try {
+            val pending = async(Dispatchers.Default) {
+                repo.fetchAndCacheEpgDataSilently(start, end, "GR")
+            }
+            assertTrue("old backend disk query did not start", entered.await(15, TimeUnit.SECONDS))
+            backend.value = "EDCB"
+            release.countDown()
+            withTimeout(10_000L) { pending.await() }
+            Mockito.verifyNoInteractions(provider)
+            assertFalse("backend change must not adopt an obsolete disk snapshot",
+                filename("EDCB_GR").exists())
+            val cacheField = EpgRepository::class.java.getDeclaredField("memoryCache")
+            cacheField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val cache = cacheField.get(repo) as Map<String, List<EpgChannelWrapper>>
+            assertFalse(cache.containsKey("KONOMITV_GR"))
+            assertFalse(cache.containsKey("EDCB_GR"))
+        } finally { release.countDown() }
+    }
+
 }
