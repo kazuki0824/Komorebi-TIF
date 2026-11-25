@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -165,6 +166,46 @@ class SettingsBackendFailureRegressionTest {
         )
         Mockito.verify(settingsRepositoryUnderTest, Mockito.atLeastOnce()).backendType
         Mockito.verifyNoInteractions(sync)
+    }
+
+    @Test
+    fun successfulRetryClearsPriorBackendSwitchErrorAndRequestsExactlyOneFullSync() = runBlocking {
+        val calls = AtomicInteger()
+        Mockito.doAnswer {
+            if (calls.incrementAndGet() == 1) {
+                throw IllegalStateException("initial setting write refused")
+            }
+            selectedBackend.value = "EDCB"
+            null
+        }.`when`(sync).switchBackend(Mockito.any<suspend () -> Unit>() ?: {})
+        viewModel.updateBackendType("EDCB")
+        withTimeout(10_000L) { viewModel.backendSwitchError.first { it != null } }
+        assertEquals("KONOMITV", selectedBackend.value)
+
+        viewModel.updateBackendType("EDCB")
+        Mockito.verify(sync, Mockito.timeout(10_000L).times(1))
+            .launchSyncAllRecords(forceFullSync = true)
+        assertNull("successful retry must clear old error", viewModel.backendSwitchError.value)
+        assertEquals("EDCB", viewModel.confirmedBackendType.first())
+        assertEquals(2, calls.get())
+    }
+
+    @Test
+    fun repeatedSelectionOfPersistedBackendDoesNotReissueExistingErrorOrSync() = runBlocking {
+        Mockito.doAnswer { throw IllegalStateException("cannot switch") }
+            .`when`(sync).switchBackend(Mockito.any<suspend () -> Unit>() ?: {})
+        viewModel.updateBackendType("EDCB")
+        val reported = withTimeout(10_000L) { viewModel.backendSwitchError.first { it != null } }
+        viewModel.updateBackendType("KONOMITV")
+        val mutexField = SettingsViewModel::class.java.getDeclaredField("backendSelectionMutex")
+        mutexField.isAccessible = true
+        val mutex = mutexField.get(viewModel) as kotlinx.coroutines.sync.Mutex
+        withTimeout(10_000L) { mutex.lock(); mutex.unlock() }
+        assertEquals("KONOMITV", selectedBackend.value)
+        assertEquals(reported, viewModel.backendSwitchError.value)
+        Mockito.verify(sync, Mockito.times(1))
+            .switchBackend(Mockito.any<suspend () -> Unit>() ?: {})
+        Mockito.verify(sync, Mockito.never()).launchSyncAllRecords(forceFullSync = true)
     }
 
 }
