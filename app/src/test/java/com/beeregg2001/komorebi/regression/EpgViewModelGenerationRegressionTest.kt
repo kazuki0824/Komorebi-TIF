@@ -234,7 +234,7 @@ class EpgViewModelGenerationRegressionTest {
             "epgRangeEnd", OffsetDateTime::class.java, String::class.java
         )
         fn.isAccessible = true
-        val nearMidnight = OffsetDateTime.parse("2030-01-01T23:30:00+09:00")
+        val nearMidnight = OffsetDateTime.parse("2030-01-01T00:30:00+09:00")
         val end = fn.invoke(viewModel, nearMidnight, "KONOMITV") as OffsetDateTime
         assertEquals(nearMidnight.toLocalDate().plusDays(7), end.toLocalDate())
         assertEquals(4, end.hour)
