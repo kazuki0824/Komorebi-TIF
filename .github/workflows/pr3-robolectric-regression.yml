@@ -137,7 +137,7 @@ jobs:
           actual = Counter(case.attrib.get("classname", "").rsplit(".", 1)[-1] for case in cases)
           expected = {
               "BackendDataIsolationRegressionTest": 8,
-              "ChannelViewModelRegressionTest": 8,
+              "ChannelViewModelRegressionTest": 9,
               "ChannelListOverlayUiRegressionTest": 2,
               "DatabaseMigrationRegressionTest": 2,
               "DtvProviderProxyRoutingRegressionTest": 7,
@@ -148,7 +148,7 @@ jobs:
               "EpgSearchBackendRegressionTest": 7,
               "EpgStateRegressionTest": 2,
               "EpgCanvasOverlayUiRegressionTest": 4,
-              "EpgViewModelGenerationRegressionTest": 12,
+              "EpgViewModelGenerationRegressionTest": 13,
               "ExistingHomeNavigationRegressionTest": 4,
               "LastChannelRegressionTest": 5,
               "HomeViewModelRegressionTest": 3,
