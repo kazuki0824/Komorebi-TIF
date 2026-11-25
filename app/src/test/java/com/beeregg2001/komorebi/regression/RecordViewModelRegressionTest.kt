@@ -236,7 +236,7 @@ class RecordViewModelRegressionTest {
     )
 
     @Test
-    fun resumeRejectsOtherBackendBeforeHistoryOrNetworkRead() = runBlocking {
+    fun resumeRejectsOtherBackendBeforeHistoryOrNetworkRead(): Unit = runBlocking {
         ownerBackend.value = "EDCB"
         assertNull(viewModel.getResumableHistoryProgram(55, "KONOMITV"))
         assertTrue(viewModel.historyResumeError.value.orEmpty().contains("バックエンド"))
@@ -247,14 +247,14 @@ class RecordViewModelRegressionTest {
     }
 
     @Test
-    fun resumeRejectsMissingHistoryBeforeRemoteLookup() = runBlocking {
+    fun resumeRejectsMissingHistoryBeforeRemoteLookup(): Unit = runBlocking {
         assertNull(viewModel.getResumableHistoryProgram(55, "KONOMITV"))
         assertTrue(viewModel.historyResumeError.value.orEmpty().contains("視聴履歴"))
         Mockito.verify(provider, Mockito.never()).getRecordedProgram(55)
     }
 
     @Test
-    fun resumeObtainsUncachedRecordingOnlyFromMatchingBackendAndRestoresPosition() = runBlocking {
+    fun resumeObtainsUncachedRecordingOnlyFromMatchingBackendAndRestoresPosition(): Unit = runBlocking {
         val saved = historyEntry()
         Mockito.doReturn(saved).`when`(historyRepo).getHistoryEntityById(55, "KONOMITV")
         Mockito.doReturn(remoteProgram()).`when`(provider).getRecordedProgram(55)
