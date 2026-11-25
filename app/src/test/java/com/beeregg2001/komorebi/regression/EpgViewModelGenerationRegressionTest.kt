@@ -299,4 +299,35 @@ class EpgViewModelGenerationRegressionTest {
         } finally { release.countDown() }
     }
 
+    @Test
+    fun backendSwitchCancelsInFlightPreloadChildrenWithoutLaunchingOldBackendFetch() = runBlocking {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val now = OffsetDateTime.now()
+        Mockito.doAnswer { invocation ->
+            if (invocation.arguments[2] == "GR") {
+                entered.countDown()
+                check(release.await(15, TimeUnit.SECONDS))
+            }
+            Unit
+        }.`when`(repository).fetchAndCacheEpgDataSilently(
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.anyString() ?: "GR"
+        )
+        try {
+            viewModel.preloadEpgDataForSearch(listOf("GR"))
+            assertTrue("preload child did not start", entered.await(15, TimeUnit.SECONDS))
+            val field = EpgViewModel::class.java.getDeclaredField("preloadJob")
+            field.isAccessible = true
+            val oldJob = field.get(viewModel) as Job
+            backend.value = "EDCB"
+            release.countDown()
+            withTimeout(10_000L) { oldJob.join() }
+            assertTrue("preload from previous backend must be cancelled", oldJob.isCancelled)
+            assertEquals("GR", viewModel.selectedBroadcastingType.value)
+            assertSame(com.beeregg2001.komorebi.viewmodel.EpgUiState.Loading, viewModel.uiState)
+        } finally { release.countDown() }
+    }
+
 }
