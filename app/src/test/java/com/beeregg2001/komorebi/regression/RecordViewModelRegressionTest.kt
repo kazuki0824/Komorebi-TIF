@@ -8,6 +8,9 @@ import com.beeregg2001.komorebi.data.local.dao.RecordedProgramDao
 import com.beeregg2001.komorebi.data.local.dao.ChannelProjection
 import com.beeregg2001.komorebi.data.local.dao.SeriesProjection
 import com.beeregg2001.komorebi.data.local.entity.RecordedProgramEntity
+import com.beeregg2001.komorebi.data.local.entity.WatchHistoryEntity
+import com.beeregg2001.komorebi.data.model.RecordedVideo
+import kotlinx.coroutines.async
 import com.beeregg2001.komorebi.data.model.RecordedProgram
 import com.beeregg2001.komorebi.data.repository.LiveProvider
 import com.beeregg2001.komorebi.data.repository.RecordProvider
@@ -50,6 +53,9 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class RecordViewModelRegressionTest {
     private val dispatcher = UnconfinedTestDispatcher()
+    private lateinit var ownerBackend: MutableStateFlow<String>
+    private lateinit var ownerGeneration: MutableStateFlow<Long>
+    private lateinit var historyRepo: WatchHistoryRepository
     private lateinit var recordedRows: MutableStateFlow<List<RecordedProgramEntity>>
     private lateinit var programDaoUnderTest: RecordedProgramDao
     private lateinit var provider: RecordProvider
@@ -66,13 +72,15 @@ class RecordViewModelRegressionTest {
         cacheReady = MutableStateFlow(false)
         syncState = MutableStateFlow(SyncProgress(isSyncing = true))
         Mockito.`when`(sync.recordCacheReady).thenReturn(cacheReady)
-        Mockito.`when`(sync.recordCacheGeneration).thenReturn(MutableStateFlow(0L))
+        ownerGeneration = MutableStateFlow(0L)
+        Mockito.`when`(sync.recordCacheGeneration).thenReturn(ownerGeneration)
         Mockito.`when`(sync.syncProgress).thenReturn(syncState)
         Mockito.`when`(sync.recordPublicationLock).thenReturn(Any())
         Mockito.doReturn(false).`when`(sync).isInitialBuildCompleted()
 
         val settings = Mockito.mock(SettingsRepository::class.java)
-        Mockito.`when`(settings.backendType).thenReturn(flowOf("KONOMITV"))
+        ownerBackend = MutableStateFlow("KONOMITV")
+        Mockito.`when`(settings.backendType).thenReturn(ownerBackend)
         Mockito.`when`(settings.defaultRecordListView).thenReturn(flowOf("LIST"))
         val dao = Mockito.mock(RecordedProgramDao::class.java)
         programDaoUnderTest = dao
@@ -80,11 +88,12 @@ class RecordViewModelRegressionTest {
         Mockito.`when`(dao.getRecentRecordingsFlow()).thenReturn(recordedRows)
         Mockito.doReturn(emptyList<SeriesProjection>()).`when`(dao).getGroupedSeries()
         Mockito.doReturn(emptyList<ChannelProjection>()).`when`(dao).getDistinctChannels()
+        historyRepo = Mockito.mock(WatchHistoryRepository::class.java)
         viewModel = RecordViewModel(
             Mockito.mock(LiveProvider::class.java), provider,
             Mockito.mock(EpgStationRecordRepository::class.java),
             Mockito.mock(ReserveProvider::class.java),
-            Mockito.mock(WatchHistoryRepository::class.java),
+            historyRepo,
             settings, sync, dao, ApplicationProvider.getApplicationContext<Context>()
         )
     }
@@ -203,6 +212,91 @@ class RecordViewModelRegressionTest {
         } finally {
             subscription.cancel()
         }
+    }
+
+    private fun historyEntry(id: Int = 55) = WatchHistoryEntity(
+        id = id, title = "owned history", description = "", detailJson = null,
+        startTime = "2030-01-01T00:00:00+09:00",
+        endTime = "2030-01-01T01:00:00+09:00", duration = 3600.0,
+        videoId = id, playbackPosition = 37.0
+    )
+
+    private fun remoteProgram(id: Int = 55) = RecordedProgram(
+        id = id, title = "verified network recording", description = "",
+        startTime = "2030-01-01T00:00:00+09:00",
+        endTime = "2030-01-01T01:00:00+09:00", duration = 3600.0,
+        isPartiallyRecorded = false,
+        recordedVideo = RecordedVideo(
+            id = id, status = "Recorded", filePath = "recorded.ts",
+            recordingStartTime = "2030-01-01T00:00:00+09:00",
+            recordingEndTime = "2030-01-01T01:00:00+09:00",
+            duration = 3600.0, containerFormat = "ts",
+            videoCodec = "H264", audioCodec = "AAC"
+        )
+    )
+
+    @Test
+    fun resumeRejectsOtherBackendBeforeHistoryOrNetworkRead() = runBlocking {
+        ownerBackend.value = "EDCB"
+        assertNull(viewModel.getResumableHistoryProgram(55, "KONOMITV"))
+        assertTrue(viewModel.historyResumeError.value.orEmpty().contains("バックエンド"))
+        Mockito.verify(historyRepo, Mockito.never()).getHistoryEntityById(
+            Mockito.anyInt(), Mockito.anyString()
+        )
+        Mockito.verify(provider, Mockito.never()).getRecordedProgram(55)
+    }
+
+    @Test
+    fun resumeRejectsMissingHistoryBeforeRemoteLookup() = runBlocking {
+        assertNull(viewModel.getResumableHistoryProgram(55, "KONOMITV"))
+        assertTrue(viewModel.historyResumeError.value.orEmpty().contains("視聴履歴"))
+        Mockito.verify(provider, Mockito.never()).getRecordedProgram(55)
+    }
+
+    @Test
+    fun resumeObtainsUncachedRecordingOnlyFromMatchingBackendAndRestoresPosition() = runBlocking {
+        val saved = historyEntry()
+        Mockito.doReturn(saved).`when`(historyRepo).getHistoryEntityById(55, "KONOMITV")
+        Mockito.doReturn(remoteProgram()).`when`(provider).getRecordedProgram(55)
+        assertFalse(cacheReady.value)
+        val resumed = viewModel.getResumableHistoryProgram(55, "KONOMITV")
+        assertNotNull(resumed)
+        assertEquals(55, resumed?.id)
+        assertEquals(37.0, resumed?.playbackPosition ?: -1.0, 0.001)
+        assertNull(viewModel.historyResumeError.value)
+        Mockito.verify(provider).getRecordedProgram(55)
+    }
+
+    @Test
+    fun resumeRejectsRemoteIdCollisionEvenWithMatchingOwnerHistory() = runBlocking {
+        Mockito.doReturn(historyEntry()).`when`(historyRepo)
+            .getHistoryEntityById(55, "KONOMITV")
+        Mockito.doReturn(remoteProgram(999)).`when`(provider).getRecordedProgram(55)
+        assertNull(viewModel.getResumableHistoryProgram(55, "KONOMITV"))
+        assertTrue(viewModel.historyResumeError.value.orEmpty().contains("録画詳細"))
+    }
+
+    @Test
+    fun resumeRejectsInFlightRecordingWhenCacheGenerationChanges() = runBlocking {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        Mockito.doReturn(historyEntry()).`when`(historyRepo)
+            .getHistoryEntityById(55, "KONOMITV")
+        Mockito.doAnswer {
+            entered.countDown()
+            check(release.await(15, TimeUnit.SECONDS))
+            remoteProgram()
+        }.`when`(provider).getRecordedProgram(55)
+        try {
+            val pending = async(Dispatchers.Default) {
+                viewModel.getResumableHistoryProgram(55, "KONOMITV")
+            }
+            assertTrue("network lookup not entered", entered.await(15, TimeUnit.SECONDS))
+            ownerGeneration.value = 1L
+            release.countDown()
+            assertNull(withTimeout(10_000L) { pending.await() })
+            assertTrue(viewModel.historyResumeError.value.orEmpty().contains("変更"))
+        } finally { release.countDown() }
     }
 
 }
