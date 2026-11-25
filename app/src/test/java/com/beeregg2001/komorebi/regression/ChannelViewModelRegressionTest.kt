@@ -213,6 +213,16 @@ class ChannelViewModelRegressionTest {
         val backend = MutableStateFlow("KONOMITV")
         val vm = viewModel(live, backend)
         vm.stopPolling()
+        // The backend collector starts on Dispatchers.Default in this test.
+        // Establish its actual initial observation before changing the backend;
+        // otherwise "EDCB" may be the first value it sees, not a transition.
+        val observedField = ChannelViewModel::class.java.getDeclaredField("observedBackend")
+        observedField.isAccessible = true
+        withTimeout(10_000L) {
+            while (observedField.get(vm) != "KONOMITV") {
+                kotlinx.coroutines.delay(10L)
+            }
+        }
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         val calls = AtomicInteger()
