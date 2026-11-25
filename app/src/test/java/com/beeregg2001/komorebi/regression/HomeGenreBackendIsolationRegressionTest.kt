@@ -21,6 +21,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -83,7 +84,7 @@ class HomeGenreBackendIsolationRegressionTest {
         Mockito.`when`(settings.homePickupGenre).thenReturn(flowOf("アニメ"))
         Mockito.`when`(settings.homePickupTime).thenReturn(flowOf(slot))
         Mockito.`when`(settings.excludePaidBroadcasts).thenReturn(flowOf("OFF"))
-        Mockito.`when`(settings.favoriteBaseballTeams).thenReturn(flowOf("[]"))
+        Mockito.`when`(settings.favoriteBaseballTeams).thenReturn(flowOf("[\\\"巨人\\\"]"))
         val history = Mockito.mock(WatchHistoryRepository::class.java)
         Mockito.`when`(history.getOwnedLocalWatchHistory())
             .thenReturn(flowOf("KONOMITV" to emptyList()))
@@ -107,8 +108,10 @@ class HomeGenreBackendIsolationRegressionTest {
         val updater = Mockito.mock(AppUpdater::class.java)
         Mockito.`when`(updater.updateState)
             .thenReturn(MutableStateFlow<UpdateState>(UpdateState.Idle))
+        val live = Mockito.mock(LiveProvider::class.java)
+        runBlocking { Mockito.doReturn("baseball-logo").`when`(live).getChannelLogoUrl("channel-1") }
         vm = HomeViewModel(
-            Mockito.mock(LiveProvider::class.java),
+            live,
             Mockito.mock(KonomiRepository::class.java),
             epg, settings,
             Mockito.mock(LastChannelRepository::class.java),
@@ -154,4 +157,49 @@ class HomeGenreBackendIsolationRegressionTest {
         withTimeout(15_000L) { job.join() }
         assertTrue("old backend's results leaked after switch", vm.genrePickupPrograms.value.isEmpty())
     }
+    private fun baseballTomorrow() {
+        val now = OffsetDateTime.now()
+        val base = now.withHour(4).withMinute(0).withSecond(0).withNano(0).let {
+            if (now.hour < 4) it.minusDays(1) else it
+        }
+        val tomorrow = base.plusDays(1).plusHours(6)
+        program = program.copy(
+            id = "baseball-tomorrow", title = "巨人 vs 阪神 生中継",
+            description = "巨人公式戦", genres = listOf(EpgGenre("スポーツ", "野球")),
+            start_time = tomorrow.toString(), end_time = tomorrow.plusHours(3).toString()
+        )
+    }
+
+    @Test
+    fun dateChangedWhileEpgFetchIsBlockedUsesLatestDateWhenPublishingBaseball() = runBlocking {
+        baseballTomorrow()
+        withTimeout(10_000L) { vm.favoriteBaseballTeams.first { "巨人" in it } }
+        val job = startAndGetJob()
+        assertTrue(entered.await(15, TimeUnit.SECONDS))
+        vm.updateBaseballDateOffset(1)
+        release.countDown()
+        withTimeout(15_000L) { job.join() }
+        assertEquals(1, vm.baseballDateOffset.value)
+        val items = vm.favoriteBaseballGames.value
+        assertEquals(listOf("巨人"), items.map { it.first })
+        assertEquals(listOf("baseball-tomorrow"), items.single().second.map { it.program.id })
+    }
+
+    @Test
+    fun changingDateAfterFirstFetchReusesCachedBaseballProgramWithoutOldDayLeak() = runBlocking {
+        baseballTomorrow()
+        withTimeout(10_000L) { vm.favoriteBaseballTeams.first { "巨人" in it } }
+        val job = startAndGetJob()
+        assertTrue(entered.await(15, TimeUnit.SECONDS))
+        release.countDown()
+        withTimeout(15_000L) { job.join() }
+        assertTrue("today has no fixture game", vm.favoriteBaseballGames.value.isEmpty())
+        vm.updateBaseballDateOffset(1)
+        withTimeout(10_000L) { vm.favoriteBaseballGames.first { it.any { pair -> pair.first == "巨人" } } }
+        assertEquals("baseball-tomorrow", vm.favoriteBaseballGames.value.single().second.single().program.id)
+        vm.updateBaseballDateOffset(0)
+        withTimeout(10_000L) { vm.favoriteBaseballGames.first { it.isEmpty() } }
+        assertEquals(0, vm.baseballDateOffset.value)
+    }
+
 }
