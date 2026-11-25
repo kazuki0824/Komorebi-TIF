@@ -190,4 +190,73 @@ class RecordSyncBackendTransitionRegressionTest {
         Mockito.verifyNoInteractions(repoMock)
     }
 
+    /** Invokes the actual private epoch-gated completion path in production. */
+    private fun finishDictionary(epoch: Long) {
+        val fn = RecordSyncEngine::class.java.getDeclaredMethod(
+            "finishDictionaryProgress", java.lang.Long.TYPE
+        )
+        fn.isAccessible = true
+        fn.invoke(engine, epoch)
+    }
+
+    @Test
+    fun obsoleteDictionaryCompletionCannotMarkNewSyncAsFinished() {
+        val state = progressState()
+        val latest = epochCounter().incrementAndGet()
+        state.value = SyncProgress(
+            isSyncing = true, message = "シリーズ辞書を自動生成中...",
+            current = 3, total = 5
+        )
+        finishDictionary(latest - 1L)
+        assertTrue(state.value.isSyncing)
+        assertEquals(3, state.value.current)
+        assertEquals("シリーズ辞書を自動生成中...", state.value.message)
+    }
+
+    @Test
+    fun currentDictionaryCompletionMayClearOnlyItsOwnProgress() {
+        val state = progressState()
+        val latest = epochCounter().incrementAndGet()
+        state.value = SyncProgress(
+            isSyncing = true, message = "シリーズ辞書を準備中...",
+            current = 5, total = 5
+        )
+        finishDictionary(latest)
+        assertFalse(state.value.isSyncing)
+        assertNull(state.value.error)
+    }
+
+    @Test
+    fun backendSwitchAdvancesDictionaryEpochSoPreviousWorkerCannotResetNewMessage() = runBlocking {
+        val state = progressState()
+        val oldEpoch = epochCounter().get()
+        engine.switchBackend { }
+        assertTrue(epochCounter().get() > oldEpoch)
+        state.value = SyncProgress(isSyncing = true, message = "シリーズ辞書を準備中...", current = 9)
+        finishDictionary(oldEpoch)
+        assertTrue(state.value.isSyncing)
+        assertEquals(9, state.value.current)
+    }
+
+    @Test
+    fun clearDatabaseAndSmartSyncAreBothRejectedWhileBackendTransitionIsActive() = runBlocking {
+        val recordProvider = Mockito.mock(RecordProvider::class.java)
+        val flag = RecordSyncEngine::class.java.getDeclaredField("switchingBackend")
+        flag.isAccessible = true
+        flag.setBoolean(engine, true)
+        db.syncMetaDao().upsert(
+            SyncMetaEntity(id = 1, lastSyncedPage = 18,
+                lastSyncedAt = 44L, isInitialBuildCompleted = true)
+        )
+        try {
+            engine.clearDatabase()
+            engine.smartSync()
+            val meta = db.syncMetaDao().getSyncMeta()
+            assertEquals(18, meta?.lastSyncedPage)
+            assertEquals(true, meta?.isInitialBuildCompleted)
+        } finally {
+            flag.setBoolean(engine, false)
+        }
+    }
+
 }
