@@ -16,6 +16,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -224,6 +226,77 @@ class EpgViewModelGenerationRegressionTest {
         withTimeout(10_000L) { request.join() }
         assertTrue("BS failure must not leave previous GR Success",
             viewModel.uiState is com.beeregg2001.komorebi.viewmodel.EpgUiState.Error)
+    }
+
+    @Test
+    fun preloadSearchRangeIncludesLastBroadcastDayFourAmBoundary() {
+        val fn = EpgViewModel::class.java.getDeclaredMethod(
+            "epgRangeEnd", OffsetDateTime::class.java, String::class.java
+        )
+        fn.isAccessible = true
+        val nearMidnight = OffsetDateTime.parse("2030-01-01T23:30:00+09:00")
+        val end = fn.invoke(viewModel, nearMidnight, "KONOMITV") as OffsetDateTime
+        assertEquals(nearMidnight.toLocalDate().plusDays(7), end.toLocalDate())
+        assertEquals(4, end.hour)
+        assertFalse(end.isBefore(nearMidnight.plusDays(7)))
+
+        val shortlyAfterFour = OffsetDateTime.parse("2030-01-01T04:30:00+09:00")
+        val second = fn.invoke(viewModel, shortlyAfterFour, "EDCB") as OffsetDateTime
+        assertEquals(shortlyAfterFour.toLocalDate().plusDays(7), second.toLocalDate())
+        assertEquals(4, second.hour)
+        assertFalse(second.isBefore(shortlyAfterFour.plusDays(7)))
+    }
+
+    @Test
+    fun explicitPreloadFiltersInvalidTypesWithoutShrinkingValidBroadcastSet() = runBlocking {
+        val now = OffsetDateTime.now()
+        Mockito.doReturn(Unit).`when`(repository).fetchAndCacheEpgDataSilently(
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.anyString() ?: "GR"
+        )
+        viewModel.preloadEpgDataForSearch(listOf("GR", "BS", "UNSUPPORTED"))
+        val field = EpgViewModel::class.java.getDeclaredField("preloadJob")
+        field.isAccessible = true
+        withTimeout(10_000L) { (field.get(viewModel) as Job).join() }
+        Mockito.verify(repository, Mockito.times(2)).fetchAndCacheEpgDataSilently(
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.anyString() ?: "GR"
+        )
+        Mockito.verify(repository, Mockito.never()).fetchAndCacheEpgDataSilently(
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.eq("UNSUPPORTED") ?: "UNSUPPORTED"
+        )
+    }
+
+    @Test
+    fun newerInteractiveSearchCannotBeOverwrittenByOlderNetworkReply() = runBlocking {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val oldItem = searchItem()
+        val newItem = searchItem()
+        Mockito.doAnswer {
+            entered.countDown()
+            check(release.await(15, TimeUnit.SECONDS))
+            listOf(oldItem)
+        }.`when`(repository).searchFuturePrograms("older", null, null, false, null)
+        Mockito.doReturn(listOf(newItem)).`when`(repository)
+            .searchFuturePrograms("newer", null, null, false, null)
+        try {
+            viewModel.executeSearch("older")
+            assertTrue("older search did not start", entered.await(15, TimeUnit.SECONDS))
+            viewModel.executeSearch("newer")
+            withTimeout(10_000L) {
+                viewModel.searchResults.first { it.singleOrNull()?.program === newItem.program }
+            }
+            release.countDown()
+            kotlinx.coroutines.delay(150L)
+            assertSame(newItem.program, viewModel.searchResults.value.single().program)
+            assertEquals("newer", viewModel.activeSearchQuery.value)
+            assertFalse(viewModel.isSearching.value)
+        } finally { release.countDown() }
     }
 
 }
