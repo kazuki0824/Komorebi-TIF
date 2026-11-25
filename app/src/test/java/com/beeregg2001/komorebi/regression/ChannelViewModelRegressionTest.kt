@@ -3,6 +3,10 @@ package com.beeregg2001.komorebi.regression
 import androidx.lifecycle.viewModelScope
 import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.model.ChannelApiResponse
+import com.beeregg2001.komorebi.data.model.Channel
+import com.beeregg2001.komorebi.data.model.RecordedProgram
+import com.beeregg2001.komorebi.data.model.RecordedVideo
+import com.beeregg2001.komorebi.data.local.entity.WatchHistoryEntity
 import com.beeregg2001.komorebi.data.repository.LiveProvider
 import com.beeregg2001.komorebi.data.repository.RecordProvider
 import com.beeregg2001.komorebi.data.repository.WatchHistoryRepository
@@ -189,6 +193,119 @@ class ChannelViewModelRegressionTest {
             assertEquals(0x1234L, channel.transportStreamId)
             assertEquals(1234L, channel.networkId)
             assertEquals(5678L, channel.serviceId)
+        } finally {
+            vm.stopPolling()
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    private fun networkChannel(id: String) = Channel(
+        id = id, displayChannelId = id, name = id, channelNumber = "101",
+        networkId = 11L, serviceId = 55L, transportStreamId = 4L,
+        type = "GR", isWatchable = true, isDisplay = true,
+        programPresent = null, programFollowing = null, remocon_Id = 1
+    )
+
+    @Test
+    fun oldSuccessfulFetchMustNotOverwriteNewBackendChannels() = runBlocking {
+        Dispatchers.setMain(Dispatchers.Default)
+        val live = Mockito.mock(LiveProvider::class.java)
+        val backend = MutableStateFlow("KONOMITV")
+        val vm = viewModel(live, backend)
+        vm.stopPolling()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val calls = AtomicInteger()
+        Mockito.doAnswer {
+            if (calls.incrementAndGet() == 1) {
+                entered.countDown()
+                check(release.await(15, TimeUnit.SECONDS)) { "old provider stalled" }
+                ChannelApiResponse(terrestrial = listOf(networkChannel("old-kon-101")))
+            } else ChannelApiResponse(terrestrial = listOf(networkChannel("new-edcb-101")))
+        }.`when`(live).getChannels()
+        try {
+            vm.fetchChannels(force = true)
+            assertTrue(entered.await(15, TimeUnit.SECONDS))
+            backend.value = "EDCB"
+            withTimeout(10_000L) {
+                vm.groupedChannels.first { it["GR"]?.singleOrNull()?.id == "new-edcb-101" }
+            }
+            release.countDown()
+            kotlinx.coroutines.delay(150L)
+            assertEquals("new-edcb-101", vm.groupedChannels.value["GR"]?.single()?.id)
+            assertFalse(vm.connectionError.value)
+            assertFalse(vm.isLoading.value)
+        } finally {
+            release.countDown()
+            vm.stopPolling()
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun laterForcedFetchWinsEvenIfEarlierSuccessCompletesLast() = runBlocking {
+        Dispatchers.setMain(Dispatchers.Default)
+        val live = Mockito.mock(LiveProvider::class.java)
+        val vm = viewModel(live, MutableStateFlow("EDCB"))
+        vm.stopPolling()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val calls = AtomicInteger()
+        Mockito.doAnswer {
+            if (calls.incrementAndGet() == 1) {
+                entered.countDown()
+                check(release.await(15, TimeUnit.SECONDS))
+                ChannelApiResponse(terrestrial = listOf(networkChannel("older-request")))
+            } else ChannelApiResponse(terrestrial = listOf(networkChannel("later-request")))
+        }.`when`(live).getChannels()
+        try {
+            vm.fetchChannels(force = true)
+            assertTrue(entered.await(15, TimeUnit.SECONDS))
+            vm.fetchChannels(force = true)
+            withTimeout(10_000L) {
+                vm.groupedChannels.first { it["GR"]?.singleOrNull()?.id == "later-request" }
+            }
+            release.countDown()
+            kotlinx.coroutines.delay(150L)
+            assertEquals("later-request", vm.groupedChannels.value["GR"]?.single()?.id)
+            assertFalse(vm.isLoading.value)
+        } finally {
+            release.countDown()
+            vm.stopPolling()
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun savedRecordingHistoryIsAssignedExplicitlyToCurrentBackend() = runBlocking {
+        val history = Mockito.mock(WatchHistoryRepository::class.java)
+        val backend = MutableStateFlow("EDCB")
+        val live = Mockito.mock(LiveProvider::class.java)
+        Mockito.doReturn(ChannelApiResponse()).`when`(live).getChannels()
+        val vm = ChannelViewModel(
+            live, Mockito.mock(RecordProvider::class.java),
+            history, settings(backend)
+        )
+        val program = RecordedProgram(
+            id = 77, title = "source-bound recording", description = "",
+            startTime = "2030-01-01T00:00:00+09:00",
+            endTime = "2030-01-01T01:00:00+09:00",
+            duration = 3600.0, isPartiallyRecorded = false,
+            recordedVideo = RecordedVideo(
+                id = 77, status = "Recorded", filePath = "recorded.ts",
+                recordingStartTime = "2030-01-01T00:00:00+09:00",
+                recordingEndTime = "2030-01-01T01:00:00+09:00",
+                duration = 3600.0, containerFormat = "ts",
+                videoCodec = "H264", audioCodec = "AAC"
+            )
+        )
+        try {
+            vm.saveToHistory(program)
+            Mockito.verify(history, Mockito.timeout(10_000L)).saveToLocalHistory(
+                Mockito.argThat<WatchHistoryEntity> { it.id == 77 && it.title == "source-bound recording" }
+                    ?: WatchHistoryEntity(0, "", "", null, "", "", 0.0, 0),
+                Mockito.eq("EDCB") ?: "EDCB"
+            )
         } finally {
             vm.stopPolling()
             vm.viewModelScope.cancel()
