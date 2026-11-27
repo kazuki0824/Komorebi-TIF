@@ -459,4 +459,50 @@ class RecordSyncFullSyncOwnerRegressionTest {
         assertNull(sync.syncProgress.value.error)
     }
 
+
+    @Test
+    fun backendSwitchAfterSmartSyncButBeforeDictionaryLaunchRejectsOldJob() = runBlocking {
+        prefs().edit().putString("backend", "EDCB").putBoolean("pending", false).commit()
+        Mockito.doReturn(RecordedApiResponse(1, listOf(remoteRecord(77, "known show"))))
+            .`when`(provider).getRecordedPrograms(1)
+        val sync = engine()
+        val initialized = RecordSyncEngine::class.java.getDeclaredField("ownerInitialized")
+            .apply { isAccessible = true }.get(sync) as CompletableDeferred<*>
+        withTimeout(10_000L) { initialized.await() }
+        assertTrue(sync.recordCacheReady.value)
+        val lockField = RecordSyncEngine::class.java.getDeclaredField("syncMutex")
+            .apply { isAccessible = true }
+        val original = lockField.get(sync) as Mutex
+        val postGate = CompletableDeferred<Unit>()
+        val releaseGate = CompletableDeferred<Unit>()
+        val calls = AtomicInteger()
+        lockField.set(sync, object : Mutex by original {
+            override suspend fun lock(owner: Any?) {
+                if (calls.incrementAndGet() == 2) {
+                    postGate.complete(Unit)
+                    releaseGate.await()
+                }
+                original.lock(owner)
+            }
+        })
+        try {
+            val smart = async(Dispatchers.IO) { sync.smartSync() }
+            withTimeout(15_000L) { postGate.await() }
+            val switching = async(Dispatchers.IO) {
+                sync.switchBackend { selection.value = "KONOMITV" }
+            }
+            val flag = RecordSyncEngine::class.java.getDeclaredField("switchingBackend")
+                .apply { isAccessible = true }
+            withTimeout(15_000L) { while (!flag.getBoolean(sync)) delay(10) }
+            releaseGate.complete(Unit)
+            withTimeout(15_000L) { smart.await(); switching.await() }
+            val oldJob = RecordSyncEngine::class.java.getDeclaredField("dictionaryJob")
+                .apply { isAccessible = true }.get(sync) as? kotlinx.coroutines.Job
+            assertTrue(oldJob == null || !oldJob.isActive)
+            assertFalse(sync.recordCacheReady.value)
+        } finally {
+            releaseGate.complete(Unit)
+        }
+    }
+
 }
