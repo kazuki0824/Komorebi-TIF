@@ -1,6 +1,11 @@
 package com.beeregg2001.komorebi.regression
 
 import android.content.Context
+import android.content.ContextWrapper
+import android.content.SharedPreferences
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeout
+import java.util.concurrent.atomic.AtomicInteger
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.beeregg2001.komorebi.data.SettingsRepository
@@ -209,6 +214,64 @@ class RecordSyncFullSyncOwnerRegressionTest {
             release.countDown()
             activeDictionary.cancel()
         }
+    }
+
+
+    private fun engineWithFailingOwnerCommit(failAt: Int): RecordSyncEngine {
+        val original = prefs()
+        val commitCalls = AtomicInteger()
+        val intercepted = object : SharedPreferences by original {
+            override fun edit(): SharedPreferences.Editor {
+                val underlying = original.edit()
+                return object : SharedPreferences.Editor by underlying {
+                    override fun putString(key: String?, value: String?): SharedPreferences.Editor {
+                        underlying.putString(key, value)
+                        return this
+                    }
+                    override fun putBoolean(key: String?, value: Boolean): SharedPreferences.Editor {
+                        underlying.putBoolean(key, value)
+                        return this
+                    }
+                    override fun commit(): Boolean {
+                        if (commitCalls.incrementAndGet() == failAt) return false
+                        return underlying.commit()
+                    }
+                }
+            }
+        }
+        val wrapped = object : ContextWrapper(context) {
+            override fun getSharedPreferences(name: String?, mode: Int): SharedPreferences {
+                return if (name == "record_cache_backend_owner") intercepted
+                else super.getSharedPreferences(name, mode)
+            }
+        }
+        return RecordSyncEngine(provider, db, settings, db.aiSeriesDictionaryDao(), wrapped)
+            .also { engines.add(it) }
+    }
+
+    @Test
+    fun failurePersistingOwnerAfterInitialClearNeverPublishesCache() = runBlocking {
+        val sync = engineWithFailingOwnerCommit(1)
+        sync.syncAllRecords(forceFullSync = false)
+        assertFalse(sync.recordCacheReady.value)
+        assertNotNull(sync.syncProgress.value.error)
+        assertEquals(0, db.syncMetaDao().getSyncMeta()?.lastSyncedPage)
+        assertFalse(db.syncMetaDao().getSyncMeta()?.isInitialBuildCompleted == true)
+        assertNull(prefs().getString("backend", null))
+    }
+
+    @Test
+    fun failurePersistingOwnerImmediatelyBeforePublicationMustRemainUnreadyOnRestart() = runBlocking {
+        val sync = engineWithFailingOwnerCommit(2)
+        sync.syncAllRecords(forceFullSync = false)
+        assertFalse(sync.recordCacheReady.value)
+        assertNotNull(sync.syncProgress.value.error)
+        val rebooted = engine()
+        val initialized = RecordSyncEngine::class.java.getDeclaredField("ownerInitialized")
+            .apply { isAccessible = true }.get(rebooted) as CompletableDeferred<*>
+        withTimeout(10_000L) { initialized.await() }
+        assertFalse("commit failure must never appear as trusted after restart",
+            rebooted.recordCacheReady.value)
     }
 
 }
