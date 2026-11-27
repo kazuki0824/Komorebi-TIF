@@ -142,7 +142,7 @@ jobs:
               "ChannelListOverlayUiRegressionTest": 2,
               "DatabaseMigrationRegressionTest": 3,
               "DtvProviderProxyRoutingRegressionTest": 7,
-              "SettingsBackendFailureRegressionTest": 10,
+              "SettingsBackendFailureRegressionTest": 11,
               "SettingScreenBackendWriteUiRegressionTest": 1,
               "EpgInFlightBackendRegressionTest": 9,
               "EpgFileCacheRegressionTest": 10,
