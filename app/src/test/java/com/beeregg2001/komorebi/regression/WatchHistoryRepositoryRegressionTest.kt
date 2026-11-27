@@ -15,6 +15,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.runBlocking
@@ -116,26 +119,24 @@ class WatchHistoryRepositoryRegressionTest {
     fun continuousHistorySubscriptionNeverCombinesNewOwnerWithOldRows() = runBlocking {
         repository.saveToLocalHistory(history(42, "Konomi title"), "KONOMITV")
         repository.saveToLocalHistory(history(42, "EDCB title"), "EDCB")
-        val observations = async(Dispatchers.Default) {
-            withTimeout(10_000L) { repository.getOwnedLocalWatchHistory().take(2).toList() }
+        val observed = Channel<Pair<String, List<WatchHistoryEntity>>>(Channel.UNLIMITED)
+        val subscription = launch(Dispatchers.Default) {
+            repository.getOwnedLocalWatchHistory().collect { observed.send(it) }
         }
-        // Wait until the original owner emission has been observed before switching.
-        withTimeout(10_000L) {
-            while (true) {
-                // Observe subscription readiness through a separate owner read.
-                if (selectedBackend.value == "KONOMITV") break
-                kotlinx.coroutines.yield()
-            }
+        try {
+            val first = withTimeout(10_000L) { observed.receive() }
+            assertEquals("KONOMITV", first.first)
+            assertEquals(listOf("Konomi title"), first.second.map { it.title })
+            selectedBackend.value = "EDCB"
+            val second = withTimeout(10_000L) { observed.receive() }
+            assertEquals("EDCB", second.first)
+            assertEquals(listOf("EDCB title"), second.second.map { it.title })
+            // An old-owner row must never be published with the new owner.
+            assertTrue(second.second.none { it.title == "Konomi title" })
+        } finally {
+            subscription.cancelAndJoin()
+            observed.close()
         }
-        // Give the collecting coroutine an opportunity to register with Room.
-        kotlinx.coroutines.delay(100)
-        selectedBackend.value = "EDCB"
-        val emissions = observations.await()
-        assertEquals(2, emissions.size)
-        assertEquals("KONOMITV" to listOf("Konomi title"),
-            emissions[0].first to emissions[0].second.map { it.title })
-        assertEquals("EDCB" to listOf("EDCB title"),
-            emissions[1].first to emissions[1].second.map { it.title })
     }
 
     @Test
