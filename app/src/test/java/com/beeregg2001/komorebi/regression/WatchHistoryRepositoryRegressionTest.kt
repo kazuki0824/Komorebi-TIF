@@ -35,7 +35,6 @@ import com.beeregg2001.komorebi.data.repository.LastChannelRepository
 import com.beeregg2001.komorebi.util.AppUpdater
 import com.beeregg2001.komorebi.util.UpdateState
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.runBlocking
