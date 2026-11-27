@@ -276,4 +276,69 @@ class MainRootScreenStateUiRegressionTest {
         assertEquals(1, requireNotNull(exposedEpoch.get()).intValue)
         Mockito.verify(home).saveLastChannel(second)
     }
+
+    @Test
+    fun backendChangeClearsSelectedLiveChannelAndLastChannelIdentity() {
+        val old = channel("KONOMITV:old-live")
+        state.selectedChannel = old
+        state.lastSelectedChannelId = old.id
+        state.isMiniPlayerMode = true
+        render()
+        compose.waitUntil(10_000L) { renderedRoot.get() != null }
+        compose.runOnIdle { backend.value = "EDCB" }
+        compose.waitUntil(10_000L) { state.selectedChannel == null }
+        assertNull(state.lastSelectedChannelId)
+        assertFalse(state.isMiniPlayerMode)
+    }
+
+    @Test
+    fun backendChangeRetainsIndependentSmbItemAndMiniPlayerSelection() {
+        val smb = SmbItem(
+            name = "independent.mkv", path = "smb://media/independent.mkv",
+            isDirectory = false, size = 512L, lastModified = 125000L
+        )
+        state.selectedSmbItem = smb
+        state.isMiniPlayerMode = true
+        render()
+        compose.waitUntil(10_000L) { smbProgram.get() != null }
+        compose.runOnIdle { backend.value = "EDCB" }
+        compose.waitForIdle()
+        assertSame(smb, state.selectedSmbItem)
+        assertEquals("smb://media/independent.mkv", smbProgram.get()?.recordedVideo?.filePath)
+        assertTrue(state.isMiniPlayerMode)
+        assertNull(state.selectedChannel)
+    }
+
+    @Test
+    fun smbAdapterRebuildsFromSelectedItemNotNonemptyRecordedList() {
+        Mockito.`when`(recordVm.recentRecordings).thenReturn(
+            MutableStateFlow(listOf(recorded()))
+        )
+        val first = SmbItem(
+            name = "first.mkv", path = "smb://media/first.mkv",
+            isDirectory = false, size = 512L, lastModified = 125000L
+        )
+        val second = SmbItem(
+            name = "next.ts", path = "smb://media/next.ts",
+            isDirectory = false, size = 999L, lastModified = 345000L
+        )
+        state.selectedSmbItem = first
+        render()
+        compose.waitUntil(10_000L) { smbProgram.get()?.title == "first.mkv" }
+        assertEquals(java.time.Instant.ofEpochMilli(125000L).toString(), smbProgram.get()?.startTime)
+        compose.runOnIdle { state.selectedSmbItem = second }
+        compose.waitUntil(10_000L) { smbProgram.get()?.title == "next.ts" }
+        val model = requireNotNull(smbProgram.get())
+        assertEquals(second.path.hashCode(), model.id)
+        assertEquals(second.path, model.recordedVideo.filePath)
+        assertEquals("next.ts", model.title)
+        assertEquals("ts", model.recordedVideo.containerFormat)
+        assertEquals(java.time.Instant.ofEpochMilli(345000L).toString(), model.startTime)
+        assertEquals(model.startTime, model.endTime)
+        assertEquals(0.0, model.duration, 0.0)
+        assertEquals(0.0, model.recordedVideo.duration, 0.0)
+        assertEquals(0.0, model.recordedVideo.duration, 0.0)
+        assertFalse(model.description.contains("previous backend recording"))
+    }
+
 }
