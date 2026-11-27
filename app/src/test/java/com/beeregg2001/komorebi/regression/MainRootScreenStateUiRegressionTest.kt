@@ -403,7 +403,7 @@ class MainRootScreenStateUiRegressionTest {
     }
 
     @Test
-    fun startupDisabledNeverAutoselectsEvenWhenChannelsExist() {
+    fun startupDisabledNeverAutoselectsEvenWhenChannelsExist(): Unit = runBlocking {
         startup.value = "OFF"
         channels.value = mapOf("GR" to listOf(channel("available-first")))
         render()
