@@ -372,4 +372,28 @@ class ChannelViewModelRegressionTest {
         }
     }
 
+
+    @Test
+    fun switchingBackendInvalidatesLogoCacheEvenWithIdenticalChannelId() = runBlocking {
+        val live = Mockito.mock(LiveProvider::class.java)
+        Mockito.doReturn(ChannelApiResponse()).`when`(live).getChannels()
+        val backend = MutableStateFlow("KONOMITV")
+        val url = java.util.concurrent.atomic.AtomicReference("https://old.example/logo.png")
+        Mockito.doAnswer { url.get() }.`when`(live).getChannelLogoUrl("shared-101")
+        val vm = viewModel(live, backend)
+        try {
+            vm.stopPolling()
+            awaitObservedBackend(vm, "KONOMITV")
+            assertEquals("https://old.example/logo.png", vm.getChannelLogoUrl("shared-101"))
+            url.set("https://new.example/logo.png")
+            backend.value = "EDCB"
+            awaitObservedBackend(vm, "EDCB")
+            assertEquals("https://new.example/logo.png", vm.getChannelLogoUrl("shared-101"))
+            Mockito.verify(live, Mockito.times(2)).getChannelLogoUrl("shared-101")
+        } finally {
+            vm.stopPolling()
+            vm.viewModelScope.cancel()
+        }
+    }
+
 }
