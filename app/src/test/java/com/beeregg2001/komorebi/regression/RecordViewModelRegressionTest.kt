@@ -2,6 +2,12 @@ package com.beeregg2001.komorebi.regression
 
 import android.content.Context
 import androidx.lifecycle.viewModelScope
+import androidx.paging.AsyncPagingDataDiffer
+import androidx.paging.PagingSource
+import androidx.paging.PagingState
+import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.ListUpdateCallback
+import kotlinx.coroutines.flow.collectLatest
 import androidx.test.core.app.ApplicationProvider
 import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.local.dao.RecordedProgramDao
@@ -432,6 +438,62 @@ class RecordViewModelRegressionTest {
             withTimeout(10_000L) { viewModel.groupedSeries.first { it.isEmpty() } }
             assertTrue(viewModel.groupedChannels.value.isEmpty())
         } finally { release.countDown() }
+    }
+
+
+    @Test
+    fun onePagingSubscriptionPublishesRowsOnlyWhileCacheOwnershipIsReady() = runBlocking {
+        val ownedRow = RecordedProgramEntity(
+            id = 88, title = "owned paging row",
+            startTime = "2030-01-01T00:00:00+09:00", endTime = "2030-01-01T01:00:00+09:00",
+            videoDuration = 3600.0, hasKeyFrames = true, isRecording = false,
+            playbackPosition = 0.0, channelId = null, channelType = null,
+            channelName = null, genres = null
+        )
+        Mockito.doAnswer {
+            object : PagingSource<Int, RecordedProgramEntity>() {
+                override suspend fun load(params: LoadParams<Int>): LoadResult<Int, RecordedProgramEntity> =
+                    LoadResult.Page(data = listOf(ownedRow), prevKey = null, nextKey = null)
+                override fun getRefreshKey(state: PagingState<Int, RecordedProgramEntity>): Int? = null
+            }
+        }.`when`(programDaoUnderTest).getAll_DateDesc()
+        val updates = object : ListUpdateCallback {
+            override fun onInserted(position: Int, count: Int) {}
+            override fun onRemoved(position: Int, count: Int) {}
+            override fun onMoved(fromPosition: Int, toPosition: Int) {}
+            override fun onChanged(position: Int, count: Int, payload: Any?) {}
+        }
+        val differ = AsyncPagingDataDiffer(
+            diffCallback = object : DiffUtil.ItemCallback<RecordedProgram>() {
+                override fun areItemsTheSame(oldItem: RecordedProgram, newItem: RecordedProgram) =
+                    oldItem.id == newItem.id
+                override fun areContentsTheSame(oldItem: RecordedProgram, newItem: RecordedProgram) =
+                    oldItem == newItem
+            },
+            updateCallback = updates, mainDispatcher = Dispatchers.Main,
+            workerDispatcher = Dispatchers.Default
+        )
+        val subscription = launch(Dispatchers.Main.immediate) {
+            viewModel.pagedRecordings.collectLatest { differ.submitData(it) }
+        }
+        try {
+            assertEquals(0, differ.itemCount)
+            cacheReady.value = true
+            withTimeout(15_000L) {
+                while (differ.snapshot().items.none { it.id == 88 })
+                    kotlinx.coroutines.delay(20)
+            }
+            assertEquals(listOf(88), differ.snapshot().items.map { it.id })
+            cacheReady.value = false
+            withTimeout(15_000L) {
+                while (differ.snapshot().items.isNotEmpty())
+                    kotlinx.coroutines.delay(20)
+            }
+            assertTrue(differ.snapshot().items.isEmpty())
+            Mockito.verify(programDaoUnderTest, Mockito.atLeastOnce()).getAll_DateDesc()
+        } finally {
+            subscription.cancel()
+        }
     }
 
 }
