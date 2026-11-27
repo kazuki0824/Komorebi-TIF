@@ -144,4 +144,39 @@ class BackendDataIsolationRegressionTest {
         assertNull(db.backendWatchHistoryDao().findById("KONOMITV", 77))
     }
 
+
+    @Test
+    fun batchUpsertReplacesOnlyMatchingCompositeKeys() = runBlocking {
+        val dao = db.backendWatchHistoryDao()
+        dao.upsertAll(listOf(
+            row("KONOMITV", 42, 10L, "kon-old"),
+            row("EDCB", 42, 20L, "edcb-original"),
+            row("EPGSTATION", 42, 30L, "epg-original")
+        ))
+        dao.upsertAll(listOf(
+            row("KONOMITV", 42, 40L, "kon-replaced"),
+            row("KONOMITV", 43, 50L, "kon-new")
+        ))
+        assertEquals("kon-replaced", dao.findById("KONOMITV", 42)?.payloadJson)
+        assertEquals(40L, dao.findById("KONOMITV", 42)?.watchedAt)
+        assertEquals("kon-new", dao.findById("KONOMITV", 43)?.payloadJson)
+        assertEquals("edcb-original", dao.findById("EDCB", 42)?.payloadJson)
+        assertEquals("epg-original", dao.findById("EPGSTATION", 42)?.payloadJson)
+    }
+
+    @Test
+    fun clearingBackendHistoryDeletesEveryOwnerNotJustKonomi() = runBlocking {
+        val dao = db.backendWatchHistoryDao()
+        dao.upsertAll(listOf(
+            row("KONOMITV", 42, 10L, "kon"),
+            row("EDCB", 42, 20L, "edcb"),
+            row("EPGSTATION", 42, 30L, "epg")
+        ))
+        dao.clearAll()
+        for (owner in listOf("KONOMITV", "EDCB", "EPGSTATION")) {
+            assertNull(dao.findById(owner, 42))
+            assertTrue(dao.observeRecent(owner).first().isEmpty())
+        }
+    }
+
 }
