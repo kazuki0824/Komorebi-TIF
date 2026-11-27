@@ -383,7 +383,7 @@ class RecordSyncBackendTransitionRegressionTest {
             }
             withTimeout(10_000L) { workerCancelled.await() }
             assertEquals(listOf(19), db.recordedProgramDao().getAllIds())
-            assertTrue("switch must join the cancelled dictionary before invalidating Room", worker.isActive)
+            assertFalse("dictionary is cancelled but must not finish until released", worker.isCompleted)
             allowWorkerExit.complete(Unit)
             val error = withTimeout(15_000L) { switching.await() }
             assertTrue(error is IllegalStateException)
