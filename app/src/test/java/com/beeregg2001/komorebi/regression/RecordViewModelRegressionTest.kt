@@ -58,6 +58,8 @@ class RecordViewModelRegressionTest {
     private lateinit var recordedRows: MutableStateFlow<List<RecordedProgramEntity>>
     private lateinit var programDaoUnderTest: RecordedProgramDao
     private lateinit var provider: RecordProvider
+    private lateinit var seriesProvider: EpgStationRecordRepository
+    private lateinit var selectedSettings: SettingsRepository
     private lateinit var sync: RecordSyncEngine
     private lateinit var cacheReady: MutableStateFlow<Boolean>
     private lateinit var syncState: MutableStateFlow<SyncProgress>
@@ -78,9 +80,12 @@ class RecordViewModelRegressionTest {
         Mockito.doReturn(false).`when`(sync).isInitialBuildCompleted()
 
         val settings = Mockito.mock(SettingsRepository::class.java)
+        selectedSettings = settings
         ownerBackend = MutableStateFlow("KONOMITV")
         Mockito.`when`(settings.backendType).thenReturn(ownerBackend)
         Mockito.`when`(settings.defaultRecordListView).thenReturn(flowOf("LIST"))
+        Mockito.`when`(settings.epgStationIp).thenReturn(flowOf("127.0.0.1"))
+        Mockito.`when`(settings.epgStationPort).thenReturn(flowOf("8888"))
         val dao = Mockito.mock(RecordedProgramDao::class.java)
         programDaoUnderTest = dao
         recordedRows = MutableStateFlow(emptyList())
@@ -88,9 +93,10 @@ class RecordViewModelRegressionTest {
         Mockito.doReturn(emptyList<SeriesProjection>()).`when`(dao).getGroupedSeries()
         Mockito.doReturn(emptyList<ChannelProjection>()).`when`(dao).getDistinctChannels()
         historyRepo = Mockito.mock(WatchHistoryRepository::class.java)
+        seriesProvider = Mockito.mock(EpgStationRecordRepository::class.java)
         viewModel = RecordViewModel(
             Mockito.mock(LiveProvider::class.java), provider,
-            Mockito.mock(EpgStationRecordRepository::class.java),
+            seriesProvider,
             Mockito.mock(ReserveProvider::class.java),
             historyRepo,
             settings, sync, dao, ApplicationProvider.getApplicationContext<Context>()
@@ -373,6 +379,59 @@ class RecordViewModelRegressionTest {
         } catch (expected: kotlinx.coroutines.CancellationException) {
             assertEquals("request cancelled", expected.message)
         }
+    }
+
+
+    @Test
+    fun classifiedRecordingRowsAreRevokedImmediatelyWhenOwnershipIsLost() = runBlocking {
+        val grouped = SeriesProjection(
+            seriesName = "Owned group", programCount = 3, representativeVideoId = 111,
+            isEpisodic = true, genres = null, directThumbnailUrl = null,
+            apiThumbnailUrl = null, lastAiredAt = "2030-01-01T01:00:00+09:00"
+        )
+        val channel = ChannelProjection("channel-1", "GR", "Owned Channel")
+        Mockito.doReturn(listOf(grouped)).`when`(programDaoUnderTest).getGroupedSeries()
+        Mockito.doReturn(listOf(channel)).`when`(programDaoUnderTest).getDistinctChannels()
+        cacheReady.value = true
+        syncState.value = SyncProgress(isSyncing = false)
+        withTimeout(10_000L) { viewModel.groupedSeries.first { it.isNotEmpty() } }
+        assertTrue(viewModel.groupedChannels.value.isNotEmpty())
+        cacheReady.value = false
+        withTimeout(10_000L) {
+            viewModel.groupedSeries.first { it.isEmpty() }
+        }
+        assertTrue(viewModel.groupedChannels.value.isEmpty())
+    }
+
+    @Test
+    fun delayedEpgstationSeriesReplyCannotRepopulateRevokedRecordingCategories() = runBlocking {
+        ownerBackend.value = "EPGSTATION"
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val grouped = SeriesProjection(
+            seriesName = "Previous EPGStation series", programCount = 2, representativeVideoId = 111,
+            isEpisodic = true, genres = null, directThumbnailUrl = null,
+            apiThumbnailUrl = null, lastAiredAt = null
+        )
+        Mockito.doReturn(listOf(grouped)).`when`(programDaoUnderTest).getGroupedSeries()
+        Mockito.doReturn(listOf(ChannelProjection("old", "GR", "Old channel")))
+            .`when`(programDaoUnderTest).getDistinctChannels()
+        Mockito.doAnswer {
+            started.countDown()
+            check(release.await(15, TimeUnit.SECONDS))
+            null
+        }.`when`(seriesProvider).getSeriesList()
+        try {
+            cacheReady.value = true
+            syncState.value = SyncProgress(isSyncing = false)
+            assertTrue(started.await(15, TimeUnit.SECONDS))
+            cacheReady.value = false
+            ownerGeneration.value += 1
+            ownerBackend.value = "EDCB"
+            release.countDown()
+            withTimeout(10_000L) { viewModel.groupedSeries.first { it.isEmpty() } }
+            assertTrue(viewModel.groupedChannels.value.isEmpty())
+        } finally { release.countDown() }
     }
 
 }
