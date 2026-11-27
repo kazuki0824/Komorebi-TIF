@@ -437,4 +437,26 @@ class RecordSyncFullSyncOwnerRegressionTest {
         }
     }
 
+
+    @Test
+    fun realNonemptyDictionaryWorkerResolvesKnownNewsTitleAndReportsCompletion() = runBlocking {
+        selection.value = "EDCB"
+        prefs().edit().putString("backend", "EDCB").putBoolean("pending", false).commit()
+        Mockito.doAnswer { invocation ->
+            val page = invocation.arguments[0] as Int
+            if (page == 1) RecordedApiResponse(1, listOf(remoteRecord(601, "ニュース")))
+            else RecordedApiResponse(1, emptyList())
+        }.`when`(provider).getRecordedPrograms(Mockito.anyInt(), Mockito.anyInt())
+        val sync = engine()
+        sync.syncAllRecords(forceFullSync = true)
+        awaitDictionaryJob(sync)
+        val dictionary = db.aiSeriesDictionaryDao().getAllDictionary()
+        assertEquals("ニュース・報道",
+            dictionary.single { it.originalTitle == "ニュース" }.normalizedSeriesName)
+        val row = db.recordedProgramDao().getById(601)
+        assertEquals("ニュース・報道", row?.seriesName)
+        assertFalse(sync.syncProgress.value.isSyncing)
+        assertNull(sync.syncProgress.value.error)
+    }
+
 }
