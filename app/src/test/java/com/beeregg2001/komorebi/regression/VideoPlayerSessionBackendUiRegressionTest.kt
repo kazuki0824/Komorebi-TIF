@@ -171,4 +171,23 @@ class VideoPlayerSessionBackendUiRegressionTest {
             Mockito.anyDouble(), Mockito.anyString() ?: "KONOMITV"
         )
     }
+
+    @Test
+    fun stoppingBeforePersistedBackendEmissionNeverSavesUnderTentativeBackend() {
+        confirmed.value = null
+        backend.value = "KONOMITV"
+        val program = recording()
+        render(program)
+        compose.waitUntil(10_000L) { stopCallback.get() != null }
+        compose.runOnIdle { stopCallback.get()!!.invoke(player) }
+        Mockito.verify(vm, Mockito.never()).updateWatchHistory(
+            Mockito.any(RecordedProgram::class.java) ?: program,
+            Mockito.anyDouble(), Mockito.anyString() ?: "KONOMITV"
+        )
+        compose.runOnIdle { confirmed.value = "EDCB" }
+        compose.waitForIdle()
+        compose.runOnIdle { stopCallback.get()!!.invoke(player) }
+        Mockito.verify(vm, Mockito.times(1)).updateWatchHistory(program, 120.0, "EDCB")
+    }
+
 }
