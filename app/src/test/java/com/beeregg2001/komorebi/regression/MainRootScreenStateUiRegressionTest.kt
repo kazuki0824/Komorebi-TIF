@@ -28,6 +28,9 @@ import org.mockito.stubbing.Answer
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.resume
+import kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED
 
 /**
  * Actual MainRootScreen composition and LaunchedEffect branches. Replace only
@@ -339,6 +342,33 @@ class MainRootScreenStateUiRegressionTest {
         assertEquals(0.0, model.recordedVideo.duration, 0.0)
         assertEquals(0.0, model.recordedVideo.duration, 0.0)
         assertFalse(model.description.contains("previous backend recording"))
+    }
+
+
+    @Test
+    fun delayedStartupHistoryMustNotOverrideSubsequentManualLiveSelection() = runBlocking {
+        startup.value = "LAST_WATCHED"
+        val manual = channel("manual-live")
+        val historic = channel("previous-history")
+        channels.value = mapOf("GR" to listOf(manual, historic))
+        val savedLookup = AtomicReference<Continuation<List<String>>?>()
+        Mockito.doAnswer { invocation ->
+            @Suppress("UNCHECKED_CAST")
+            val continuation = invocation.rawArguments.last() as Continuation<List<String>>
+            savedLookup.set(continuation)
+            COROUTINE_SUSPENDED
+        }.`when`(home).recentStartupChannelIds(listOf(manual.id, historic.id))
+        val actions = MutableSharedFlow<AiConciergeAction>(extraBufferCapacity = 1)
+        Mockito.`when`(aiVm.pendingAction).thenReturn(actions)
+        render()
+        compose.waitUntil(10_000L) { savedLookup.get() != null }
+        actions.emit(AiConciergeAction.PlayLive(manual.id))
+        compose.waitUntil(10_000L) { state.selectedChannel?.id == manual.id }
+        savedLookup.get()!!.resume(listOf(historic.id))
+        compose.waitForIdle()
+        assertEquals("manual selection must take precedence over delayed startup", manual.id,
+            state.selectedChannel?.id)
+        assertEquals(manual.id, state.lastSelectedChannelId)
     }
 
 }
