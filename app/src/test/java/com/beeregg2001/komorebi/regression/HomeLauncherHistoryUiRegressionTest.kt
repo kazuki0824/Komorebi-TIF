@@ -551,7 +551,7 @@ class HomeLauncherHistoryUiRegressionTest {
 
 
     @Test
-    fun currentHistoryLookupFailureDisplaysOnceAndDoesNotSelectRecording() {
+    fun currentHistoryLookupFailureDisplaysOnceAndDoesNotSelectRecording(): Unit = runBlocking {
         val reason = MutableStateFlow<String?>("The recording is unavailable")
         Mockito.`when`(records.historyResumeError).thenReturn(reason)
         Mockito.doAnswer {
@@ -573,7 +573,7 @@ class HomeLauncherHistoryUiRegressionTest {
     }
 
     @Test
-    fun staleFailureAfterNewerRecordingSelectionCannotPublishOrConsumeError() {
+    fun staleFailureAfterNewerRecordingSelectionCannotPublishOrConsumeError(): Unit = runBlocking {
         val deferred = AtomicReference<Continuation<RecordedProgram?>?>()
         val reason = MutableStateFlow<String?>(null)
         Mockito.`when`(records.historyResumeError).thenReturn(reason)
