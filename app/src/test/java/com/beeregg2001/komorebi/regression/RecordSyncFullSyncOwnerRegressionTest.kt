@@ -505,4 +505,69 @@ class RecordSyncFullSyncOwnerRegressionTest {
         }
     }
 
+
+    @Test
+    fun realDictionaryWorkerFailureStillExecutesFinalProgressCompletion() = runBlocking {
+        selection.value = "EDCB"
+        prefs().edit().putString("backend", "EDCB").putBoolean("pending", false).commit()
+        Mockito.doAnswer { invocation ->
+            if ((invocation.arguments[0] as Int) == 1)
+                RecordedApiResponse(1, listOf(remoteRecord(603, "ニュース")))
+            else RecordedApiResponse(1, emptyList())
+        }.`when`(provider).getRecordedPrograms(Mockito.anyInt(), Mockito.anyInt())
+        val sql = db.openHelper.writableDatabase
+        sql.execSQL(
+            """CREATE TRIGGER fail_dictionary_insert BEFORE INSERT ON ai_series_dictionary
+               BEGIN SELECT RAISE(ABORT, 'injected dictionary store failure'); END"""
+        )
+        try {
+            val sync = engine()
+            sync.syncAllRecords(forceFullSync = true)
+            awaitDictionaryJob(sync)
+            assertFalse("dictionary exception must not leave loading active", sync.syncProgress.value.isSyncing)
+            assertTrue(db.aiSeriesDictionaryDao().getAllDictionary().isEmpty())
+            assertEquals("ニュース", db.recordedProgramDao().getById(603)?.title)
+        } finally {
+            sql.execSQL("DROP TRIGGER IF EXISTS fail_dictionary_insert")
+        }
+    }
+
+    @Test
+    fun cancellingRealDictionaryWorkerMustNotFinishNewerSyncGeneration() = runBlocking {
+        selection.value = "EDCB"
+        prefs().edit().putString("backend", "EDCB").putBoolean("pending", false).commit()
+        Mockito.doAnswer { invocation ->
+            if ((invocation.arguments[0] as Int) == 1)
+                RecordedApiResponse(1, listOf(remoteRecord(604, "ニュース")))
+            else RecordedApiResponse(1, emptyList())
+        }.`when`(provider).getRecordedPrograms(Mockito.anyInt(), Mockito.anyInt())
+        val sync = engine()
+        sync.syncAllRecords(forceFullSync = true)
+        val dictionaryField = RecordSyncEngine::class.java.getDeclaredField("dictionaryJob")
+            .apply { isAccessible = true }
+        val dictionary = withTimeout(10_000L) {
+            var value: kotlinx.coroutines.Job? = null
+            while (value == null) {
+                value = dictionaryField.get(sync) as? kotlinx.coroutines.Job
+                if (value == null) delay(10)
+            }
+            requireNotNull(value)
+        }
+        val generation = RecordSyncEngine::class.java.getDeclaredField("syncProgressEpoch")
+            .apply { isAccessible = true }
+            .get(sync) as java.util.concurrent.atomic.AtomicLong
+        generation.incrementAndGet()
+        val status = RecordSyncEngine::class.java.getDeclaredField("_syncProgress")
+            .apply { isAccessible = true }
+            .get(sync) as MutableStateFlow<com.beeregg2001.komorebi.data.sync.SyncProgress>
+        status.value = com.beeregg2001.komorebi.data.sync.SyncProgress(
+            isSyncing = true, message = "newer backend dictionary", current = 7
+        )
+        dictionary.cancel()
+        withTimeout(15_000L) { dictionary.join() }
+        assertTrue(status.value.isSyncing)
+        assertEquals("newer backend dictionary", status.value.message)
+        assertEquals(7, status.value.current)
+    }
+
 }
