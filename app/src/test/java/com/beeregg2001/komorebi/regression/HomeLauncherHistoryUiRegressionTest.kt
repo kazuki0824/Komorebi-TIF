@@ -6,6 +6,10 @@ import androidx.compose.runtime.MutableIntState
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import com.beeregg2001.komorebi.ui.main.MainRootBackground
+import com.beeregg2001.komorebi.ui.main.MainRootDialogs
+import com.beeregg2001.komorebi.util.UpdateState
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.foundation.layout.Box
 import com.beeregg2001.komorebi.ui.main.MainRootState
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasAnyDescendant
@@ -599,6 +603,94 @@ class HomeLauncherHistoryUiRegressionTest {
         assertSame(later, selectedProgramAfterClick.get())
         assertNull(resumed.get())
         Mockito.verify(records, Mockito.never()).clearHistoryResumeError()
+    }
+
+
+    @Test
+    fun pendingHistoryResponseCannotOverrideDialogLiveSelectionUsingSharedEpoch(): Unit = runBlocking {
+        val suspended = AtomicReference<Continuation<RecordedProgram?>?>()
+        Mockito.doAnswer { invocation ->
+            @Suppress("UNCHECKED_CAST")
+            suspended.set(invocation.rawArguments.last() as Continuation<RecordedProgram?>)
+            COROUTINE_SUSPENDED
+        }.`when`(records).getResumableHistoryProgram(42, "EDCB")
+        val selectedLive = AtomicReference<((EpgProgram) -> Unit)?>(null)
+        interceptHistorySelection("com.beeregg2001.komorebi.ui.home.VideoTabContentKt",
+            "VideoTabContent", 7)
+        compose.runOnUiThread {
+            @Suppress("UNCHECKED_CAST")
+            val klass = Class.forName(
+                "com.beeregg2001.komorebi.ui.epg.ProgramDetailScreenKt") as Class<Any>
+            staticMocks += Mockito.mockStatic(klass, Answer { invocation ->
+                if (invocation.method.name == "ProgramDetailScreen") {
+                    @Suppress("UNCHECKED_CAST")
+                    selectedLive.set(invocation.arguments[4] as (EpgProgram) -> Unit)
+                    null
+                } else invocation.callRealMethod()
+            })
+        }
+        val selected = channel("edcb-dialog-selected", "dialog live")
+        val time = java.time.OffsetDateTime.now()
+        val liveEpg = EpgProgram(
+            id = "dialog-live", channel_id = selected.id,
+            network_id = 10, service_id = 20, event_id = 1,
+            title = "Dialog live", description = "", detail = null,
+            start_time = time.minusMinutes(5).toString(),
+            end_time = time.plusMinutes(55).toString(), duration = 3600,
+            is_free = true, genres = null, video_type = null,
+            audio_type = null, audio_sampling_rate = null
+        )
+        val state = MainRootState().also { it.epgSelectedProgram = liveEpg }
+        val epoch = mutableIntStateOf(4)
+        val ai = Mockito.mock(AiConciergeViewModel::class.java)
+        Mockito.`when`(ai.chatHistory).thenReturn(MutableStateFlow(emptyList()))
+        compose.setContent {
+            CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                KomorebiTheme {
+                    Box {
+                        HomeLauncherScreen(
+                            channelViewModel = live, homeViewModel = home,
+                            epgViewModel = epg, recordViewModel = records,
+                            reserveViewModel = reserves, settingsViewModel = settings,
+                            groupedChannels = mapOf("GR" to listOf(selected)),
+                            mirakurunIp = "", mirakurunPort = "", konomiIp = "", konomiPort = "",
+                            onChannelClick = { _, _ -> }, selectedChannel = null,
+                            onTabChange = {}, initialTabIndex = 2, selectedProgram = null,
+                            onProgramSelected = {}, onVerifiedHistorySelected = { p, _ -> resumed.set(p) },
+                            recordedSelectionEpoch = epoch,
+                            epgSelectedProgram = null, onEpgProgramSelected = {},
+                            isEpgJumpMenuOpen = false, onEpgJumpMenuStateChanged = {},
+                            triggerBack = false, onBackTriggered = {}, onFinalBack = {},
+                            onUiReady = {}, isUiReadyFlag = true, onNavigateToPlayer = { _, _, _ -> }
+                        )
+                        MainRootDialogs(
+                            state = state, recordedSelectionEpoch = epoch,
+                            channelViewModel = live, epgViewModel = epg,
+                            homeViewModel = home, recordViewModel = records,
+                            reserveViewModel = reserves, aiConciergeViewModel = ai,
+                            groupedChannels = mapOf("GR" to listOf(selected)),
+                            reserves = emptyList(), updateState = UpdateState.Idle,
+                            timeFormat = "24H", isSettingsInitialized = true,
+                            hasSyncError = false, detailFocusRequester = FocusRequester(),
+                            apiKey = "", onExitApp = {}, closeSettingsAndRefresh = {},
+                            closeAiConcierge = {}, onGoToSettings = {}
+                        )
+                    }
+                }
+            }
+        }
+        compose.waitUntil(10_000L) {
+            historySelection.get() != null && selectedLive.get() != null
+        }
+        compose.runOnIdle { historySelection.get()!!.invoke(owned.value.second.single()) }
+        compose.waitUntil(10_000L) { suspended.get() != null }
+        compose.runOnIdle { selectedLive.get()!!.invoke(liveEpg) }
+        assertSame(selected, state.selectedChannel)
+        assertEquals(5, epoch.intValue)
+        suspended.get()!!.resume(Mockito.mock(RecordedProgram::class.java))
+        compose.waitForIdle()
+        assertSame(selected, state.selectedChannel)
+        assertNull("late history resolution may not start an obsolete recording", resumed.get())
     }
 
 }
