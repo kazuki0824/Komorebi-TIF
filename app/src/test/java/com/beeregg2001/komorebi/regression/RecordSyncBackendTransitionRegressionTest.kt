@@ -12,6 +12,11 @@ import com.beeregg2001.komorebi.data.local.entity.WatchHistoryEntity
 import com.beeregg2001.komorebi.data.repository.RecordProvider
 import com.beeregg2001.komorebi.data.sync.RecordSyncEngine
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withTimeout
@@ -290,6 +295,44 @@ class RecordSyncBackendTransitionRegressionTest {
             assertEquals(true, meta?.isInitialBuildCompleted)
         } finally {
             flag.setBoolean(ownedEngine, false)
+        }
+    }
+
+
+    @Test
+    fun syncQueuedBehindHeldMutexIsRejectedWhenActualBackendSwitchStarts() = runBlocking {
+        val provider = Mockito.mock(RecordProvider::class.java)
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(selectedBackend)
+        val actual = RecordSyncEngine(provider, db, settings, db.aiSeriesDictionaryDao(), context)
+        val initialization = RecordSyncEngine::class.java.getDeclaredField("ownerInitialized")
+            .apply { isAccessible = true }
+            .get(actual) as CompletableDeferred<*>
+        withTimeout(10_000L) { initialization.await() }
+        val mutex = RecordSyncEngine::class.java.getDeclaredField("syncMutex")
+            .apply { isAccessible = true }.get(actual) as Mutex
+        mutex.lock()
+        try {
+            // Undispatched start runs until the suspended lock acquisition.
+            val oldSync = async(start = CoroutineStart.UNDISPATCHED) { actual.syncAllRecords() }
+            assertFalse(oldSync.isCompleted)
+            val switching = async(Dispatchers.Default) {
+                actual.switchBackend { selectedBackend.value = "EDCB" }
+            }
+            val flag = RecordSyncEngine::class.java.getDeclaredField("switchingBackend")
+                .apply { isAccessible = true }
+            withTimeout(10_000L) {
+                while (!flag.getBoolean(actual)) delay(10L)
+            }
+            mutex.unlock()
+            withTimeout(15_000L) {
+                oldSync.await()
+                switching.await()
+            }
+            Mockito.verifyNoInteractions(provider)
+            assertEquals("EDCB", selectedBackend.value)
+        } finally {
+            if (mutex.isLocked) mutex.unlock()
         }
     }
 
