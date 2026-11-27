@@ -386,4 +386,32 @@ class MainRootScreenStateUiRegressionTest {
         assertEquals(3, dialogEpoch.get()!!.intValue)
     }
 
+
+    @Test
+    fun lastWatchedWithoutValidCandidateFallsBackToFirstAvailableChannel() = runBlocking {
+        startup.value = "LAST_WATCHED"
+        val first = channel("available-first")
+        val second = channel("available-second")
+        channels.value = mapOf("GR" to listOf(first, second))
+        Mockito.doReturn(emptyList<String>()).`when`(home)
+            .recentStartupChannelIds(listOf(first.id, second.id))
+        render()
+        compose.waitUntil(10_000L) { state.hasAppliedStartupChannel }
+        assertSame(first, state.selectedChannel)
+        assertEquals(first.id, state.lastSelectedChannelId)
+        Mockito.verify(home).saveLastChannel(first)
+    }
+
+    @Test
+    fun startupDisabledNeverAutoselectsEvenWhenChannelsExist() {
+        startup.value = "OFF"
+        channels.value = mapOf("GR" to listOf(channel("available-first")))
+        render()
+        compose.waitUntil(10_000L) { state.hasAppliedStartupTab && state.isDataReady }
+        assertNull(state.selectedChannel)
+        assertNull(state.lastSelectedChannelId)
+        Mockito.verify(home, Mockito.never()).saveLastChannel(Mockito.any(Channel::class.java))
+        Mockito.verify(home, Mockito.never()).recentStartupChannelIds(Mockito.anyList())
+    }
+
 }
