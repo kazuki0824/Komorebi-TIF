@@ -159,7 +159,7 @@ jobs:
               "LiveContentEmptyStateUiRegressionTest": 1,
               "MainRootDialogEpochUiRegressionTest": 1,
               "MainRootScreenStateUiRegressionTest": 6,
-              "RecordCacheOwnershipRegressionTest": 5,
+              "RecordCacheOwnershipRegressionTest": 6,
               "RecordSyncBackendTransitionRegressionTest": 11,
               "RecordSyncFullSyncOwnerRegressionTest": 6,
               "RecordViewModelRegressionTest": 12,
