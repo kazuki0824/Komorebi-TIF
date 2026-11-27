@@ -140,7 +140,7 @@ jobs:
               "BackendDataIsolationRegressionTest": 10,
               "ChannelViewModelRegressionTest": 9,
               "ChannelListOverlayUiRegressionTest": 2,
-              "DatabaseMigrationRegressionTest": 2,
+              "DatabaseMigrationRegressionTest": 3,
               "DtvProviderProxyRoutingRegressionTest": 7,
               "SettingsBackendFailureRegressionTest": 7,
               "SettingScreenBackendWriteUiRegressionTest": 1,
