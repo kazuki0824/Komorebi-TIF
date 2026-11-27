@@ -22,6 +22,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.test.resetMain
+import androidx.lifecycle.viewModelScope
+import com.beeregg2001.komorebi.viewmodel.HomeViewModel
+import com.beeregg2001.komorebi.data.repository.LiveProvider
+import com.beeregg2001.komorebi.data.repository.EpgRepository
+import com.beeregg2001.komorebi.data.repository.LastChannelRepository
+import com.beeregg2001.komorebi.util.AppUpdater
+import com.beeregg2001.komorebi.util.UpdateState
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.runBlocking
@@ -224,6 +238,53 @@ class WatchHistoryRepositoryRegressionTest {
         repository.refreshHistoryFromApi()
         assertEquals("API owned", repository.getHistoryEntityById(200, "KONOMITV")?.title)
         assertNull(repository.getHistoryEntityById(200, "EDCB"))
+    }
+
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun homeViewModelPublishesMatchingOwnerAndRowsAcrossContinuousSubscription() = runBlocking {
+        repository.saveToLocalHistory(history(42, "Konomi title"), "KONOMITV")
+        repository.saveToLocalHistory(history(42, "EDCB title"), "EDCB")
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(selectedBackend)
+        Mockito.`when`(settings.homePickupGenre).thenReturn(flowOf("アニメ"))
+        Mockito.`when`(settings.homePickupTime).thenReturn(flowOf("夜"))
+        Mockito.`when`(settings.excludePaidBroadcasts).thenReturn(flowOf("OFF"))
+        Mockito.`when`(settings.favoriteBaseballTeams).thenReturn(flowOf("[]"))
+        Mockito.`when`(settings.receiveBetaUpdates).thenReturn(flowOf(false))
+        val updater = Mockito.mock(AppUpdater::class.java)
+        Mockito.`when`(updater.updateState)
+            .thenReturn(MutableStateFlow<UpdateState>(UpdateState.Idle))
+        Dispatchers.setMain(UnconfinedTestDispatcher())
+        val home = HomeViewModel(
+            Mockito.mock(LiveProvider::class.java),
+            Mockito.mock(KonomiRepository::class.java),
+            Mockito.mock(EpgRepository::class.java),
+            settings,
+            Mockito.mock(LastChannelRepository::class.java),
+            repository,
+            updater
+        )
+        val observed = Channel<Pair<String?, List<com.beeregg2001.komorebi.data.model.KonomiHistoryProgram>>>(Channel.UNLIMITED)
+        val subscription = launch(Dispatchers.Default) {
+            home.ownedWatchHistory.collect { if (it.first != null) observed.send(it) }
+        }
+        try {
+            val first = withTimeout(10_000L) { observed.receive() }
+            assertEquals("KONOMITV", first.first)
+            assertEquals("Konomi title", first.second.single().program.title)
+            selectedBackend.value = "EDCB"
+            val second = withTimeout(10_000L) { observed.receive() }
+            assertEquals("EDCB", second.first)
+            assertEquals("EDCB title", second.second.single().program.title)
+            assertTrue(second.second.none { it.program.title == "Konomi title" })
+        } finally {
+            subscription.cancelAndJoin()
+            home.viewModelScope.cancel()
+            observed.close()
+            Dispatchers.resetMain()
+        }
     }
 
 }
