@@ -305,4 +305,74 @@ class RecordViewModelRegressionTest {
         } finally { release.countDown() }
     }
 
+
+    @Test
+    fun ownedLocalRecordingResumesFromRoomWithoutNetworkAndRetainsPosition() = runBlocking {
+        cacheReady.value = true
+        val entity = RecordedProgramEntity(
+            id = 55, title = "owned local recording",
+            startTime = "2030-01-01T00:00:00+09:00", endTime = "2030-01-01T01:00:00+09:00",
+            videoDuration = 3600.0, hasKeyFrames = true, isRecording = false,
+            playbackPosition = 0.0, channelId = null, channelType = null,
+            channelName = null, genres = null
+        )
+        Mockito.doReturn(entity).`when`(programDaoUnderTest).getById(55)
+        Mockito.doReturn(historyEntry()).`when`(historyRepo)
+            .getHistoryEntityById(55, "KONOMITV")
+        val result = viewModel.getResumableHistoryProgram(55, "KONOMITV")
+        assertNotNull(result)
+        assertEquals(55, result?.id)
+        assertEquals(37.0, result?.playbackPosition ?: -1.0, 0.001)
+        Mockito.verify(provider, Mockito.never()).getRecordedProgram(55)
+    }
+
+    @Test
+    fun lostOwnershipDuringLocalRoomReadRejectsStaleRecording() = runBlocking {
+        cacheReady.value = true
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        Mockito.doReturn(historyEntry()).`when`(historyRepo)
+            .getHistoryEntityById(55, "KONOMITV")
+        Mockito.doAnswer {
+            entered.countDown()
+            check(release.await(15, TimeUnit.SECONDS))
+            RecordedProgramEntity(
+                id = 55, title = "obsolete local",
+                startTime = "2030-01-01T00:00:00+09:00",
+                endTime = "2030-01-01T01:00:00+09:00",
+                videoDuration = 3600.0, hasKeyFrames = true, isRecording = false,
+                playbackPosition = 0.0, channelId = null, channelType = null,
+                channelName = null, genres = null
+            )
+        }.`when`(programDaoUnderTest).getById(55)
+        try {
+            val pending = async(Dispatchers.IO) { viewModel.getResumableHistoryProgram(55, "KONOMITV") }
+            assertTrue(entered.await(15, TimeUnit.SECONDS))
+            cacheReady.value = false
+            ownerGeneration.value++
+            release.countDown()
+            assertNull(withTimeout(15_000L) { pending.await() })
+            assertTrue(viewModel.historyResumeError.value.orEmpty().contains("変更"))
+            Mockito.verifyNoInteractions(provider)
+        } finally { release.countDown() }
+    }
+
+    @Test
+    fun remoteResumeProviderFailureReportsErrorButCancellationPropagates() = runBlocking {
+        Mockito.doReturn(historyEntry()).`when`(historyRepo)
+            .getHistoryEntityById(55, "KONOMITV")
+        Mockito.doAnswer { throw IllegalStateException("injected remote failure") }
+            .`when`(provider).getRecordedProgram(55)
+        assertNull(viewModel.getResumableHistoryProgram(55, "KONOMITV"))
+        assertTrue(viewModel.historyResumeError.value.orEmpty().contains("録画詳細"))
+        Mockito.doAnswer { throw kotlinx.coroutines.CancellationException("request cancelled") }
+            .`when`(provider).getRecordedProgram(55)
+        try {
+            viewModel.getResumableHistoryProgram(55, "KONOMITV")
+            fail("caller cancellation must not be swallowed")
+        } catch (expected: kotlinx.coroutines.CancellationException) {
+            assertEquals("request cancelled", expected.message)
+        }
+    }
+
 }
