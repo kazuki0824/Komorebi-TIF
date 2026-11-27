@@ -3,6 +3,7 @@
 package com.beeregg2001.komorebi.regression
 
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.runtime.mutableStateOf
 import androidx.media3.exoplayer.ExoPlayer
 import com.beeregg2001.komorebi.data.model.*
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
@@ -188,6 +189,44 @@ class VideoPlayerSessionBackendUiRegressionTest {
         compose.waitForIdle()
         compose.runOnIdle { stopCallback.get()!!.invoke(player) }
         Mockito.verify(vm, Mockito.times(1)).updateWatchHistory(program, 120.0, "EDCB")
+    }
+
+
+    @Test
+    fun nextRecordingObtainsFreshConfirmedOwnerWhileOldPlaybackRetainsItsOwner() {
+        val initial = recording()
+        val next = initial.copy(id = 100, recordedVideo = initial.recordedVideo.copy(id = 100))
+        Mockito.doReturn(emptyList<ArchivedComment>()).`when`(vm).getArchivedComments(100)
+        confirmed.value = "EDCB"
+        val active = mutableStateOf(initial)
+        installTestPlayer()
+        compose.setContent {
+            KomorebiTheme {
+                VideoPlayerScreen(
+                    program = active.value,
+                    smbItem = null,
+                    showControls = false,
+                    onShowControlsChange = {},
+                    isSubMenuOpen = false,
+                    onSubMenuToggle = {},
+                    isSceneSearchOpen = false,
+                    onSceneSearchToggle = {},
+                    onBackPressed = {}, onShowToast = {},
+                    isPiPMode = true,
+                    videoPlayerViewModel = vm, settingsViewModel = settings
+                )
+            }
+        }
+        compose.waitUntil(10_000L) { stopCallback.get() != null }
+        val firstStop = requireNotNull(stopCallback.get())
+        compose.runOnIdle { confirmed.value = "EPGSTATION" }
+        compose.runOnIdle { firstStop.invoke(player) }
+        Mockito.verify(vm).updateWatchHistory(initial, 120.0, "EDCB")
+        compose.runOnIdle { active.value = next }
+        compose.waitForIdle()
+        val nextStop = requireNotNull(stopCallback.get())
+        compose.runOnIdle { nextStop.invoke(player) }
+        Mockito.verify(vm).updateWatchHistory(next, 120.0, "EPGSTATION")
     }
 
 }
