@@ -1,6 +1,10 @@
 package com.beeregg2001.komorebi.regression
 
 import androidx.lifecycle.viewModelScope
+import androidx.room.Room
+import androidx.test.core.app.ApplicationProvider
+import android.content.Context
+import com.beeregg2001.komorebi.data.local.AppDatabase
 import com.beeregg2001.komorebi.data.api.KonomiApi
 import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.local.entity.WatchHistoryEntity
@@ -153,4 +157,67 @@ class HomeHistoryRefreshSourceRegressionTest {
         assertTrue(saved.isEmpty())
         assertTrue(lookupOwners.isEmpty())
     }
+
+    @Test
+    fun historyRefreshPreservesOnlySameOwnerVideoAndThumbnailMetadata() = runBlocking {
+        vm.viewModelScope.cancel()
+        val db = Room.inMemoryDatabaseBuilder(
+            ApplicationProvider.getApplicationContext<Context>(), AppDatabase::class.java
+        ).allowMainThreadQueries().build()
+        try {
+            val settings = Mockito.mock(SettingsRepository::class.java)
+            Mockito.`when`(settings.backendType).thenReturn(backend)
+            Mockito.`when`(settings.homePickupGenre).thenReturn(flowOf("アニメ"))
+            Mockito.`when`(settings.homePickupTime).thenReturn(flowOf("昼"))
+            Mockito.`when`(settings.excludePaidBroadcasts).thenReturn(flowOf("OFF"))
+            Mockito.`when`(settings.favoriteBaseballTeams).thenReturn(flowOf("[]"))
+            val actual = WatchHistoryRepository(
+                api, db.watchHistoryDao(), db.backendWatchHistoryDao(),
+                db.lastChannelDao(), konomi, settings, db
+            )
+            actual.saveToLocalHistory(
+                WatchHistoryEntity(
+                    42, "Konomi old", "", null, "", "", 100.0, 1001,
+                    tileColumns = 3, tileRows = 4, tileInterval = 2.5, tileWidth = 111, tileHeight = 222
+                ), "KONOMITV"
+            )
+            actual.saveToLocalHistory(
+                WatchHistoryEntity(
+                    42, "EDCB old", "", null, "", "", 100.0, 2002,
+                    tileColumns = 8, tileRows = 9, tileInterval = 9.5, tileWidth = 444, tileHeight = 555
+                ), "EDCB"
+            )
+            Mockito.doReturn(listOf(sampleHistory())).`when`(api).getWatchHistory()
+            val epg = Mockito.mock(EpgRepository::class.java, Answer { call ->
+                if (call.method.name == "getEpgDataStream")
+                    flowOf(Result.success(emptyList<EpgChannelWrapper>()))
+                else Answers.RETURNS_DEFAULTS.answer(call)
+            })
+            val updater = Mockito.mock(AppUpdater::class.java)
+            Mockito.`when`(updater.updateState)
+                .thenReturn(MutableStateFlow<UpdateState>(UpdateState.Idle))
+            vm = HomeViewModel(
+                Mockito.mock(LiveProvider::class.java), konomi, epg,
+                settings, Mockito.mock(LastChannelRepository::class.java), actual, updater
+            )
+            vm.refreshHomeData(force = true)
+            awaitRefresh()
+            val own = requireNotNull(actual.getHistoryEntityById(42, "KONOMITV"))
+            assertEquals("Original Konomi Recording", own.title)
+            assertEquals(1001, own.videoId)
+            assertEquals(3, own.tileColumns)
+            assertEquals(4, own.tileRows)
+            assertEquals(2.5, own.tileInterval, 0.0)
+            assertEquals(111, own.tileWidth)
+            assertEquals(222, own.tileHeight)
+            val foreign = requireNotNull(actual.getHistoryEntityById(42, "EDCB"))
+            assertEquals("EDCB old", foreign.title)
+            assertEquals(2002, foreign.videoId)
+            assertEquals(8, foreign.tileColumns)
+            assertEquals(444, foreign.tileWidth)
+        } finally {
+            db.close()
+        }
+    }
+
 }
