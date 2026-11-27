@@ -137,7 +137,7 @@ jobs:
           from collections import Counter
           actual = Counter(case.attrib.get("classname", "").rsplit(".", 1)[-1] for case in cases)
           expected = {
-              "BackendDataIsolationRegressionTest": 8,
+              "BackendDataIsolationRegressionTest": 10,
               "ChannelViewModelRegressionTest": 9,
               "ChannelListOverlayUiRegressionTest": 2,
               "DatabaseMigrationRegressionTest": 2,
@@ -146,7 +146,7 @@ jobs:
               "SettingScreenBackendWriteUiRegressionTest": 1,
               "EpgInFlightBackendRegressionTest": 3,
               "EpgFileCacheRegressionTest": 7,
-              "EpgSearchBackendRegressionTest": 7,
+              "EpgSearchBackendRegressionTest": 8,
               "EpgStateRegressionTest": 2,
               "EpgCanvasOverlayUiRegressionTest": 4,
               "EpgViewModelGenerationRegressionTest": 13,
