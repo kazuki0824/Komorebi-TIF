@@ -17,6 +17,12 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withTimeout
@@ -331,6 +337,93 @@ class RecordSyncBackendTransitionRegressionTest {
             }
             Mockito.verifyNoInteractions(provider)
             assertEquals("EDCB", selectedBackend.value)
+        } finally {
+            if (mutex.isLocked) mutex.unlock()
+        }
+    }
+
+
+    @Test
+    fun cancellingActiveDictionaryBeforeFailedSwitchPreservesPublishedCacheAndRestoresReady() = runBlocking {
+        seedIndependentData()
+        db.syncMetaDao().upsert(SyncMetaEntity(1, 6, 44L, true))
+        assertTrue(context.getSharedPreferences("record_cache_backend_owner", Context.MODE_PRIVATE)
+            .edit().putString("backend", "KONOMITV").putBoolean("pending", false).commit())
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(selectedBackend)
+        val actual = RecordSyncEngine(
+            Mockito.mock(RecordProvider::class.java), db, settings, db.aiSeriesDictionaryDao(), context
+        )
+        val ready = RecordSyncEngine::class.java.getDeclaredField("ownerInitialized")
+            .apply { isAccessible = true }.get(actual) as CompletableDeferred<*>
+        withTimeout(10_000L) { ready.await() }
+        assertTrue(actual.recordCacheReady.value)
+        val workerReady = CompletableDeferred<Unit>()
+        val workerCancelled = CompletableDeferred<Unit>()
+        val allowWorkerExit = CompletableDeferred<Unit>()
+        val scope = CoroutineScope(Dispatchers.Default + Job())
+        val worker = scope.launch {
+            workerReady.complete(Unit)
+            try {
+                awaitCancellation()
+            } finally {
+                workerCancelled.complete(Unit)
+                withContext(NonCancellable) { allowWorkerExit.await() }
+            }
+        }
+        val field = RecordSyncEngine::class.java.getDeclaredField("dictionaryJob")
+            .apply { isAccessible = true }
+        workerReady.await()
+        field.set(actual, worker)
+        try {
+            val switching = async(Dispatchers.Default) {
+                runCatching {
+                    actual.switchBackend { throw IllegalStateException("injected setting failure") }
+                }.exceptionOrNull()
+            }
+            withTimeout(10_000L) { workerCancelled.await() }
+            assertEquals(listOf(19), db.recordedProgramDao().getAllIds())
+            assertTrue("switch must join the cancelled dictionary before invalidating Room", worker.isActive)
+            allowWorkerExit.complete(Unit)
+            val error = withTimeout(15_000L) { switching.await() }
+            assertTrue(error is IllegalStateException)
+            assertEquals(listOf(19), db.recordedProgramDao().getAllIds())
+            assertTrue("published ready state must be restored after failed setting save",
+                actual.recordCacheReady.value)
+            assertFalse(context.getSharedPreferences("record_cache_backend_owner", Context.MODE_PRIVATE)
+                .getBoolean("pending", true))
+        } finally {
+            allowWorkerExit.complete(Unit)
+            worker.cancel()
+            scope.coroutineContext[Job]?.cancel()
+        }
+    }
+
+    @Test
+    fun clearQueuedBehindMutexSkipsDestructionWhenSwitchBeginsDuringWait() = runBlocking {
+        seedIndependentData()
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(selectedBackend)
+        val provider = Mockito.mock(RecordProvider::class.java)
+        val actual = RecordSyncEngine(provider, db, settings, db.aiSeriesDictionaryDao(), context)
+        val mutex = RecordSyncEngine::class.java.getDeclaredField("syncMutex")
+            .apply { isAccessible = true }.get(actual) as Mutex
+        mutex.lock()
+        try {
+            val clear = async(start = CoroutineStart.UNDISPATCHED) { actual.clearDatabase() }
+            assertFalse(clear.isCompleted)
+            val switching = async(Dispatchers.Default) {
+                actual.switchBackend { selectedBackend.value = "EDCB" }
+            }
+            val flag = RecordSyncEngine::class.java.getDeclaredField("switchingBackend")
+                .apply { isAccessible = true }
+            withTimeout(10_000L) { while (!flag.getBoolean(actual)) delay(10) }
+            mutex.unlock()
+            withTimeout(15_000L) { clear.await(); switching.await() }
+            assertEquals("EDCB", selectedBackend.value)
+            Mockito.verifyNoInteractions(provider)
+            assertEquals("history", db.watchHistoryDao().getById(19)?.title)
+            assertEquals("epg", db.epgCacheDao().getCache("KONOMITV_GR")?.dataJson)
         } finally {
             if (mutex.isLocked) mutex.unlock()
         }
