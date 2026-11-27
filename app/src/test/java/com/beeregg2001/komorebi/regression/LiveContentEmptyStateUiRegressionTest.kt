@@ -2,6 +2,11 @@ package com.beeregg2001.komorebi.regression
 
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertExists
+import androidx.compose.ui.test.assertDoesNotExist
+import androidx.compose.ui.test.onNode
+import androidx.compose.ui.test.hasProgressBarRangeInfo
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import com.beeregg2001.komorebi.data.model.LiveRowState
@@ -60,7 +65,12 @@ class LiveContentEmptyStateUiRegressionTest {
         }
 
         compose.onNodeWithText("表示できるチャンネルがありません。").assertIsDisplayed()
+        compose.onNode(hasProgressBarRangeInfo(ProgressBarRangeInfo.Indeterminate)).assertDoesNotExist()
         compose.runOnIdle { loading.value = true }
         compose.onNodeWithText("表示できるチャンネルがありません。").assertDoesNotExist()
+        compose.onNode(hasProgressBarRangeInfo(ProgressBarRangeInfo.Indeterminate)).assertExists()
+        compose.runOnIdle { loading.value = false }
+        compose.onNode(hasProgressBarRangeInfo(ProgressBarRangeInfo.Indeterminate)).assertDoesNotExist()
+        compose.onNodeWithText("表示できるチャンネルがありません。").assertIsDisplayed()
     }
 }
