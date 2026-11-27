@@ -117,4 +117,53 @@ class DatabaseMigrationRegressionTest {
         assertEquals(oldHistory, migrated.watchHistoryDao().getById(55))
         assertEquals(listOf(55), migrated.recordedProgramDao().getAllIds())
     }
+
+    @Test
+    fun v15To16PreservesDictionaryAndEpgParentChildRows() = runBlocking {
+        seedV15 { disk ->
+            disk.execSQL("INSERT INTO ai_series_dictionary VALUES ('old-title', 'old-series', 987)")
+            disk.execSQL(
+                """INSERT INTO epg_channel
+                (id, displayChannelId, networkId, serviceId, transportStreamId, remoconId,
+                 channelNumber, type, name, jikkyoForce, isSubchannel, isRadiochannel, isWatchable)
+                VALUES ('old-channel', 'display-old', 1, 2, 3, 4, '011', 'GR', 'old station',
+                        NULL, 0, 0, 1)""".trimIndent()
+            )
+            disk.execSQL(
+                """INSERT INTO epg_program
+                (id, channelId, networkId, serviceId, eventId, title, description, extended,
+                 detailJson, startTime, endTime, startTimeEpoch, endTimeEpoch, duration,
+                 isFree, genresJson, videoType, audioType, audioSamplingRate)
+                VALUES ('old-event', 'old-channel', 1, 2, 9, 'original show', 'original description',
+                        NULL, NULL, '2030-01-01T00:00:00+09:00', '2030-01-01T01:00:00+09:00',
+                        1893423600, 1893427200, 3600, 1, NULL, NULL, NULL, NULL)""".trimIndent()
+            )
+        }
+        val migrated = DatabaseModule.provideAppDatabase(context)
+        current = migrated
+        val sql = migrated.openHelper.readableDatabase
+        sql.query("SELECT originalTitle, normalizedSeriesName, updatedAt FROM ai_series_dictionary").use {
+            assertTrue(it.moveToFirst())
+            assertEquals("old-title", it.getString(0))
+            assertEquals("old-series", it.getString(1))
+            assertEquals(987L, it.getLong(2))
+            assertFalse(it.moveToNext())
+        }
+        sql.query(
+            """SELECT p.id, p.title, c.name FROM epg_program p
+               JOIN epg_channel c ON p.channelId = c.id WHERE p.id = 'old-event'"""
+        ).use {
+            assertTrue(it.moveToFirst())
+            assertEquals("old-event", it.getString(0))
+            assertEquals("original show", it.getString(1))
+            assertEquals("old station", it.getString(2))
+            assertFalse(it.moveToNext())
+        }
+        sql.query("PRAGMA foreign_key_check").use { assertFalse(it.moveToFirst()) }
+        sql.query("SELECT COUNT(*) FROM backend_watch_history").use {
+            assertTrue(it.moveToFirst())
+            assertEquals(0L, it.getLong(0))
+        }
+    }
+
 }
