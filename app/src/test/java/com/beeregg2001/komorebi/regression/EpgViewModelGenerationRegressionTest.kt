@@ -486,6 +486,11 @@ class EpgViewModelGenerationRegressionTest {
             while ((viewModel.uiState as? EpgUiState.Success)?.data?.isEmpty() != false)
                 kotlinx.coroutines.delay(10L)
         }
+        Mockito.doReturn(listOf(searchItem())).`when`(repository)
+            .searchFuturePrograms("old-query", null, null, false, null)
+        viewModel.executeSearch("old-query")
+        withTimeout(10_000L) { job("searchJob").join() }
+        assertTrue(viewModel.searchResults.value.isNotEmpty())
         val oldPreload = job("preloadJob")
         backend.value = "EDCB"
         withTimeout(10_000L) {
@@ -494,6 +499,7 @@ class EpgViewModelGenerationRegressionTest {
                 } != true) kotlinx.coroutines.delay(10L)
         }
         assertTrue(oldPreload.isCancelled)
+        assertTrue("previous search cannot survive owner change", viewModel.searchResults.value.isEmpty())
         assertEquals("GR", viewModel.selectedBroadcastingType.value)
         val replacement = viewModel.uiState as EpgUiState.Success
         assertTrue(replacement.data.none { it.channel.id == "old-owner" })
