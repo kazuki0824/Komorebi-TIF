@@ -217,7 +217,7 @@ class SettingsBackendFailureRegressionTest {
         val firstExit = CompletableDeferred<Unit>()
         val order = java.util.concurrent.CopyOnWriteArrayList<String>()
         Mockito.doAnswer { invocation ->
-            val key = invocation.arguments[0] as String
+            val key = invocation.arguments[0] as androidx.datastore.preferences.core.Preferences.Key<String>
             val value = invocation.arguments[1] as String
             if (key == SettingsRepository.BACKEND_TYPE) {
                 order.add("save:$value")
