@@ -20,6 +20,12 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.resume
+import kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
@@ -520,6 +526,51 @@ class ChannelViewModelRegressionTest {
             assertFalse(vm.isLoading.value)
         } finally {
             release.countDown()
+            vm.stopPolling()
+            vm.viewModelScope.cancel()
+        }
+    }
+
+
+    @Test
+    fun virtualMinutePollingFetchCannotOvertakeSubsequentExplicitRefresh() = runBlocking {
+        val live = Mockito.mock(LiveProvider::class.java)
+        Mockito.doReturn(ChannelApiResponse()).`when`(live).getChannels()
+        val vm = viewModel(live, MutableStateFlow("KONOMITV"))
+        vm.stopPolling()
+        val lastFetch = ChannelViewModel::class.java.getDeclaredField("lastFetchedTimeMillis")
+            .apply { isAccessible = true }
+        lastFetch.setLong(vm, System.currentTimeMillis())
+        val entered = java.util.concurrent.atomic.AtomicReference<Continuation<ChannelApiResponse>?>()
+        val calls = AtomicInteger()
+        Mockito.doAnswer { invocation ->
+            when (calls.incrementAndGet()) {
+                1 -> {
+                    @Suppress("UNCHECKED_CAST")
+                    entered.set(invocation.rawArguments.last() as Continuation<ChannelApiResponse>)
+                    COROUTINE_SUSPENDED
+                }
+                else -> ChannelApiResponse(terrestrial = listOf(networkChannel("explicit-latest")))
+            }
+        }.`when`(live).getChannels()
+        try {
+            vm.startPolling()
+            testDispatcher.scheduler.advanceTimeBy(62_000L)
+            testDispatcher.scheduler.runCurrent()
+            withTimeout(10_000L) {
+                while (entered.get() == null) kotlinx.coroutines.delay(10L)
+            }
+            vm.fetchChannels(force = true)
+            withTimeout(10_000L) {
+                vm.groupedChannels.first { it["GR"]?.singleOrNull()?.id == "explicit-latest" }
+            }
+            entered.get()!!.resume(
+                ChannelApiResponse(terrestrial = listOf(networkChannel("obsolete-poll")))
+            )
+            assertEquals("explicit-latest", vm.groupedChannels.value["GR"]?.single()?.id)
+            assertFalse(vm.connectionError.value)
+            withTimeout(10_000L) { vm.isLoading.first { !it } }
+        } finally {
             vm.stopPolling()
             vm.viewModelScope.cancel()
         }
