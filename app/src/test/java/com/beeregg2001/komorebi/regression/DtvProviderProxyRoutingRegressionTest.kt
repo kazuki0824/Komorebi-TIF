@@ -132,6 +132,11 @@ class DtvProviderProxyRoutingRegressionTest {
             )
             try {
                 viewModel.stopPolling()
+                val observed = ChannelViewModel::class.java.getDeclaredField("observedBackend")
+                    .apply { isAccessible = true }
+                withTimeout(10_000L) {
+                    while (observed.get(viewModel) != "EDCB") kotlinx.coroutines.delay(10L)
+                }
                 viewModel.fetchChannels(force = true)
                 withTimeout(10_000L) { viewModel.isLoading.first { !it } }
                 Mockito.verify(edcbLive, Mockito.atLeastOnce()).getChannels()
