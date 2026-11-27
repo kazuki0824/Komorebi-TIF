@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
@@ -52,6 +54,7 @@ class HomeGenreBackendIsolationRegressionTest {
     private lateinit var entered: CountDownLatch
     private lateinit var release: CountDownLatch
     private lateinit var program: EpgProgram
+    private var extraPrograms: List<EpgProgram> = emptyList()
 
     @Before
     fun setUp() {
@@ -98,7 +101,7 @@ class HomeGenreBackendIsolationRegressionTest {
                         entered.countDown()
                         check(release.await(15, TimeUnit.SECONDS)) { "GR fetch never released" }
                     }
-                    emit(Result.success(listOf(EpgChannelWrapper(channel, listOf(program)))))
+                    emit(Result.success(listOf(EpgChannelWrapper(channel, listOf(program) + extraPrograms))))
                 }
             } else flowOf(Result.success(emptyList<EpgChannelWrapper>()))
         }.`when`(epg).getEpgDataStream(
@@ -159,6 +162,7 @@ class HomeGenreBackendIsolationRegressionTest {
         assertTrue("old backend's results leaked after switch", vm.genrePickupPrograms.value.isEmpty())
     }
     private fun baseballTomorrow() {
+        extraPrograms = listOf(program)
         val now = OffsetDateTime.now()
         val base = now.withHour(4).withMinute(0).withSecond(0).withNano(0).let {
             if (now.hour < 4) it.minusDays(1) else it
@@ -255,6 +259,8 @@ class HomeGenreBackendIsolationRegressionTest {
         backend.value = "EDCB"
         withTimeout(10_000L) { vm.genrePickupPrograms.first { it.isEmpty() } }
         assertTrue(vm.favoriteBaseballGames.value.isEmpty())
+        main.scheduler.advanceTimeBy(1_600L)
+        main.scheduler.runCurrent()
         withTimeout(15_000L) {
             vm.genrePickupPrograms.first {
                 it.any { pair -> pair.first.id == "new-edcb-program" }
