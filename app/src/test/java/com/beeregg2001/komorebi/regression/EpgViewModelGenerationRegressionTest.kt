@@ -16,6 +16,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
@@ -398,6 +400,35 @@ class EpgViewModelGenerationRegressionTest {
         } catch (expected: CancellationException) {
             assertEquals("search cancelled by caller", expected.message)
         }
+    }
+
+
+    @Test
+    fun unselectedBsRefreshMustNotCancelAlreadyRunningGrRequest() = runBlocking {
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val now = OffsetDateTime.now()
+        Mockito.doReturn(flow {
+            started.complete(Unit)
+            release.await()
+            emit(Result.success(listOf(epgFixture("gr", "GR in flight", now))))
+        }).`when`(repository).getEpgDataStream(
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.eq("GR") ?: "GR"
+        )
+        try {
+            viewModel.refreshEpgData("GR")
+            val active = job("epgJob")
+            withTimeout(10_000L) { started.await() }
+            assertTrue(active.isActive)
+            viewModel.refreshEpgData("BS")
+            assertEquals("GR", viewModel.selectedBroadcastingType.value)
+            assertTrue("unselected BS request must not cancel active GR", active.isActive)
+            release.complete(Unit)
+            withTimeout(10_000L) { active.join() }
+            assertTrue(viewModel.uiState is EpgUiState.Success)
+        } finally { release.complete(Unit) }
     }
 
 }
