@@ -273,4 +273,34 @@ class EpgInFlightBackendRegressionTest {
         }
     }
 
+
+    @Test
+    fun oldBackendProviderFailureAfterSwitchMustNotPublishNewScreenError() = runBlocking {
+        val f = fixture()
+        val started = f.enteredProvider
+        val released = f.releaseProvider
+        val provider = Mockito.mock(DtvProviderProxy::class.java)
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(f.backend)
+        val startStr = start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+        val endStr = end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+        Mockito.doAnswer {
+            started.countDown()
+            check(released.await(15, TimeUnit.SECONDS))
+            throw IllegalStateException("obsolete backend failed")
+        }.`when`(provider).getEpgProgramsForBackend("KONOMITV", startStr, endStr, "GR")
+        val repo = EpgRepository(
+            ApplicationProvider.getApplicationContext(), provider,
+            Mockito.mock(EpgCacheDao::class.java), Gson(), settings
+        )
+        try {
+            val pending = async(Dispatchers.IO) { repo.getEpgDataStream(start, end, "GR").toList() }
+            assertTrue(started.await(15, TimeUnit.SECONDS))
+            f.backend.value = "EDCB"
+            released.countDown()
+            val outputs = withTimeout(15_000L) { pending.await() }
+            assertTrue("obsolete backend failure must not be published to newly selected backend", outputs.isEmpty())
+        } finally { released.countDown() }
+    }
+
 }
