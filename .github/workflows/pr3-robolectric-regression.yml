@@ -154,7 +154,7 @@ jobs:
               "LastChannelRegressionTest": 5,
               "HomeViewModelRegressionTest": 3,
               "HomeHistoryRefreshSourceRegressionTest": 3,
-              "HomeLauncherHistoryUiRegressionTest": 15,
+              "HomeLauncherHistoryUiRegressionTest": 17,
               "HomeGenreBackendIsolationRegressionTest": 4,
               "LiveContentEmptyStateUiRegressionTest": 1,
               "MainRootDialogEpochUiRegressionTest": 1,
