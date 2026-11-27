@@ -7,6 +7,10 @@ import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.api.KonomiApi
 import com.beeregg2001.komorebi.data.local.AppDatabase
 import com.beeregg2001.komorebi.data.local.entity.WatchHistoryEntity
+import com.beeregg2001.komorebi.data.model.RecordedProgram
+import com.beeregg2001.komorebi.data.model.RecordedVideo
+import com.beeregg2001.komorebi.data.model.KonomiHistoryProgram
+import com.beeregg2001.komorebi.data.model.KonomiProgram
 import com.beeregg2001.komorebi.data.repository.KonomiRepository
 import com.beeregg2001.komorebi.data.repository.WatchHistoryRepository
 import com.google.gson.Gson
@@ -37,6 +41,8 @@ class WatchHistoryRepositoryRegressionTest {
     private lateinit var db: AppDatabase
     private lateinit var repository: WatchHistoryRepository
     private lateinit var selectedBackend: MutableStateFlow<String>
+    private lateinit var api: KonomiApi
+    private lateinit var konomi: KonomiRepository
 
     @Before
     fun setUp() {
@@ -47,10 +53,12 @@ class WatchHistoryRepositoryRegressionTest {
         selectedBackend = MutableStateFlow("KONOMITV")
         val settings = Mockito.mock(SettingsRepository::class.java)
         Mockito.`when`(settings.backendType).thenReturn(selectedBackend)
+        api = Mockito.mock(KonomiApi::class.java)
+        konomi = Mockito.mock(KonomiRepository::class.java)
         repository = WatchHistoryRepository(
-            Mockito.mock(KonomiApi::class.java),
+            api,
             db.watchHistoryDao(), db.backendWatchHistoryDao(), db.lastChannelDao(),
-            Mockito.mock(KonomiRepository::class.java), settings, db
+            konomi, settings, db
         )
     }
 
@@ -162,6 +170,60 @@ class WatchHistoryRepositoryRegressionTest {
         } finally {
             sql.execSQL("DROP TRIGGER IF EXISTS fail_legacy_history_delete")
         }
+    }
+
+
+    private fun recording(id: Int): RecordedProgram {
+        val program = Mockito.mock(RecordedProgram::class.java)
+        val video = Mockito.mock(RecordedVideo::class.java)
+        Mockito.`when`(program.id).thenReturn(id)
+        Mockito.`when`(program.title).thenReturn("record-$id")
+        Mockito.`when`(program.description).thenReturn("")
+        Mockito.`when`(program.startTime).thenReturn("2030-01-01T00:00:00+09:00")
+        Mockito.`when`(program.endTime).thenReturn("2030-01-01T01:00:00+09:00")
+        Mockito.`when`(program.duration).thenReturn(3600.0)
+        Mockito.`when`(video.id).thenReturn(id)
+        Mockito.`when`(program.recordedVideo).thenReturn(video)
+        return program
+    }
+
+    @Test
+    fun actualHistorySavePersistsOwnerAndPositionAndOnlyKonomiSyncsUpstream() = runBlocking {
+        selectedBackend.value = "EDCB"
+        val own = recording(99)
+        repository.saveWatchHistory(own, 42.5, "EDCB")
+        repository.saveWatchHistory(own, 19.0, "EPGSTATION")
+        repository.saveWatchHistory(own, 7.25, "KONOMITV")
+        assertEquals(42.5, repository.getHistoryEntityById(99, "EDCB")?.playbackPosition ?: -1.0, 0.001)
+        assertEquals(19.0, repository.getHistoryEntityById(99, "EPGSTATION")?.playbackPosition ?: -1.0, 0.001)
+        assertEquals(7.25, repository.getHistoryEntityById(99, "KONOMITV")?.playbackPosition ?: -1.0, 0.001)
+        Mockito.verify(konomi, Mockito.times(1)).syncPlaybackPosition("99", 7.25)
+    }
+
+    @Test
+    fun failedKonomiRemoteSyncDoesNotEraseSuccessfullySavedLocalHistory() = runBlocking {
+        val program = recording(101)
+        Mockito.doAnswer { throw IllegalStateException("remote unavailable") }
+            .`when`(konomi).syncPlaybackPosition("101", 13.5)
+        repository.saveWatchHistory(program, 13.5, "KONOMITV")
+        assertEquals(13.5, repository.getHistoryEntityById(101, "KONOMITV")?.playbackPosition ?: -1.0, 0.001)
+    }
+
+    @Test
+    fun historyImportedFromKonomiApiKeepsKonomiOwnerWhenEdcbIsSelected() = runBlocking {
+        selectedBackend.value = "EDCB"
+        val result = KonomiHistoryProgram(
+            program = KonomiProgram(
+                id = "200", title = "API owned", description = "", detail = null,
+                start_time = "2030-01-01T00:00:00Z", end_time = "2030-01-01T01:00:00Z",
+                channel_id = "1"
+            ),
+            playback_position = 22.0, last_watched_at = "2030-01-01T00:30:00Z"
+        )
+        Mockito.doReturn(listOf(result)).`when`(api).getWatchHistory()
+        repository.refreshHistoryFromApi()
+        assertEquals("API owned", repository.getHistoryEntityById(200, "KONOMITV")?.title)
+        assertNull(repository.getHistoryEntityById(200, "EDCB"))
     }
 
 }
