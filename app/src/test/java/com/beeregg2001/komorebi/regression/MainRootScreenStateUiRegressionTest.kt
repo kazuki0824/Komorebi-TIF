@@ -410,8 +410,12 @@ class MainRootScreenStateUiRegressionTest {
         compose.waitUntil(10_000L) { state.hasAppliedStartupTab && state.isDataReady }
         assertNull(state.selectedChannel)
         assertNull(state.lastSelectedChannelId)
-        Mockito.verify(home, Mockito.never()).saveLastChannel(Mockito.any(Channel::class.java))
-        Mockito.verify(home, Mockito.never()).recentStartupChannelIds(Mockito.anyList())
+        Mockito.verify(home, Mockito.never()).saveLastChannel(
+            Mockito.any(Channel::class.java) ?: channel("unused")
+        )
+        Mockito.verify(home, Mockito.never()).recentStartupChannelIds(
+            Mockito.anyList<String>() ?: emptyList()
+        )
     }
 
 }
