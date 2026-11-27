@@ -11,6 +11,7 @@ import com.beeregg2001.komorebi.data.repository.EpgRepository
 import com.google.gson.Gson
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.toList
@@ -197,6 +198,44 @@ class EpgInFlightBackendRegressionTest {
             fail("Cancellation must not become an empty or successful result")
         } catch (expected: CancellationException) {
             assertEquals("cancel injected", expected.message)
+        }
+    }
+
+
+    @Test
+    fun foregroundStreamPersistsQualifiedGzipAndCanBeReopened() = runBlocking {
+        val f = fixture()
+        val marker = java.util.concurrent.atomic.AtomicReference<EpgCacheEntity?>()
+        Mockito.doAnswer { invocation ->
+            marker.set(invocation.arguments[0] as EpgCacheEntity)
+            Unit
+        }.`when`(f.dao).insertOrUpdate(
+            Mockito.any(EpgCacheEntity::class.java) ?: EpgCacheEntity("", "", 0L)
+        )
+        Mockito.doAnswer { marker.get() }.`when`(f.dao).getCache("KONOMITV_GR")
+        try {
+            val pending = async(Dispatchers.IO) { f.repo.getEpgDataStream(start, end, "GR").toList() }
+            assertTrue(f.enteredProvider.await(15, TimeUnit.SECONDS))
+            f.releaseProvider.countDown()
+            assertEquals(programs, withTimeout(15_000L) { pending.await() }.single().getOrThrow())
+            withTimeout(15_000L) {
+                while (marker.get() == null) delay(25)
+            }
+            assertEquals("KONOMITV_GR", marker.get()?.channelType)
+            assertEquals("FILE_BASED", marker.get()?.dataJson)
+            assertTrue("foreground stream must persist compressed file", f.cacheFile.isFile)
+            val settings = Mockito.mock(SettingsRepository::class.java)
+            Mockito.`when`(settings.backendType).thenReturn(f.backend)
+            val provider = Mockito.mock(DtvProviderProxy::class.java)
+            val reopened = EpgRepository(
+                ApplicationProvider.getApplicationContext(), provider, f.dao, Gson(), settings
+            )
+            reopened.fetchAndCacheEpgDataSilently(start, end, "GR")
+            Mockito.verifyNoInteractions(provider)
+            assertEquals(programs, memoryCache(reopened)["KONOMITV_GR"])
+        } finally {
+            f.releaseProvider.countDown()
+            f.cacheFile.delete()
         }
     }
 
