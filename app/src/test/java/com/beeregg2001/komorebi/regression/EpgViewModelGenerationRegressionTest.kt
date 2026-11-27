@@ -464,7 +464,7 @@ class EpgViewModelGenerationRegressionTest {
         Mockito.`when`(settings.mirakurunPort).thenReturn(flowOf(""))
         val live = Mockito.mock(LiveProvider::class.java)
         Mockito.doReturn("logo").`when`(live).getChannelLogoUrl(Mockito.anyString())
-        val now = OffsetDateTime.now()
+        val now = OffsetDateTime.now().plusHours(2)
         val old = listOf(epgFixture("old-owner", "previous EPG", now))
         val latest = listOf(epgFixture("new-owner", "replacement EPG", now))
         Mockito.doAnswer {
@@ -483,9 +483,11 @@ class EpgViewModelGenerationRegressionTest {
             repository, live, settings, ApplicationProvider.getApplicationContext()
         )
         withTimeout(10_000L) {
-            while ((viewModel.uiState as? EpgUiState.Success)?.data?.isEmpty() != false)
+            while (viewModel.uiState !is EpgUiState.Success)
                 kotlinx.coroutines.delay(10L)
         }
+        assertTrue("initialized VM must publish nonempty starting EPG",
+            (viewModel.uiState as EpgUiState.Success).data.isNotEmpty())
         Mockito.doReturn(listOf(searchItem())).`when`(repository)
             .searchFuturePrograms("old-query", null, null, false, null)
         viewModel.executeSearch("old-query")
