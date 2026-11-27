@@ -121,6 +121,44 @@ class EpgCanvasOverlayUiRegressionTest {
         compose.onNodeWithText("番組表がありません").assertDoesNotExist()
         compose.onNodeWithText("番組表を取得できません").assertDoesNotExist()
     }
+
+    @Test
+    fun errorAfterPopulatedEpgClearsOldFocusAndReplacesCanvas() {
+        val now = OffsetDateTime.now()
+        val channel = EpgChannel(
+            id = "GR_FAIL", display_channel_id = "GR_FAIL", network_id = 1,
+            service_id = 1, transport_stream_id = 2, remocon_id = 1,
+            channel_number = "101", type = "GR", name = "Old EPG Channel",
+            jikkyo_force = null, is_subchannel = false, is_radiochannel = false,
+            is_watchable = true
+        )
+        val program = EpgProgram(
+            id = "OLD_EVENT", channel_id = channel.id, network_id = 1,
+            service_id = 1, event_id = 101, title = "Old selectable program",
+            description = "", detail = null, start_time = now.minusMinutes(30).toString(),
+            end_time = now.plusMinutes(30).toString(),
+            duration = 3600, is_free = true, genres = emptyList(),
+            video_type = null, audio_type = null, audio_sampling_rate = null
+        )
+        val loaded = EpgUiState.Success(
+            data = listOf(EpgChannelWrapper(channel, listOf(program))),
+            logoUrls = emptyList(), mirakurunIp = "", mirakurunPort = "", targetTime = now
+        )
+        val state = mutableStateOf<EpgUiState>(loaded)
+        val focus = FocusRequester()
+        val selections = AtomicInteger(0)
+        setContent(state, focus) { if (it.id == program.id) selections.incrementAndGet() }
+        compose.runOnIdle { focus.requestFocus() }
+        compose.onRoot().performKeyInput { pressKey(Key.Enter) }
+        compose.waitUntil(10_000L) { selections.get() > 0 }
+        val before = selections.get()
+        compose.runOnIdle { state.value = EpgUiState.Error("network rejected") }
+        compose.onNodeWithText("番組表を取得できません").assertIsDisplayed()
+        compose.onNodeWithText("Old selectable program").assertDoesNotExist()
+        compose.onRoot().performKeyInput { pressKey(Key.Enter) }
+        assertEquals("Error must make the former focused EPG cell inert", before, selections.get())
+    }
+
     @Test
     fun loadingAfterPopulatedEpgClearsOldFocusedProgramSelection() {
         val now = OffsetDateTime.now()
