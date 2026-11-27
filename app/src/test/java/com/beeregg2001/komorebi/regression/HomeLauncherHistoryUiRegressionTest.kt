@@ -519,4 +519,34 @@ class HomeLauncherHistoryUiRegressionTest {
         }
     }
 
+
+    @Test
+    fun homeCorrectsUnavailableGrSelectionToFirstPresentBroadcastType() {
+        val onlyBsAndCs = mapOf(
+            "BS" to listOf(Channel(
+                id = "bs1", displayChannelId = "bs1", name = "BS",
+                channelNumber = "101", networkId = 1L, serviceId = 2L,
+                type = "BS", isWatchable = true, isDisplay = true,
+                programPresent = null, programFollowing = null, remocon_Id = 1
+            )),
+            "CS" to emptyList<Channel>()
+        )
+        render(initialTabIndex = 0, groupedChannels = onlyBsAndCs)
+        Mockito.verify(epg, Mockito.timeout(10_000L).times(1)).updateBroadcastingType("BS")
+        Mockito.verify(epg, Mockito.never()).updateBroadcastingType("GR")
+    }
+
+    @Test
+    fun homePreservesExistingBsBroadcastTypeAcrossBackendSwitch() {
+        Mockito.`when`(epg.selectedBroadcastingType).thenReturn(MutableStateFlow("BS"))
+        val channels = mapOf(
+            "BS" to emptyList<Channel>(),
+            "CS" to emptyList<Channel>()
+        )
+        render(initialTabIndex = 0, groupedChannels = channels)
+        compose.runOnIdle { backend.value = "EPGSTATION" }
+        compose.waitForIdle()
+        Mockito.verify(epg, Mockito.never()).updateBroadcastingType(Mockito.anyString())
+    }
+
 }
