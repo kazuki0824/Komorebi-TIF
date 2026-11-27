@@ -501,4 +501,40 @@ class EpgViewModelGenerationRegressionTest {
         )
     }
 
+
+    @Test
+    fun nonemptyPreviousBroadcastSliceCannotOverwriteNewBroadcastTypeAfterCancellation() = runBlocking {
+        val now = OffsetDateTime.now().plusHours(2)
+        val old = epgFixture("gr-old", "Previous GR programme", now)
+        val current = epgFixture("bs-current", "Latest BS programme", now)
+        val spy = Mockito.spy(old.programs.single())
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val blockNext = AtomicBoolean(false)
+        Mockito.doAnswer {
+            if (blockNext.compareAndSet(true, false)) {
+                entered.countDown()
+                check(release.await(15, TimeUnit.SECONDS))
+            }
+            it.callRealMethod()
+        }.`when`(spy).start_time
+        loadEpg("GR", Result.success(listOf(old.copy(programs = listOf(spy)))))
+        withTimeout(10_000L) { job("sliceJob").join() }
+        try {
+            blockNext.set(true)
+            viewModel.updateTargetTime(now.plusMinutes(10))
+            val oldSlice = job("sliceJob")
+            assertTrue(entered.await(15, TimeUnit.SECONDS))
+            viewModel.updateBroadcastingType("BS")
+            loadEpg("BS", Result.success(listOf(current)))
+            withTimeout(10_000L) { job("sliceJob").join() }
+            release.countDown()
+            withTimeout(10_000L) { oldSlice.join() }
+            assertEquals("BS", viewModel.selectedBroadcastingType.value)
+            val result = viewModel.uiState as EpgUiState.Success
+            assertTrue(result.data.any { it.channel.id == "bs-current" })
+            assertTrue(result.data.none { it.channel.id == "gr-old" })
+        } finally { release.countDown() }
+    }
+
 }
