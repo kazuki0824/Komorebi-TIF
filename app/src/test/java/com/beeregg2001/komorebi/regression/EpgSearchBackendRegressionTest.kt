@@ -11,6 +11,7 @@ import com.beeregg2001.komorebi.data.repository.DtvProviderProxy
 import com.beeregg2001.komorebi.data.repository.EpgRepository
 import com.google.gson.Gson
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -130,6 +131,28 @@ class EpgSearchBackendRegressionTest {
         cache(repo)["EDCB_GR"] = listOf(wrapper("foreign", "news three"))
         assertEquals(setOf("news one", "news two"),
             repo.searchFuturePrograms(query = "news").map { it.program.title }.toSet())
+    }
+
+
+    @Test
+    fun sameRepositorySwitchesSearchScopeWithCurrentBackend() = runBlocking {
+        val selected = MutableStateFlow("KONOMITV")
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(selected)
+        val repo = EpgRepository(
+            ApplicationProvider.getApplicationContext<Context>(),
+            Mockito.mock(DtvProviderProxy::class.java),
+            Mockito.mock(EpgCacheDao::class.java),
+            Gson(),
+            settings
+        )
+        cache(repo)["KONOMITV_GR"] = listOf(wrapper("Network A", "needle-kon"))
+        cache(repo)["EDCB_GR"] = listOf(wrapper("Network B", "needle-edcb"))
+        assertEquals(listOf("needle-kon"), repo.searchFuturePrograms(query = "needle").map { it.program.title })
+        selected.value = "EDCB"
+        assertEquals(listOf("needle-edcb"), repo.searchFuturePrograms(query = "needle").map { it.program.title })
+        selected.value = "KONOMITV"
+        assertEquals(listOf("needle-kon"), repo.searchFuturePrograms(query = "needle").map { it.program.title })
     }
 
 }
