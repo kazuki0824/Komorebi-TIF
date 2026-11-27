@@ -161,7 +161,7 @@ jobs:
               "MainRootScreenStateUiRegressionTest": 10,
               "RecordCacheOwnershipRegressionTest": 6,
               "RecordSyncBackendTransitionRegressionTest": 12,
-              "RecordSyncFullSyncOwnerRegressionTest": 6,
+              "RecordSyncFullSyncOwnerRegressionTest": 8,
               "RecordViewModelRegressionTest": 12,
               "WatchHistoryRepositoryRegressionTest": 10,
               "VideoPlaybackHistoryOwnershipRegressionTest": 2,
