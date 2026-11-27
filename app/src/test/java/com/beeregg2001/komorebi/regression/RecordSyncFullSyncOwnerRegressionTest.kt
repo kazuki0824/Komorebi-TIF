@@ -274,4 +274,80 @@ class RecordSyncFullSyncOwnerRegressionTest {
             rebooted.recordCacheReady.value)
     }
 
+
+    private fun remoteRecord(id: Int, title: String) =
+        com.beeregg2001.komorebi.data.model.RecordedProgram(
+            id = id, title = title, description = "",
+            startTime = "2030-01-01T00:00:00+09:00",
+            endTime = "2030-01-01T01:00:00+09:00",
+            duration = 3600.0, isPartiallyRecorded = false,
+            recordedVideo = com.beeregg2001.komorebi.data.model.RecordedVideo(
+                id = id, status = "Recorded", filePath = "record-$id.ts",
+                recordingStartTime = "2030-01-01T00:00:00+09:00",
+                recordingEndTime = "2030-01-01T01:00:00+09:00",
+                duration = 3600.0, containerFormat = "ts",
+                videoCodec = "H264", audioCodec = "AAC"
+            )
+        )
+
+    @Test
+    fun matchingOwnerIncompleteSyncResumesAtCheckpointPlusOneAndKeepsEarlierRows() = runBlocking {
+        prefs().edit().putString("backend", "EDCB").putBoolean("pending", false).commit()
+        db.syncMetaDao().upsert(SyncMetaEntity(1, 2, 123L, false))
+        val seenPages = java.util.concurrent.CopyOnWriteArrayList<Int>()
+        Mockito.doAnswer { invocation ->
+            val page = invocation.arguments[0] as Int
+            seenPages.add(page)
+            if (page == 3) RecordedApiResponse(2, listOf(remoteRecord(55, "resumed page three")))
+            else RecordedApiResponse(2, emptyList())
+        }.`when`(provider).getRecordedPrograms(Mockito.anyInt(), Mockito.anyInt())
+        val sync = engine()
+        sync.syncAllRecords()
+        assertTrue("resumed sync must begin at page three", 3 in seenPages)
+        assertFalse("must not refetch old page one", 1 in seenPages)
+        assertFalse("must not refetch old page two", 2 in seenPages)
+        assertTrue(db.recordedProgramDao().getAllIds().containsAll(listOf(44,55)))
+        assertEquals(0, db.syncMetaDao().getSyncMeta()?.lastSyncedPage)
+        assertTrue(db.syncMetaDao().getSyncMeta()?.isInitialBuildCompleted == true)
+        assertTrue(sync.recordCacheReady.value)
+    }
+
+    @Test
+    fun completedOwnerIncrementalSyncUpdatesAndPreservesOtherRowsAcrossNonemptyPages() = runBlocking {
+        prefs().edit().putString("backend", "EDCB").putBoolean("pending", false).commit()
+        db.recordedProgramDao().upsertAll(listOf(existing().copy(id=66, title="unrelated retained")))
+        val pages = java.util.concurrent.CopyOnWriteArrayList<Int>()
+        Mockito.doAnswer { invocation ->
+            val page = invocation.arguments[0] as Int
+            pages.add(page)
+            when (page) {
+                1 -> RecordedApiResponse(2, listOf(remoteRecord(44, "changed remote title")))
+                2 -> RecordedApiResponse(2, listOf(remoteRecord(55, "new remote item")))
+                else -> RecordedApiResponse(2, emptyList())
+            }
+        }.`when`(provider).getRecordedPrograms(Mockito.anyInt(), Mockito.anyInt())
+        val sync = engine()
+        sync.syncAllRecords(forceFullSync = false)
+        assertEquals(listOf(1, 2), pages.toList())
+        assertTrue(db.recordedProgramDao().getAllIds().containsAll(listOf(44,55,66)))
+        val row = db.recordedProgramDao().getByIds(listOf(44)).single()
+        assertEquals("changed remote title", row.title)
+        assertTrue(sync.recordCacheReady.value)
+    }
+
+    @Test
+    fun explicitFullRebuildWithNonemptyRemotePagesRemovesOldLocalOrphans() = runBlocking {
+        prefs().edit().putString("backend", "EDCB").putBoolean("pending", false).commit()
+        Mockito.doAnswer { invocation ->
+            val page = invocation.arguments[0] as Int
+            if (page == 1) RecordedApiResponse(1, listOf(remoteRecord(55, "replacement")))
+            else RecordedApiResponse(1, emptyList())
+        }.`when`(provider).getRecordedPrograms(Mockito.anyInt(), Mockito.anyInt())
+        val sync = engine()
+        sync.syncAllRecords(forceFullSync = true)
+        assertEquals(listOf(55), db.recordedProgramDao().getAllIds())
+        assertTrue(sync.recordCacheReady.value)
+        assertTrue(db.syncMetaDao().getSyncMeta()?.isInitialBuildCompleted == true)
+    }
+
 }
