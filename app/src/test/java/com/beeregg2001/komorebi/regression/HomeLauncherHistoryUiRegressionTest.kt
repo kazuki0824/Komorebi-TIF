@@ -549,4 +549,56 @@ class HomeLauncherHistoryUiRegressionTest {
         Mockito.verify(epg, Mockito.never()).updateBroadcastingType(Mockito.anyString())
     }
 
+
+    @Test
+    fun currentHistoryLookupFailureDisplaysOnceAndDoesNotSelectRecording() {
+        val reason = MutableStateFlow<String?>("The recording is unavailable")
+        Mockito.`when`(records.historyResumeError).thenReturn(reason)
+        Mockito.doAnswer {
+            reason.value = "The recording is unavailable"
+            null
+        }.`when`(records).getResumableHistoryProgram(42, "EDCB")
+        Mockito.doAnswer { reason.value = null; null }.`when`(records).clearHistoryResumeError()
+        interceptHistorySelection(
+            "com.beeregg2001.komorebi.ui.home.VideoTabContentKt",
+            "VideoTabContent", 7
+        )
+        render()
+        compose.waitUntil(10_000L) { historySelection.get() != null }
+        compose.runOnIdle { historySelection.get()!!.invoke(owned.value.second.single()) }
+        Mockito.verify(records, Mockito.timeout(10_000L).times(1)).clearHistoryResumeError()
+        assertNull(resumed.get())
+        assertNull(selectedProgramAfterClick.get())
+        assertNull(reason.value)
+    }
+
+    @Test
+    fun staleFailureAfterNewerRecordingSelectionCannotPublishOrConsumeError() {
+        val deferred = AtomicReference<Continuation<RecordedProgram?>?>()
+        val reason = MutableStateFlow<String?>(null)
+        Mockito.`when`(records.historyResumeError).thenReturn(reason)
+        Mockito.doAnswer { invocation ->
+            @Suppress("UNCHECKED_CAST")
+            val continuation = invocation.rawArguments.last() as Continuation<RecordedProgram?>
+            deferred.set(continuation)
+            COROUTINE_SUSPENDED
+        }.`when`(records).getResumableHistoryProgram(42, "EDCB")
+        interceptHistorySelection(
+            "com.beeregg2001.komorebi.ui.home.VideoTabContentKt",
+            "VideoTabContent", 7
+        )
+        render()
+        compose.waitUntil(10_000L) { historySelection.get() != null && recordedCardSelection.get() != null }
+        compose.runOnIdle { historySelection.get()!!.invoke(owned.value.second.single()) }
+        compose.waitUntil(10_000L) { deferred.get() != null }
+        val later = Mockito.mock(RecordedProgram::class.java)
+        compose.runOnIdle { recordedCardSelection.get()!!.invoke(later) }
+        reason.value = "obsolete request rejected"
+        deferred.get()!!.resume(null)
+        compose.waitForIdle()
+        assertSame(later, selectedProgramAfterClick.get())
+        assertNull(resumed.get())
+        Mockito.verify(records, Mockito.never()).clearHistoryResumeError()
+    }
+
 }
