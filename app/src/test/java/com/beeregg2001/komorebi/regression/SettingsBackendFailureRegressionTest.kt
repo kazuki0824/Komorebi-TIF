@@ -26,6 +26,8 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -206,6 +208,52 @@ class SettingsBackendFailureRegressionTest {
         Mockito.verify(sync, Mockito.times(1))
             .switchBackend(Mockito.any<suspend () -> Unit>() ?: {})
         Mockito.verify(sync, Mockito.never()).launchSyncAllRecords(forceFullSync = true)
+    }
+
+
+    @Test
+    fun realSettingsSaveCallbackRunsBeforeForcedSyncAndDifferentSelectionsSerialize() = runBlocking {
+        val firstCommitted = CompletableDeferred<Unit>()
+        val firstExit = CompletableDeferred<Unit>()
+        val order = java.util.concurrent.CopyOnWriteArrayList<String>()
+        Mockito.doAnswer { invocation ->
+            val key = invocation.arguments[0] as String
+            val value = invocation.arguments[1] as String
+            if (key == SettingsRepository.BACKEND_TYPE) {
+                order.add("save:$value")
+                selectedBackend.value = value
+            }
+            Unit
+        }.`when`(settingsRepositoryUnderTest)
+            .saveString(Mockito.eq(SettingsRepository.BACKEND_TYPE) ?: SettingsRepository.BACKEND_TYPE,
+                Mockito.anyString() ?: "EDCB")
+        val calls = AtomicInteger(0)
+        Mockito.doAnswer { invocation ->
+            val call = calls.incrementAndGet()
+            @Suppress("UNCHECKED_CAST")
+            val commit = invocation.arguments[0] as suspend () -> Unit
+            runBlocking { commit() }
+            if (call == 1) {
+                firstCommitted.complete(Unit)
+                runBlocking { firstExit.await() }
+            }
+            order.add("switch-commit:$call")
+            null
+        }.`when`(sync).switchBackend(Mockito.any<suspend () -> Unit>() ?: {})
+        Mockito.doAnswer { order.add("full-sync"); null }
+            .`when`(sync).launchSyncAllRecords(forceFullSync = true)
+        viewModel.updateBackendType("EDCB")
+        withTimeout(10_000L) { firstCommitted.await() }
+        viewModel.updateBackendType("EPGSTATION")
+        firstExit.complete(Unit)
+        Mockito.verify(sync, Mockito.timeout(10_000L).times(2))
+            .launchSyncAllRecords(forceFullSync = true)
+        assertEquals("EPGSTATION", selectedBackend.value)
+        assertEquals(2, calls.get())
+        assertEquals(listOf(
+            "save:EDCB", "switch-commit:1", "full-sync",
+            "save:EPGSTATION", "switch-commit:2", "full-sync"
+        ), order.toList())
     }
 
 }
