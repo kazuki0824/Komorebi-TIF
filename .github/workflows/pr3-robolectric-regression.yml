@@ -163,7 +163,7 @@ jobs:
               "RecordSyncBackendTransitionRegressionTest": 11,
               "RecordSyncFullSyncOwnerRegressionTest": 6,
               "RecordViewModelRegressionTest": 12,
-              "WatchHistoryRepositoryRegressionTest": 4,
+              "WatchHistoryRepositoryRegressionTest": 6,
               "VideoPlaybackHistoryOwnershipRegressionTest": 2,
               "VideoPlayerSessionBackendUiRegressionTest": 2,
               "VideoTabSmbNavigationUiRegressionTest": 2,
