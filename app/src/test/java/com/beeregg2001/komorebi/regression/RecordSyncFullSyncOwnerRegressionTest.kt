@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.SharedPreferences
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicInteger
 import androidx.room.Room
@@ -389,6 +392,49 @@ class RecordSyncFullSyncOwnerRegressionTest {
         assertFalse(sync.syncProgress.value.isSyncing)
         assertEquals(0, db.recordedProgramDao().getUnknownTitlesCount())
         assertTrue(db.aiSeriesDictionaryDao().getAllDictionary().isEmpty())
+    }
+
+
+    @Test
+    fun backendSwitchAfterNormalSyncButBeforeDictionaryLaunchRejectsOldJob() = runBlocking {
+        prefs().edit().putString("backend", "EDCB").putBoolean("pending", false).commit()
+        val sync = engine()
+        val lockField = RecordSyncEngine::class.java.getDeclaredField("syncMutex")
+            .apply { isAccessible = true }
+        val original = lockField.get(sync) as Mutex
+        val enteredPostSyncGate = CompletableDeferred<Unit>()
+        val releasePostSyncGate = CompletableDeferred<Unit>()
+        val acquisitions = AtomicInteger()
+        val gated = object : Mutex by original {
+            override suspend fun lock(owner: Any?) {
+                if (acquisitions.incrementAndGet() == 2) {
+                    enteredPostSyncGate.complete(Unit)
+                    releasePostSyncGate.await()
+                }
+                original.lock(owner)
+            }
+        }
+        lockField.set(sync, gated)
+        try {
+            val pending = async(Dispatchers.IO) { sync.syncAllRecords(forceFullSync = false) }
+            withTimeout(15_000L) { enteredPostSyncGate.await() }
+            val switching = async(Dispatchers.IO) {
+                sync.switchBackend { selection.value = "KONOMITV" }
+            }
+            val flag = RecordSyncEngine::class.java.getDeclaredField("switchingBackend")
+                .apply { isAccessible = true }
+            withTimeout(15_000L) {
+                while (!flag.getBoolean(sync)) delay(10)
+            }
+            releasePostSyncGate.complete(Unit)
+            withTimeout(15_000L) { pending.await(); switching.await() }
+            val dict = RecordSyncEngine::class.java.getDeclaredField("dictionaryJob")
+                .apply { isAccessible = true }.get(sync) as? kotlinx.coroutines.Job
+            assertTrue("old dictionary may not launch after switch began", dict == null || !dict.isActive)
+            assertFalse(sync.recordCacheReady.value)
+        } finally {
+            releasePostSyncGate.complete(Unit)
+        }
     }
 
 }
