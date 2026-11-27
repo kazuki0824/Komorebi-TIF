@@ -350,4 +350,44 @@ class RecordSyncFullSyncOwnerRegressionTest {
         assertTrue(db.syncMetaDao().getSyncMeta()?.isInitialBuildCompleted == true)
     }
 
+
+    private suspend fun awaitDictionaryJob(sync: RecordSyncEngine) {
+        val field = RecordSyncEngine::class.java.getDeclaredField("dictionaryJob")
+            .apply { isAccessible = true }
+        val job = withTimeout(10_000L) {
+            while (true) {
+                val current = field.get(sync) as? kotlinx.coroutines.Job
+                if (current != null) break current
+                kotlinx.coroutines.delay(10L)
+            }
+        }
+        withTimeout(15_000L) { job.join() }
+        assertFalse(job.isActive)
+    }
+
+    @Test
+    fun actualEpgStationDictionaryJobSkipsResolutionAndCompletesProgress() = runBlocking {
+        selection.value = "EPGSTATION"
+        prefs().edit().putString("backend", "EPGSTATION").putBoolean("pending", false).commit()
+        db.recordedProgramDao().clearAll()
+        val sync = engine()
+        sync.syncAllRecords(forceFullSync = false)
+        awaitDictionaryJob(sync)
+        assertFalse("real EPGStation dictionary early-return must finish the sync", sync.syncProgress.value.isSyncing)
+        assertNull(sync.syncProgress.value.error)
+    }
+
+    @Test
+    fun actualEmptyUnknownTitleDictionaryJobCompletesAndDoesNotAddEntries() = runBlocking {
+        selection.value = "EDCB"
+        prefs().edit().putString("backend", "EDCB").putBoolean("pending", false).commit()
+        db.recordedProgramDao().clearAll()
+        val sync = engine()
+        sync.syncAllRecords(forceFullSync = false)
+        awaitDictionaryJob(sync)
+        assertFalse(sync.syncProgress.value.isSyncing)
+        assertEquals(0, db.recordedProgramDao().getUnknownTitlesCount())
+        assertTrue(db.aiSeriesDictionaryDao().getAllDictionary().isEmpty())
+    }
+
 }
