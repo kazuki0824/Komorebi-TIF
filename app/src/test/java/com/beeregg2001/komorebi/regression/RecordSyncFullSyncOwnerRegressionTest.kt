@@ -354,13 +354,14 @@ class RecordSyncFullSyncOwnerRegressionTest {
     private suspend fun awaitDictionaryJob(sync: RecordSyncEngine) {
         val field = RecordSyncEngine::class.java.getDeclaredField("dictionaryJob")
             .apply { isAccessible = true }
-        val job = withTimeout(10_000L) {
-            while (true) {
-                val current = field.get(sync) as? kotlinx.coroutines.Job
-                if (current != null) break current
-                kotlinx.coroutines.delay(10L)
+        var found: kotlinx.coroutines.Job? = null
+        withTimeout(10_000L) {
+            while (found == null) {
+                found = field.get(sync) as? kotlinx.coroutines.Job
+                if (found == null) kotlinx.coroutines.delay(10L)
             }
         }
+        val job = requireNotNull(found)
         withTimeout(15_000L) { job.join() }
         assertFalse(job.isActive)
     }
