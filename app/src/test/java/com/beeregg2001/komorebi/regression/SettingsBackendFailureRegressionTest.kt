@@ -1,6 +1,8 @@
 package com.beeregg2001.komorebi.regression
 
 import android.content.Context
+import coil.Coil
+import coil.ImageLoader
 import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import com.beeregg2001.komorebi.data.SettingsRepository
@@ -51,6 +53,7 @@ class SettingsBackendFailureRegressionTest {
     private lateinit var selectedBackend: MutableStateFlow<String>
     private lateinit var settingsRepositoryUnderTest: SettingsRepository
     private lateinit var sync: RecordSyncEngine
+    private lateinit var realProvider: RecordProvider
     private lateinit var viewModel: SettingsViewModel
 
     @Before
@@ -78,9 +81,10 @@ class SettingsBackendFailureRegressionTest {
         Mockito.`when`(db.syncMetaDao()).thenReturn(syncDao)
         val updater = Mockito.mock(AppUpdater::class.java)
         Mockito.`when`(updater.updateState).thenReturn(MutableStateFlow<UpdateState>(UpdateState.Idle))
+        realProvider = Mockito.mock(RecordProvider::class.java)
         viewModel = SettingsViewModel(
             ApplicationProvider.getApplicationContext<Context>(),
-            settings, sync, Mockito.mock(RecordProvider::class.java),
+            settings, sync, realProvider,
             Mockito.mock(EpgStationLiveRepository::class.java), updater, db
         )
     }
@@ -287,6 +291,39 @@ class SettingsBackendFailureRegressionTest {
             .launchSyncAllRecords(forceFullSync = true)
         assertEquals("EPGSTATION", selectedBackend.value)
         assertEquals(2, attempts.get())
+    }
+
+
+    @Test
+    fun imageCacheClearFailureAfterBackendCommitStillStartsSyncAndUpdatesQualities() = runBlocking {
+        val brokenLoader = Mockito.mock(ImageLoader::class.java)
+        Mockito.doThrow(IllegalStateException("injected image cache error"))
+            .`when`(brokenLoader).memoryCache
+        Coil.setImageLoader(brokenLoader)
+        try {
+            Mockito.doAnswer { invocation ->
+                @Suppress("UNCHECKED_CAST")
+                val commit = invocation.arguments[0] as suspend () -> Unit
+                runBlocking { commit() }
+                null
+            }.`when`(sync).switchBackend(Mockito.any<suspend () -> Unit>() ?: {})
+            Mockito.doAnswer { invocation ->
+                selectedBackend.value = invocation.arguments[1] as String
+                Unit
+            }.`when`(settingsRepositoryUnderTest).saveString(
+                Mockito.eq(SettingsRepository.BACKEND_TYPE) ?: SettingsRepository.BACKEND_TYPE,
+                Mockito.anyString() ?: "EDCB"
+            )
+            Mockito.doReturn(emptyList<com.beeregg2001.komorebi.data.model.StreamQuality>())
+                .`when`(realProvider).getStreamQualities()
+            viewModel.updateBackendType("EDCB")
+            Mockito.verify(sync, Mockito.timeout(10_000L).times(1))
+                .launchSyncAllRecords(forceFullSync = true)
+            Mockito.verify(realProvider, Mockito.timeout(10_000L).atLeastOnce()).getStreamQualities()
+            assertEquals("EDCB", selectedBackend.value)
+        } finally {
+            Coil.reset()
+        }
     }
 
 }
