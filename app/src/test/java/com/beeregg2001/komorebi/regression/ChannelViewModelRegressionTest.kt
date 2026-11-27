@@ -380,7 +380,7 @@ class ChannelViewModelRegressionTest {
 
 
     @Test
-    fun switchingBackendInvalidatesLogoCacheEvenWithIdenticalChannelId() = runBlocking {
+    fun switchingBackendInvalidatesLogoCacheEvenWithIdenticalChannelId(): Unit = runBlocking {
         val live = Mockito.mock(LiveProvider::class.java)
         Mockito.doReturn(ChannelApiResponse()).`when`(live).getChannels()
         val backend = MutableStateFlow("KONOMITV")
@@ -533,7 +533,7 @@ class ChannelViewModelRegressionTest {
 
 
     @Test
-    fun virtualMinutePollingFetchCannotOvertakeSubsequentExplicitRefresh() = runBlocking {
+    fun virtualMinutePollingFetchCannotOvertakeSubsequentExplicitRefresh(): Unit = runBlocking {
         val live = Mockito.mock(LiveProvider::class.java)
         Mockito.doReturn(ChannelApiResponse()).`when`(live).getChannels()
         val vm = viewModel(live, MutableStateFlow("KONOMITV"))
