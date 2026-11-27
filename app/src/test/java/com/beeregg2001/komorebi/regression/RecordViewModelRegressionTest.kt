@@ -319,7 +319,7 @@ class RecordViewModelRegressionTest {
 
 
     @Test
-    fun ownedLocalRecordingResumesFromRoomWithoutNetworkAndRetainsPosition() = runBlocking {
+    fun ownedLocalRecordingResumesFromRoomWithoutNetworkAndRetainsPosition(): Unit = runBlocking {
         cacheReady.value = true
         val entity = RecordedProgramEntity(
             id = 55, title = "owned local recording",
@@ -442,7 +442,7 @@ class RecordViewModelRegressionTest {
 
 
     @Test
-    fun onePagingSubscriptionPublishesRowsOnlyWhileCacheOwnershipIsReady() = runBlocking {
+    fun onePagingSubscriptionPublishesRowsOnlyWhileCacheOwnershipIsReady(): Unit = runBlocking {
         val ownedRow = RecordedProgramEntity(
             id = 88, title = "owned paging row",
             startTime = "2030-01-01T00:00:00+09:00", endTime = "2030-01-01T01:00:00+09:00",
