@@ -15,6 +15,7 @@ import com.beeregg2001.komorebi.viewmodel.EpgUiState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
@@ -346,6 +347,57 @@ class EpgViewModelGenerationRegressionTest {
             assertEquals("GR", viewModel.selectedBroadcastingType.value)
             assertSame(com.beeregg2001.komorebi.viewmodel.EpgUiState.Loading, viewModel.uiState)
         } finally { release.countDown() }
+    }
+
+
+    @Test
+    fun oldSearchFailureDoesNotStopNewerStillRunningSearch() = runBlocking {
+        val oldEntered = CountDownLatch(1)
+        val oldRelease = CountDownLatch(1)
+        val newEntered = CountDownLatch(1)
+        val newRelease = CountDownLatch(1)
+        val newItem = searchItem()
+        Mockito.doAnswer {
+            oldEntered.countDown()
+            check(oldRelease.await(15, TimeUnit.SECONDS))
+            throw IllegalStateException("obsolete search failure")
+        }.`when`(repository).searchFuturePrograms("older-error", null, null, false, null)
+        Mockito.doAnswer {
+            newEntered.countDown()
+            check(newRelease.await(15, TimeUnit.SECONDS))
+            listOf(newItem)
+        }.`when`(repository).searchFuturePrograms("newer-pending", null, null, false, null)
+        try {
+            viewModel.executeSearch("older-error")
+            val oldJob = job("searchJob")
+            assertTrue(oldEntered.await(15, TimeUnit.SECONDS))
+            viewModel.executeSearch("newer-pending")
+            assertTrue(newEntered.await(15, TimeUnit.SECONDS))
+            oldRelease.countDown()
+            withTimeout(10_000L) { oldJob.join() }
+            assertTrue("obsolete finally must not clear current spinner", viewModel.isSearching.value)
+            assertEquals("newer-pending", viewModel.activeSearchQuery.value)
+            assertTrue(viewModel.searchResults.value.isEmpty())
+            newRelease.countDown()
+            withTimeout(10_000L) { job("searchJob").join() }
+            assertSame(newItem.program, viewModel.searchResults.value.single().program)
+            assertFalse(viewModel.isSearching.value)
+        } finally {
+            oldRelease.countDown()
+            newRelease.countDown()
+        }
+    }
+
+    @Test
+    fun silentSearchCancellationPropagatesInsteadOfBecomingEmptyList() = runBlocking {
+        Mockito.doAnswer { throw CancellationException("search cancelled by caller") }
+            .`when`(repository).searchFuturePrograms("cancel", null, null, false, null)
+        try {
+            viewModel.searchSilently("cancel")
+            fail("CancellationException must not be converted into an empty search")
+        } catch (expected: CancellationException) {
+            assertEquals("search cancelled by caller", expected.message)
+        }
     }
 
 }
