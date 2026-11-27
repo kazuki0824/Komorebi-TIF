@@ -429,4 +429,31 @@ class RecordSyncBackendTransitionRegressionTest {
         }
     }
 
+
+    @Test
+    fun smartSyncFindsLockedSyncMutexAndNeverQueuesOldBackendProviderRead() = runBlocking {
+        seedIndependentData()
+        db.syncMetaDao().upsert(SyncMetaEntity(1, 18, 44L, true))
+        assertTrue(context.getSharedPreferences("record_cache_backend_owner", Context.MODE_PRIVATE)
+            .edit().putString("backend", "KONOMITV").putBoolean("pending", false).commit())
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(selectedBackend)
+        val provider = Mockito.mock(RecordProvider::class.java)
+        val actual = RecordSyncEngine(provider, db, settings, db.aiSeriesDictionaryDao(), context)
+        val ready = RecordSyncEngine::class.java.getDeclaredField("ownerInitialized")
+            .apply { isAccessible = true }.get(actual) as CompletableDeferred<*>
+        ready.await()
+        assertTrue(actual.recordCacheReady.value)
+        val lock = RecordSyncEngine::class.java.getDeclaredField("syncMutex")
+            .apply { isAccessible = true }.get(actual) as Mutex
+        lock.lock()
+        try {
+            withTimeout(10_000L) { actual.smartSync() }
+            Mockito.verifyNoInteractions(provider)
+            assertEquals(listOf(19), db.recordedProgramDao().getAllIds())
+        } finally {
+            lock.unlock()
+        }
+    }
+
 }
