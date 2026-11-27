@@ -21,6 +21,8 @@ import kotlinx.coroutines.delay
 import java.util.concurrent.atomic.AtomicReference
 import org.mockito.stubbing.Answer
 import org.mockito.MockedStatic
+import org.mockito.MockedConstruction
+import org.mockito.AdditionalAnswers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -44,10 +46,14 @@ class SettingScreenBackendWriteUiRegressionTest {
     private val store = SettingsRepository(context)
     private val backendDialogSelection = AtomicReference<((String) -> Unit)?>(null)
     private var dialogMock: MockedStatic<Any>? = null
+    private var uiSettingsConstruction: MockedConstruction<SettingsRepository>? = null
 
     @After
     fun clean() = runBlocking {
-        compose.runOnUiThread { dialogMock?.close(); dialogMock = null }
+        compose.runOnUiThread {
+            dialogMock?.close(); dialogMock = null
+            uiSettingsConstruction?.close(); uiSettingsConstruction = null
+        }
         store.saveString(SettingsRepository.BACKEND_TYPE, "KONOMITV")
     }
 
@@ -84,6 +90,14 @@ class SettingScreenBackendWriteUiRegressionTest {
                 } else invocation.callRealMethod()
             })
         }
+        // Intercept SettingsRepository constructed inside the real screen.
+        // Delegate all production reads to the real store, but count any independent UI writes.
+        compose.runOnUiThread {
+            uiSettingsConstruction = Mockito.mockConstruction(
+                SettingsRepository::class.java,
+                Mockito.withSettings().defaultAnswer(AdditionalAnswers.delegatesTo(store))
+            )
+        }
         compose.setContent {
             KomorebiTheme {
                 SettingsScreen(
@@ -101,9 +115,16 @@ class SettingScreenBackendWriteUiRegressionTest {
         compose.waitUntil(10_000L) { backendDialogSelection.get() != null }
         compose.runOnIdle { backendDialogSelection.get()!!.invoke("EDCB") }
         Mockito.verify(vm, Mockito.timeout(10_000L).times(1)).updateBackendType("EDCB")
-        // The mock deliberately does NOT write. The previous UI's second write
-        // would still have changed DataStore independently on Dispatchers.IO.
-        delay(650L)
+        // No arbitrary 650-ms observation window: verify the actual Repository
+        // instance constructed by the screen never receives a second backend write.
+        compose.waitForIdle()
+        val created = requireNotNull(uiSettingsConstruction).constructed()
+        org.junit.Assert.assertTrue("the real screen must construct its repository", created.isNotEmpty())
+        created.forEach { uiStore ->
+            Mockito.verify(uiStore, Mockito.never()).saveString(
+                SettingsRepository.BACKEND_TYPE, "EDCB"
+            )
+        }
         assertEquals("KONOMITV", store.backendType.first())
     }
 }
