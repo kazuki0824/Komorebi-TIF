@@ -155,7 +155,7 @@ jobs:
               "HomeViewModelRegressionTest": 3,
               "HomeHistoryRefreshSourceRegressionTest": 3,
               "HomeLauncherHistoryUiRegressionTest": 19,
-              "HomeGenreBackendIsolationRegressionTest": 4,
+              "HomeGenreBackendIsolationRegressionTest": 5,
               "LiveContentEmptyStateUiRegressionTest": 1,
               "MainRootDialogEpochUiRegressionTest": 1,
               "MainRootScreenStateUiRegressionTest": 13,
