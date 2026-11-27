@@ -41,6 +41,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -479,6 +481,8 @@ class RecordViewModelRegressionTest {
         try {
             assertEquals(0, differ.itemCount)
             cacheReady.value = true
+            dispatcher.scheduler.advanceTimeBy(60L)
+            dispatcher.scheduler.runCurrent()
             withTimeout(15_000L) {
                 while (differ.snapshot().items.none { it.id == 88 })
                     kotlinx.coroutines.delay(20)
