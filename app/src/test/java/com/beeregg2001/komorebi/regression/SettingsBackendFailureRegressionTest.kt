@@ -256,4 +256,37 @@ class SettingsBackendFailureRegressionTest {
         ), order.toList())
     }
 
+
+    @Test
+    fun cancelledSwitchReleasesMutexSoFollowingBackendSelectionCanPersist() = runBlocking {
+        Mockito.doAnswer { invocation ->
+            if (invocation.arguments[0] == SettingsRepository.BACKEND_TYPE) {
+                selectedBackend.value = invocation.arguments[1] as String
+            }
+            Unit
+        }.`when`(settingsRepositoryUnderTest).saveString(
+            Mockito.eq(SettingsRepository.BACKEND_TYPE) ?: SettingsRepository.BACKEND_TYPE,
+            Mockito.anyString() ?: "EDCB"
+        )
+        val attempts = AtomicInteger()
+        Mockito.doAnswer { invocation ->
+            if (attempts.incrementAndGet() == 1)
+                throw kotlinx.coroutines.CancellationException("first request cancelled")
+            @Suppress("UNCHECKED_CAST")
+            val commit = invocation.arguments[0] as suspend () -> Unit
+            runBlocking { commit() }
+            null
+        }.`when`(sync).switchBackend(Mockito.any<suspend () -> Unit>() ?: {})
+        viewModel.updateBackendType("EDCB")
+        val mutex = SettingsViewModel::class.java.getDeclaredField("backendSelectionMutex")
+            .apply { isAccessible = true }.get(viewModel) as kotlinx.coroutines.sync.Mutex
+        withTimeout(10_000L) { mutex.lock(); mutex.unlock() }
+        assertEquals("KONOMITV", selectedBackend.value)
+        viewModel.updateBackendType("EPGSTATION")
+        Mockito.verify(sync, Mockito.timeout(10_000L).times(1))
+            .launchSyncAllRecords(forceFullSync = true)
+        assertEquals("EPGSTATION", selectedBackend.value)
+        assertEquals(2, attempts.get())
+    }
+
 }
