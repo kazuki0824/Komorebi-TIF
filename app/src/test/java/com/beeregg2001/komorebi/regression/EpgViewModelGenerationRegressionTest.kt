@@ -17,6 +17,9 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -572,6 +575,44 @@ class EpgViewModelGenerationRegressionTest {
             release.countDown()
             nextRelease.countDown()
         }
+    }
+
+
+    @Test
+    fun obsoleteBackendFlowEmissionCannotOverwriteNewBackendEpgSuccess() = runBlocking {
+        val now = OffsetDateTime.now()
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val calls = AtomicInteger()
+        val old = epgFixture("former-gr", "Obsolete GR event", now)
+        val replacement = epgFixture("current-gr", "Current GR event", now)
+        Mockito.doAnswer {
+            if (calls.incrementAndGet() == 1) flow {
+                entered.complete(Unit)
+                withContext(NonCancellable) { release.await() }
+                emit(Result.success(listOf(old)))
+            } else flowOf(Result.success(listOf(replacement)))
+        }.`when`(repository).getEpgDataStream(
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.eq("GR") ?: "GR"
+        )
+        try {
+            viewModel.refreshEpgData("GR")
+            val obsoleteJob = job("epgJob")
+            withTimeout(10_000L) { entered.await() }
+            backend.value = "EDCB"
+            viewModel.refreshEpgData("GR")
+            withTimeout(10_000L) {
+                while ((viewModel.uiState as? EpgUiState.Success)?.data
+                        ?.any { it.channel.id == "current-gr" } != true) kotlinx.coroutines.delay(10L)
+            }
+            release.complete(Unit)
+            withTimeout(10_000L) { obsoleteJob.join() }
+            val present = viewModel.uiState as EpgUiState.Success
+            assertTrue(present.data.any { it.channel.id == "current-gr" })
+            assertTrue(present.data.none { it.channel.id == "former-gr" })
+        } finally { release.complete(Unit) }
     }
 
 }
