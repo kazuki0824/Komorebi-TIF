@@ -48,6 +48,7 @@ class HomeGenreBackendIsolationRegressionTest {
     private val main = UnconfinedTestDispatcher()
     private lateinit var backend: MutableStateFlow<String>
     private lateinit var vm: HomeViewModel
+    private lateinit var epg: EpgRepository
     private lateinit var entered: CountDownLatch
     private lateinit var release: CountDownLatch
     private lateinit var program: EpgProgram
@@ -89,7 +90,7 @@ class HomeGenreBackendIsolationRegressionTest {
         Mockito.`when`(history.getOwnedLocalWatchHistory())
             .thenReturn(flowOf("KONOMITV" to emptyList()))
         Mockito.`when`(history.getLastChannels()).thenReturn(flowOf(emptyList()))
-        val epg = Mockito.mock(EpgRepository::class.java)
+        epg = Mockito.mock(EpgRepository::class.java)
         Mockito.doAnswer { invocation ->
             if (invocation.arguments[2] == "GR") {
                 flow {
@@ -227,6 +228,40 @@ class HomeGenreBackendIsolationRegressionTest {
         val field = HomeViewModel::class.java.getDeclaredField("cachedBaseballPrograms")
             .apply { isAccessible = true }
         assertTrue((field.get(vm) as List<*>).isEmpty())
+    }
+
+
+    @Test
+    fun switchingBackendClearsVisibleGenreThenAutomaticallyFetchesReplacementOwner() = runBlocking {
+        val oldFetch = startAndGetJob()
+        assertTrue(entered.await(15, TimeUnit.SECONDS))
+        release.countDown()
+        withTimeout(15_000L) { oldFetch.join() }
+        assertEquals(listOf("own-program"), vm.genrePickupPrograms.value.map { it.first.id })
+        val replacement = program.copy(id = "new-edcb-program", title = "アニメ新バックエンド")
+        val ch = EpgChannel(
+            id = "edcb-1", display_channel_id = "edcb-1", network_id = 2,
+            service_id = 2, transport_stream_id = 2, remocon_id = 2,
+            channel_number = "2", type = "GR", name = "New owner",
+            jikkyo_force = null, is_subchannel = false, is_radiochannel = false,
+            is_watchable = true
+        )
+        Mockito.doReturn(flowOf(Result.success(listOf(EpgChannelWrapper(ch, listOf(replacement))))))
+            .`when`(epg).getEpgDataStream(
+                Mockito.any(OffsetDateTime::class.java) ?: OffsetDateTime.now(),
+                Mockito.any(OffsetDateTime::class.java) ?: OffsetDateTime.now(),
+                Mockito.eq("GR") ?: "GR"
+            )
+        backend.value = "EDCB"
+        withTimeout(10_000L) { vm.genrePickupPrograms.first { it.isEmpty() } }
+        assertTrue(vm.favoriteBaseballGames.value.isEmpty())
+        withTimeout(15_000L) {
+            vm.genrePickupPrograms.first {
+                it.any { pair -> pair.first.id == "new-edcb-program" }
+            }
+        }
+        assertTrue(vm.genrePickupPrograms.value.none { it.first.id == "own-program" })
+        assertTrue(vm.genrePickupPrograms.value.all { it.first.id == "new-edcb-program" })
     }
 
 }
