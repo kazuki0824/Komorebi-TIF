@@ -193,7 +193,7 @@ class VideoPlayerSessionBackendUiRegressionTest {
 
 
     @Test
-    fun nextRecordingObtainsFreshConfirmedOwnerWhileOldPlaybackRetainsItsOwner() {
+    fun nextRecordingObtainsFreshConfirmedOwnerWhileOldPlaybackRetainsItsOwner(): Unit = runBlocking {
         val initial = recording()
         val next = initial.copy(id = 100, recordedVideo = initial.recordedVideo.copy(id = 100))
         Mockito.doReturn(emptyList<ArchivedComment>()).`when`(vm).getArchivedComments(100)
