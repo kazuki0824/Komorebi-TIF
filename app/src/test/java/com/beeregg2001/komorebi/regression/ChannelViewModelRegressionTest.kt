@@ -396,4 +396,42 @@ class ChannelViewModelRegressionTest {
         }
     }
 
+
+    @Test
+    fun actualInitialPollingFetchCannotOverwriteLaterForcedChannelRequest() = runBlocking {
+        Dispatchers.setMain(Dispatchers.Default)
+        val live = Mockito.mock(LiveProvider::class.java)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val calls = AtomicInteger()
+        Mockito.doAnswer {
+            if (calls.incrementAndGet() == 1) {
+                entered.countDown()
+                check(release.await(15, TimeUnit.SECONDS))
+                ChannelApiResponse(terrestrial = listOf(networkChannel("stale-initial-poll")))
+            } else {
+                ChannelApiResponse(terrestrial = listOf(networkChannel("explicit-refresh")))
+            }
+        }.`when`(live).getChannels()
+        // Production init starts the polling path; this is not a manual fetch mock.
+        val vm = viewModel(live, MutableStateFlow("KONOMITV"))
+        try {
+            assertTrue("initial polling request must have reached provider", entered.await(15, TimeUnit.SECONDS))
+            vm.fetchChannels(force = true)
+            withTimeout(10_000L) {
+                vm.groupedChannels.first {
+                    it["GR"]?.singleOrNull()?.id == "explicit-refresh"
+                }
+            }
+            release.countDown()
+            withTimeout(10_000L) { vm.isLoading.first { !it } }
+            assertEquals("explicit-refresh", vm.groupedChannels.value["GR"]?.single()?.id)
+            assertFalse(vm.connectionError.value)
+        } finally {
+            release.countDown()
+            vm.stopPolling()
+            vm.viewModelScope.cancel()
+        }
+    }
+
 }
