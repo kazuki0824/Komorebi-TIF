@@ -9,7 +9,7 @@ import com.beeregg2001.komorebi.data.model.EpgChannelWrapper
 import com.beeregg2001.komorebi.data.repository.DtvProviderProxy
 import com.beeregg2001.komorebi.data.repository.EpgRepository
 import com.google.gson.Gson
-import com.google.gson.JsonParser
+import com.google.gson.JsonElement
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.async
@@ -81,7 +81,8 @@ class EpgFileCacheRegressionTest {
     }
 
     private fun assertStoredPrograms(key: String, programs: List<EpgChannelWrapper>) {
-        assertEquals(gson.toJsonTree(programs), JsonParser.parseString(readCompressed(key)))
+        val stored = gson.fromJson(readCompressed(key), JsonElement::class.java)
+        assertEquals(gson.toJsonTree(programs), stored)
     }
 
     @Test
