@@ -106,4 +106,25 @@ class RecordCacheOwnershipRegressionTest {
         setOwner("KONOMITV", false)
         assertFalse(initialize("KONOMITV").recordCacheReady.value)
     }
+
+    @Test
+    fun unreadableCacheCannotPassCompletionGateOrStartSmartSync() = runBlocking {
+        markBuilt()
+        for ((owner, pending) in listOf("EDCB" to false, "KONOMITV" to true)) {
+            setOwner(owner, pending)
+            val provider = Mockito.mock(RecordProvider::class.java)
+            val settings = Mockito.mock(SettingsRepository::class.java)
+            Mockito.`when`(settings.backendType).thenReturn(flowOf("KONOMITV"))
+            val engine = RecordSyncEngine(provider, db, settings, db.aiSeriesDictionaryDao(), context)
+            val initialized = RecordSyncEngine::class.java.getDeclaredField("ownerInitialized")
+                .apply { isAccessible = true }
+                .get(engine) as CompletableDeferred<*>
+            withTimeout(10_000L) { initialized.await() }
+            assertFalse(engine.recordCacheReady.value)
+            assertFalse(engine.isInitialBuildCompleted())
+            engine.smartSync()
+            Mockito.verifyNoInteractions(provider)
+        }
+    }
+
 }
