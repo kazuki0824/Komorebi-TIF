@@ -404,12 +404,14 @@ class RecordSyncFullSyncOwnerRegressionTest {
         val original = lockField.get(sync) as Mutex
         val enteredPostSyncGate = CompletableDeferred<Unit>()
         val releasePostSyncGate = CompletableDeferred<Unit>()
+        val switchGateReached = CompletableDeferred<Unit>()
+        val releaseSwitchGate = CompletableDeferred<Unit>()
         val acquisitions = AtomicInteger()
         val gated = object : Mutex by original {
             override suspend fun lock(owner: Any?) {
-                if (acquisitions.incrementAndGet() == 2) {
-                    enteredPostSyncGate.complete(Unit)
-                    releasePostSyncGate.await()
+                when (acquisitions.incrementAndGet()) {
+                    2 -> { enteredPostSyncGate.complete(Unit); releasePostSyncGate.await() }
+                    3 -> { switchGateReached.complete(Unit); releaseSwitchGate.await() }
                 }
                 original.lock(owner)
             }
@@ -423,10 +425,10 @@ class RecordSyncFullSyncOwnerRegressionTest {
             }
             val flag = RecordSyncEngine::class.java.getDeclaredField("switchingBackend")
                 .apply { isAccessible = true }
-            withTimeout(15_000L) {
-                while (!flag.getBoolean(sync)) delay(10)
-            }
+            withTimeout(15_000L) { switchGateReached.await() }
+            assertTrue(flag.getBoolean(sync))
             releasePostSyncGate.complete(Unit)
+            releaseSwitchGate.complete(Unit)
             withTimeout(15_000L) { pending.await(); switching.await() }
             val dict = RecordSyncEngine::class.java.getDeclaredField("dictionaryJob")
                 .apply { isAccessible = true }.get(sync) as? kotlinx.coroutines.Job
@@ -434,6 +436,7 @@ class RecordSyncFullSyncOwnerRegressionTest {
             assertFalse(sync.recordCacheReady.value)
         } finally {
             releasePostSyncGate.complete(Unit)
+            releaseSwitchGate.complete(Unit)
         }
     }
 
@@ -475,12 +478,14 @@ class RecordSyncFullSyncOwnerRegressionTest {
         val original = lockField.get(sync) as Mutex
         val postGate = CompletableDeferred<Unit>()
         val releaseGate = CompletableDeferred<Unit>()
+        val switchGateReached = CompletableDeferred<Unit>()
+        val releaseSwitchGate = CompletableDeferred<Unit>()
         val calls = AtomicInteger()
         lockField.set(sync, object : Mutex by original {
             override suspend fun lock(owner: Any?) {
-                if (calls.incrementAndGet() == 2) {
-                    postGate.complete(Unit)
-                    releaseGate.await()
+                when (calls.incrementAndGet()) {
+                    2 -> { postGate.complete(Unit); releaseGate.await() }
+                    3 -> { switchGateReached.complete(Unit); releaseSwitchGate.await() }
                 }
                 original.lock(owner)
             }
@@ -493,8 +498,10 @@ class RecordSyncFullSyncOwnerRegressionTest {
             }
             val flag = RecordSyncEngine::class.java.getDeclaredField("switchingBackend")
                 .apply { isAccessible = true }
-            withTimeout(15_000L) { while (!flag.getBoolean(sync)) delay(10) }
+            withTimeout(15_000L) { switchGateReached.await() }
+            assertTrue(flag.getBoolean(sync))
             releaseGate.complete(Unit)
+            releaseSwitchGate.complete(Unit)
             withTimeout(15_000L) { smart.await(); switching.await() }
             val oldJob = RecordSyncEngine::class.java.getDeclaredField("dictionaryJob")
                 .apply { isAccessible = true }.get(sync) as? kotlinx.coroutines.Job
@@ -502,6 +509,7 @@ class RecordSyncFullSyncOwnerRegressionTest {
             assertFalse(sync.recordCacheReady.value)
         } finally {
             releaseGate.complete(Unit)
+            releaseSwitchGate.complete(Unit)
         }
     }
 
