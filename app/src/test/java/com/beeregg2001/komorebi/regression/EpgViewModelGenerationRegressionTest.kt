@@ -431,4 +431,20 @@ class EpgViewModelGenerationRegressionTest {
         } finally { release.complete(Unit) }
     }
 
+
+    @Test
+    fun sameBroadcastTypeFailedRefreshRetainsPreviouslyDisplayedNonemptyCache() = runBlocking {
+        val now = OffsetDateTime.now()
+        val old = epgFixture("own-gr", "Previously cached GR", now)
+        loadEpg("GR", Result.success(listOf(old)))
+        withTimeout(10_000L) { job("sliceJob").join() }
+        val before = viewModel.uiState as EpgUiState.Success
+        assertTrue(before.data.flatMap { it.programs }.any { it.title == "Previously cached GR" })
+        loadEpg("GR", Result.failure(IllegalStateException("offline refresh rejected")))
+        withTimeout(10_000L) { job("sliceJob").join() }
+        val retained = viewModel.uiState as EpgUiState.Success
+        assertEquals(before.data, retained.data)
+        assertTrue(viewModel.selectedBroadcastingType.value == "GR")
+    }
+
 }
