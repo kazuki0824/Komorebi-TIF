@@ -25,7 +25,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
@@ -120,7 +119,7 @@ class RecordViewModelRegressionTest {
     @Test
     fun unpublishedRecordedCacheBlocksProgramDetailNetworkAccess() = runBlocking {
         viewModel.fetchProgramDetail(42)
-        delay(600L) // Production's detail job waits 300 ms before checking ownership gate.
+        withTimeout(10_000L) { detailFetchJob().join() }
         Mockito.verify(provider, Mockito.never()).getRecordedProgram(42)
         assertNull(viewModel.programDetail.value)
     }
@@ -144,8 +143,14 @@ class RecordViewModelRegressionTest {
         assertNull(viewModel.programDetail.value)
     }
 
+    private fun detailFetchJob(): Job =
+        RecordViewModel::class.java.getDeclaredField("detailFetchJob").let { field ->
+            field.isAccessible = true
+            field.get(viewModel) as Job
+        }
+
     @Test
-    fun inFlightDetailCannotPublishAfterRecordedCacheIsRevoked() = runBlocking {
+    fun inFlightDetailCannotPublishAfterRecordedCacheIsRevokedAndRebuilt() = runBlocking {
         syncState.value = SyncProgress(isSyncing = true)
         cacheReady.value = true
         val entered = CountDownLatch(1)
@@ -159,14 +164,15 @@ class RecordViewModelRegressionTest {
         try {
             viewModel.fetchProgramDetail(43)
             assertTrue("record provider never started", entered.await(15, TimeUnit.SECONDS))
+            val oldRequest = detailFetchJob()
             cacheReady.value = false
+            assertTrue("revoking old cache must cancel its detail request", oldRequest.isCancelled)
+            ownerGeneration.value = 1L
+            ownerBackend.value = "EDCB"
+            cacheReady.value = true
             release.countDown()
-            // Join the actual production job; do not pass while the old response is still blocked.
-            val field = RecordViewModel::class.java.getDeclaredField("detailFetchJob")
-            field.isAccessible = true
-            val detailJob = field.get(viewModel) as Job
-            withTimeout(10_000L) { detailJob.join() }
-            assertNull(viewModel.programDetail.value)
+            withTimeout(10_000L) { oldRequest.join() }
+            assertNull("new cache readiness must not publish the old backend's detail", viewModel.programDetail.value)
         } finally {
             release.countDown()
         }
@@ -185,7 +191,7 @@ class RecordViewModelRegressionTest {
 
     @Test
     fun recentRecordingRowsRemainHiddenUntilCacheOwnershipIsConfirmedAndHideAgainAfterRevocation() = runBlocking {
-        val subscription = launch { viewModel.recentRecordings.collect { } }
+        val subscription = launch(Dispatchers.Main.immediate) { viewModel.recentRecordings.collect { } }
         try {
             recordedRows.value = listOf(
                 RecordedProgramEntity(
@@ -196,7 +202,7 @@ class RecordViewModelRegressionTest {
                 )
             )
             // Let the real combine observe a populated DAO while ownership is false.
-            delay(80L)
+            dispatcher.scheduler.runCurrent()
             assertTrue("unowned Room rows must not leak", viewModel.recentRecordings.value.isEmpty())
             cacheReady.value = true
             val exposed = withTimeout(10_000L) {

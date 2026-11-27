@@ -1,6 +1,7 @@
 package com.beeregg2001.komorebi.regression
 
 import android.content.Context
+import com.beeregg2001.komorebi.data.local.entity.EpgCacheEntity
 import androidx.test.core.app.ApplicationProvider
 import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.local.dao.EpgCacheDao
@@ -21,6 +22,7 @@ import org.mockito.Mockito
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.time.OffsetDateTime
+import java.io.File
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
@@ -32,12 +34,15 @@ import java.util.concurrent.TimeUnit
 class EpgInFlightBackendRegressionTest {
     private val start = OffsetDateTime.parse("2026-12-01T04:00:00+09:00")
     private val end = OffsetDateTime.parse("2026-12-02T04:00:00+09:00")
+    private val programs = listOf(epgFixture("konomi", "Original EPG program", start))
 
     private data class Fixture(
         val repo: EpgRepository,
         val backend: MutableStateFlow<String>,
         val enteredProvider: CountDownLatch,
-        val releaseProvider: CountDownLatch
+        val releaseProvider: CountDownLatch,
+        val dao: EpgCacheDao,
+        val cacheFile: File
     )
 
     private fun fixture(): Fixture = runBlocking {
@@ -52,13 +57,14 @@ class EpgInFlightBackendRegressionTest {
         Mockito.doAnswer {
             enteredProvider.countDown()
             check(releaseProvider.await(15, TimeUnit.SECONDS)) { "test release timed out" }
-            emptyList<EpgChannelWrapper>()
+            programs
         }.`when`(provider).getEpgProgramsForBackend("KONOMITV", startStr, endStr, "GR")
-        val repo = EpgRepository(
-            ApplicationProvider.getApplicationContext<Context>(),
-            provider, Mockito.mock(EpgCacheDao::class.java), Gson(), settings
-        )
-        Fixture(repo, backend, enteredProvider, releaseProvider)
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val dao = Mockito.mock(EpgCacheDao::class.java)
+        val cacheFile = File(context.cacheDir, "epg_cache_KONOMITV_GR.json.gz")
+        cacheFile.delete()
+        val repo = EpgRepository(context, provider, dao, Gson(), settings)
+        Fixture(repo, backend, enteredProvider, releaseProvider, dao, cacheFile)
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -98,6 +104,10 @@ class EpgInFlightBackendRegressionTest {
             f.releaseProvider.countDown()
             withTimeout(15_000L) { result.await() }
             assertFalse(memoryCache(f.repo).containsKey("KONOMITV_GR"))
+            assertFalse("obsolete prefetch must not write a cache file", f.cacheFile.exists())
+            Mockito.verify(f.dao, Mockito.never()).insertOrUpdate(
+                Mockito.any(EpgCacheEntity::class.java) ?: EpgCacheEntity("", "", 0L)
+            )
         } finally {
             f.releaseProvider.countDown()
         }
@@ -113,9 +123,8 @@ class EpgInFlightBackendRegressionTest {
             f.releaseProvider.countDown()
             val emissions = withTimeout(15_000L) { result.await() }
             assertEquals(1, emissions.size)
-            assertTrue("valid selected backend result must publish", emissions.single().isSuccess)
-            assertEquals(emptyList<EpgChannelWrapper>(), emissions.single().getOrNull())
-            assertTrue(memoryCache(f.repo).containsKey("KONOMITV_GR"))
+            assertEquals(programs, emissions.single().getOrThrow())
+            assertEquals(programs, memoryCache(f.repo)["KONOMITV_GR"])
             assertFalse(memoryCache(f.repo).containsKey("EDCB_GR"))
         } finally {
             f.releaseProvider.countDown()

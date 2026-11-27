@@ -2,6 +2,10 @@ package com.beeregg2001.komorebi.regression
 
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import com.beeregg2001.komorebi.data.model.Channel
@@ -50,7 +54,7 @@ class ChannelListOverlayUiRegressionTest {
         compose.setContent {
             KomorebiTheme {
                 ChannelListOverlay(
-                    groupedChannels = mapOf("GR" to listOf(channel("edcb:full:1"))),
+                    groupedChannels = mapOf("GR" to listOf(channel("edcb:full:1"), channel("edcb:full:2"))),
                     currentChannelId = "old-backend:missing",
                     onChannelSelect = {},
                     getLogoUrl = { "" },
@@ -64,5 +68,9 @@ class ChannelListOverlayUiRegressionTest {
             // PR #3 fallback must attach the caller-supplied focus requester.
             assertTrue("missing current ID should still have a focus target", requester.requestFocus())
         }
+        compose.onNode(hasClickAction() and (
+            hasText("Network channel edcb:full:1") or
+                hasAnyDescendant(hasText("Network channel edcb:full:1"))
+        )).assertIsFocused()
     }
 }

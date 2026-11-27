@@ -9,6 +9,7 @@ import com.beeregg2001.komorebi.data.model.EpgChannelWrapper
 import com.beeregg2001.komorebi.data.repository.DtvProviderProxy
 import com.beeregg2001.komorebi.data.repository.EpgRepository
 import com.google.gson.Gson
+import com.google.gson.JsonParser
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.async
@@ -16,7 +17,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
 import android.database.sqlite.SQLiteException
 import org.junit.After
 import org.junit.Assert.*
@@ -41,8 +41,11 @@ class EpgFileCacheRegressionTest {
     private lateinit var dao: EpgCacheDao
     private lateinit var provider: DtvProviderProxy
     private lateinit var repo: EpgRepository
-    private val start = OffsetDateTime.parse("2026-12-01T04:00:00+09:00")
+    private val gson = Gson()
+    private val start = OffsetDateTime.now().plusDays(1).withNano(0)
     private val end = start.plusDays(1)
+    private val konomiPrograms = listOf(epgFixture("konomi", "Konomi news", start))
+    private val edcbPrograms = listOf(epgFixture("edcb", "EDCB documentary", start))
     private fun filename(key: String) = File(context.cacheDir, "epg_cache_${key}.json.gz")
 
     @Before
@@ -54,7 +57,7 @@ class EpgFileCacheRegressionTest {
         provider = Mockito.mock(DtvProviderProxy::class.java)
         val settings = Mockito.mock(SettingsRepository::class.java)
         Mockito.`when`(settings.backendType).thenReturn(backend)
-        repo = EpgRepository(context, provider, dao, Gson(), settings)
+        repo = EpgRepository(context, provider, dao, gson, settings)
     }
 
     @After
@@ -69,14 +72,16 @@ class EpgFileCacheRegressionTest {
     private fun readCompressed(key: String): String =
         GZIPInputStream(filename(key).inputStream()).bufferedReader().use { it.readText() }
 
-    private fun fetch(backendName: String) {
-        runBlocking {
-            Mockito.doReturn(emptyList<EpgChannelWrapper>()).`when`(provider).getEpgProgramsForBackend(
-                backendName, start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
-                end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "GR"
-            )
-            repo.fetchAndCacheEpgDataSilently(start, end, "GR")
-        }
+    private suspend fun fetch(backendName: String, programs: List<EpgChannelWrapper> = konomiPrograms) {
+        Mockito.doReturn(programs).`when`(provider).getEpgProgramsForBackend(
+            backendName, start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+            end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "GR"
+        )
+        repo.fetchAndCacheEpgDataSilently(start, end, "GR")
+    }
+
+    private fun assertStoredPrograms(key: String, programs: List<EpgChannelWrapper>) {
+        assertEquals(gson.toJsonTree(programs), JsonParser.parseString(readCompressed(key)))
     }
 
     @Test
@@ -92,14 +97,14 @@ class EpgFileCacheRegressionTest {
                 end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "GR"
             )
             assertEquals("[{\"legacy\":true}]", readCompressed("GR"))
-            assertEquals("[]", readCompressed("KONOMITV_GR"))
+            assertStoredPrograms("KONOMITV_GR", konomiPrograms)
         }
     }
 
     @Test
     fun cacheFileAndRoomMarkerContainBackendQualifiedKey() = runBlocking {
         fetch("KONOMITV")
-        assertTrue(filename("KONOMITV_GR").exists())
+        assertStoredPrograms("KONOMITV_GR", konomiPrograms)
         Mockito.verify(dao).insertOrUpdate(
             Mockito.argThat<EpgCacheEntity> { it.channelType == "KONOMITV_GR" && it.dataJson == "FILE_BASED" } ?: EpgCacheEntity("", "", 0L)
         )
@@ -109,9 +114,9 @@ class EpgFileCacheRegressionTest {
     fun switchingBackendCreatesIndependentFilesInsteadOfOverwriting(): Unit = runBlocking {
         fetch("KONOMITV")
         backend.value = "EDCB"
-        fetch("EDCB")
-        assertTrue(filename("KONOMITV_GR").exists())
-        assertTrue(filename("EDCB_GR").exists())
+        fetch("EDCB", edcbPrograms)
+        assertStoredPrograms("KONOMITV_GR", konomiPrograms)
+        assertStoredPrograms("EDCB_GR", edcbPrograms)
         Mockito.verify(provider).getEpgProgramsForBackend(
             "EDCB", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
             end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "GR"
@@ -129,7 +134,7 @@ class EpgFileCacheRegressionTest {
                 "KONOMITV", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
                 end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "GR"
             )
-            assertEquals("[]", readCompressed("KONOMITV_GR"))
+            assertStoredPrograms("KONOMITV_GR", konomiPrograms)
         }
     }
     @Test
@@ -137,8 +142,8 @@ class EpgFileCacheRegressionTest {
         Mockito.doAnswer { throw SQLiteException("injected large legacy blob") }
             .`when`(dao).getCache("KONOMITV_GR")
         fetch("KONOMITV")
-        assertTrue("Room read errors must not crash or block refresh", filename("KONOMITV_GR").exists())
-        assertEquals("[]", readCompressed("KONOMITV_GR"))
+        Mockito.verify(dao).getCache("KONOMITV_GR")
+        assertStoredPrograms("KONOMITV_GR", konomiPrograms)
         Mockito.verify(provider).getEpgProgramsForBackend(
             "KONOMITV", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
             end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "GR"
@@ -154,17 +159,31 @@ class EpgFileCacheRegressionTest {
                     ?: EpgCacheEntity("", "", 0L)
             )
         fetch("KONOMITV")
-        assertEquals("[]", readCompressed("KONOMITV_GR"))
+        Mockito.verify(dao).insertOrUpdate(
+            Mockito.argThat<EpgCacheEntity> { it.channelType == "KONOMITV_GR" && it.dataJson == "FILE_BASED" }
+                ?: EpgCacheEntity("", "", 0L)
+        )
+        assertStoredPrograms("KONOMITV_GR", konomiPrograms)
+        assertEquals(
+            konomiPrograms.single().programs.single(),
+            repo.searchFuturePrograms(query = "Konomi news").single().program
+        )
         assertFalse(filename("EDCB_GR").exists())
         // The failed marker must not be mistaken for a new backend's cache.
         backend.value = "EDCB"
-        fetch("EDCB")
-        assertEquals("[]", readCompressed("EDCB_GR"))
+        fetch("EDCB", edcbPrograms)
+        assertStoredPrograms("EDCB_GR", edcbPrograms)
+        assertStoredPrograms("KONOMITV_GR", konomiPrograms)
+        assertTrue(repo.searchFuturePrograms(query = "Konomi news").isEmpty())
+        assertEquals(
+            edcbPrograms.single().programs.single(),
+            repo.searchFuturePrograms(query = "EDCB documentary").single().program
+        )
     }
 
     @Test
     fun diskReadCompletingAfterBackendSwitchCannotPopulateOldSelection() = runBlocking {
-        writeCompressed("KONOMITV_GR", "[]")
+        writeCompressed("KONOMITV_GR", gson.toJson(konomiPrograms))
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         Mockito.doAnswer {

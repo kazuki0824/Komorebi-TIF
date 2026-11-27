@@ -108,6 +108,9 @@ class RecordSyncFullSyncOwnerRegressionTest {
         prefs().edit().putString("backend", "EDCB").putBoolean("pending", false).commit()
         val sync = engine()
         sync.syncAllRecords(forceFullSync = false)
+        Mockito.verify(provider, Mockito.atLeastOnce()).getRecordedPrograms(
+            Mockito.eq(1), Mockito.anyInt()
+        )
         assertEquals(listOf(44), db.recordedProgramDao().getAllIds())
         assertTrue(db.syncMetaDao().getSyncMeta()?.isInitialBuildCompleted == true)
         assertTrue(sync.recordCacheReady.value)

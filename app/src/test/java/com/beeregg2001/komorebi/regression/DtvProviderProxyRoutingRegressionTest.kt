@@ -1,10 +1,12 @@
 package com.beeregg2001.komorebi.regression
 
+import androidx.lifecycle.viewModelScope
 import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.model.ChannelApiResponse
 import kotlinx.coroutines.CancellationException
 import com.beeregg2001.komorebi.data.repository.DtvProviderProxy
 import com.beeregg2001.komorebi.data.repository.KonomiRepository
+import com.beeregg2001.komorebi.data.repository.WatchHistoryRepository
 import com.beeregg2001.komorebi.data.repository.edcb.EdcbEpgRepository
 import com.beeregg2001.komorebi.data.repository.edcb.EdcbLiveRepository
 import com.beeregg2001.komorebi.data.repository.edcb.EdcbRecordRepository
@@ -13,8 +15,18 @@ import com.beeregg2001.komorebi.data.repository.epgstation.EpgStationEpgReposito
 import com.beeregg2001.komorebi.data.repository.epgstation.EpgStationLiveRepository
 import com.beeregg2001.komorebi.data.repository.epgstation.EpgStationRecordRepository
 import com.beeregg2001.komorebi.data.repository.epgstation.EpgStationReserveRepository
+import com.beeregg2001.komorebi.viewmodel.ChannelViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -22,12 +34,14 @@ import org.junit.runner.RunWith
 import org.mockito.Mockito
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.time.OffsetDateTime
 
 /** Tests the real network backend proxy routing, without calling a remote server. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class DtvProviderProxyRoutingRegressionTest {
     private lateinit var selectedBackend: MutableStateFlow<String>
+    private lateinit var settings: SettingsRepository
     private lateinit var konomi: KonomiRepository
     private lateinit var edcbEpg: EdcbEpgRepository
     private lateinit var epgstationEpg: EpgStationEpgRepository
@@ -37,8 +51,9 @@ class DtvProviderProxyRoutingRegressionTest {
     @Before
     fun setUp() {
         selectedBackend = MutableStateFlow("KONOMITV")
-        val settings = Mockito.mock(SettingsRepository::class.java)
+        settings = Mockito.mock(SettingsRepository::class.java)
         Mockito.`when`(settings.backendType).thenReturn(selectedBackend)
+        Mockito.`when`(settings.hideSubChannels).thenReturn(flowOf(false))
         konomi = Mockito.mock(KonomiRepository::class.java)
         edcbEpg = Mockito.mock(EdcbEpgRepository::class.java)
         epgstationEpg = Mockito.mock(EpgStationEpgRepository::class.java)
@@ -57,7 +72,9 @@ class DtvProviderProxyRoutingRegressionTest {
 
     @Test
     fun fixedEdcbEpgRequestIgnoresCurrentKonomiSelection() = runBlocking {
-        proxy.getEpgProgramsForBackend("EDCB", "start", "end", "GR")
+        val expected = listOf(epgFixture("edcb", "EDCB program", OffsetDateTime.now()))
+        Mockito.doReturn(expected).`when`(edcbEpg).getEpgPrograms("start", "end", "GR")
+        assertEquals(expected, proxy.getEpgProgramsForBackend("EDCB", "start", "end", "GR"))
         Mockito.verify(edcbEpg).getEpgPrograms("start", "end", "GR")
         Mockito.verifyNoInteractions(konomi, epgstationEpg)
     }
@@ -65,7 +82,9 @@ class DtvProviderProxyRoutingRegressionTest {
     @Test
     fun fixedEpgstationEpgRequestIgnoresCurrentEdcbSelection() = runBlocking {
         selectedBackend.value = "EDCB"
-        proxy.getEpgProgramsForBackend("EPGSTATION", "start", "end", "BS")
+        val expected = listOf(epgFixture("epgstation", "EPGStation program", OffsetDateTime.now(), type = "BS"))
+        Mockito.doReturn(expected).`when`(epgstationEpg).getEpgPrograms("start", "end", "BS")
+        assertEquals(expected, proxy.getEpgProgramsForBackend("EPGSTATION", "start", "end", "BS"))
         Mockito.verify(epgstationEpg).getEpgPrograms("start", "end", "BS")
         Mockito.verifyNoInteractions(konomi, edcbEpg)
     }
@@ -73,7 +92,9 @@ class DtvProviderProxyRoutingRegressionTest {
     @Test
     fun fixedKonomiEpgRequestIgnoresCurrentEpgstationSelection() = runBlocking {
         selectedBackend.value = "EPGSTATION"
-        proxy.getEpgProgramsForBackend("KONOMITV", "start", "end", "CS")
+        val expected = listOf(epgFixture("konomi", "Konomi program", OffsetDateTime.now(), type = "CS"))
+        Mockito.doReturn(expected).`when`(konomi).getEpgPrograms("start", "end", "CS")
+        assertEquals(expected, proxy.getEpgProgramsForBackend("KONOMITV", "start", "end", "CS"))
         Mockito.verify(konomi).getEpgPrograms("start", "end", "CS")
         Mockito.verifyNoInteractions(edcbEpg, epgstationEpg)
     }
@@ -99,14 +120,32 @@ class DtvProviderProxyRoutingRegressionTest {
     }
 
     @Test
-    fun liveChannelsTransportFailureReturnsEmptyFallback() = runBlocking {
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun liveChannelsTransportFailureReachesViewModelAsConnectionError() = runBlocking {
         selectedBackend.value = "EDCB"
         Mockito.doAnswer { throw IllegalStateException("network unavailable") }
             .`when`(edcbLive).getChannels()
-        val actual = proxy.getChannels()
-        assertTrue(actual.terrestrial.isNullOrEmpty())
-        assertTrue(actual.bs.isNullOrEmpty())
-        assertTrue(actual.cs.isNullOrEmpty())
+        Dispatchers.setMain(UnconfinedTestDispatcher())
+        try {
+            val viewModel = ChannelViewModel(
+                proxy, proxy, Mockito.mock(WatchHistoryRepository::class.java), settings
+            )
+            try {
+                viewModel.stopPolling()
+                viewModel.fetchChannels(force = true)
+                withTimeout(10_000L) { viewModel.isLoading.first { !it } }
+                Mockito.verify(edcbLive, Mockito.atLeastOnce()).getChannels()
+                assertTrue(
+                    "A failed channel request must report a connection error, even with no rows",
+                    viewModel.connectionError.value
+                )
+            } finally {
+                viewModel.stopPolling()
+                viewModel.viewModelScope.cancel()
+            }
+        } finally {
+            Dispatchers.resetMain()
+        }
     }
 
     @Test

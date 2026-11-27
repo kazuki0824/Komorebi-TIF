@@ -6,10 +6,12 @@ import androidx.test.core.app.ApplicationProvider
 import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.local.AppDatabase
 import com.beeregg2001.komorebi.data.local.entity.EpgCacheEntity
+import com.beeregg2001.komorebi.data.local.entity.RecordedProgramEntity
 import com.beeregg2001.komorebi.data.local.entity.SyncMetaEntity
 import com.beeregg2001.komorebi.data.local.entity.WatchHistoryEntity
 import com.beeregg2001.komorebi.data.repository.RecordProvider
 import com.beeregg2001.komorebi.data.sync.RecordSyncEngine
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withTimeout
@@ -32,6 +34,7 @@ class RecordSyncBackendTransitionRegressionTest {
     private lateinit var db: AppDatabase
     private lateinit var context: Context
     private lateinit var engine: RecordSyncEngine
+    private lateinit var selectedBackend: MutableStateFlow<String>
 
     @Before
     fun setUp() {
@@ -40,8 +43,9 @@ class RecordSyncBackendTransitionRegressionTest {
             .edit().clear().commit()
         db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
             .allowMainThreadQueries().build()
+        selectedBackend = MutableStateFlow("KONOMITV")
         val settings = Mockito.mock(SettingsRepository::class.java)
-        Mockito.`when`(settings.backendType).thenReturn(flowOf("KONOMITV"))
+        Mockito.`when`(settings.backendType).thenReturn(selectedBackend)
         engine = RecordSyncEngine(
             Mockito.mock(RecordProvider::class.java),
             db, settings, db.aiSeriesDictionaryDao(), context
@@ -61,19 +65,30 @@ class RecordSyncBackendTransitionRegressionTest {
             startTime = "", endTime = "", duration = 0.0, videoId = 19
         ))
         db.epgCacheDao().insertOrUpdate(EpgCacheEntity("KONOMITV_GR", "epg", 1L))
+        db.recordedProgramDao().upsertAll(listOf(
+            RecordedProgramEntity(
+                id = 19, title = "Previous backend recording",
+                startTime = "2030-01-01T00:00:00+09:00", endTime = "2030-01-01T01:00:00+09:00",
+                videoDuration = 3600.0, hasKeyFrames = true, isRecording = false,
+                playbackPosition = 0.0, channelId = null, channelType = null,
+                channelName = null, genres = null
+            )
+        ))
     }
 
     @Test
     fun switchingBackendInvalidatesRecordedCacheButPreservesHistoryAndEpg() = runBlocking {
         seedIndependentData()
         val beforeGeneration = engine.recordCacheGeneration.value
-        engine.switchBackend { /* test success: repository writes backend itself */ }
+        engine.switchBackend { selectedBackend.value = "EDCB" }
+        assertEquals("EDCB", selectedBackend.value)
         assertEquals(beforeGeneration + 1L, engine.recordCacheGeneration.value)
         assertFalse(engine.recordCacheReady.value)
         assertTrue(context.getSharedPreferences(
             "record_cache_backend_owner", Context.MODE_PRIVATE).getBoolean("pending", false))
         assertEquals("history", db.watchHistoryDao().getById(19)?.title)
         assertEquals("epg", db.epgCacheDao().getCache("KONOMITV_GR")?.dataJson)
+        assertTrue(db.recordedProgramDao().getAllIds().isEmpty())
         assertEquals(false, db.syncMetaDao().getSyncMeta()?.isInitialBuildCompleted)
     }
 
@@ -95,6 +110,7 @@ class RecordSyncBackendTransitionRegressionTest {
         assertEquals(true, db.syncMetaDao().getSyncMeta()?.isInitialBuildCompleted)
         assertEquals("history", db.watchHistoryDao().getById(19)?.title)
         assertEquals("epg", db.epgCacheDao().getCache("KONOMITV_GR")?.dataJson)
+        assertEquals(listOf(19), db.recordedProgramDao().getAllIds())
         assertFalse(context.getSharedPreferences(
             "record_cache_backend_owner", Context.MODE_PRIVATE).getBoolean("pending", true))
     }
@@ -245,21 +261,35 @@ class RecordSyncBackendTransitionRegressionTest {
     @Test
     fun clearDatabaseAndSmartSyncAreBothRejectedWhileBackendTransitionIsActive() = runBlocking {
         val recordProvider = Mockito.mock(RecordProvider::class.java)
-        val flag = RecordSyncEngine::class.java.getDeclaredField("switchingBackend")
-        flag.isAccessible = true
-        flag.setBoolean(engine, true)
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(selectedBackend)
+        assertTrue(
+            context.getSharedPreferences("record_cache_backend_owner", Context.MODE_PRIVATE)
+                .edit().putString("backend", "KONOMITV").putBoolean("pending", false).commit()
+        )
+        seedIndependentData()
         db.syncMetaDao().upsert(
             SyncMetaEntity(id = 1, lastSyncedPage = 18,
                 lastSyncedAt = 44L, isInitialBuildCompleted = true)
         )
+        val ownedEngine = RecordSyncEngine(recordProvider, db, settings, db.aiSeriesDictionaryDao(), context)
+        val initialized = RecordSyncEngine::class.java.getDeclaredField("ownerInitialized")
+        initialized.isAccessible = true
+        withTimeout(10_000L) { (initialized.get(ownedEngine) as CompletableDeferred<*>).await() }
+        assertTrue("owned cache must qualify for smart sync before the transition", ownedEngine.recordCacheReady.value)
+        val flag = RecordSyncEngine::class.java.getDeclaredField("switchingBackend")
+        flag.isAccessible = true
+        flag.setBoolean(ownedEngine, true)
         try {
-            engine.clearDatabase()
-            engine.smartSync()
+            ownedEngine.clearDatabase()
+            ownedEngine.smartSync()
+            Mockito.verifyNoInteractions(recordProvider)
+            assertEquals(listOf(19), db.recordedProgramDao().getAllIds())
             val meta = db.syncMetaDao().getSyncMeta()
             assertEquals(18, meta?.lastSyncedPage)
             assertEquals(true, meta?.isInitialBuildCompleted)
         } finally {
-            flag.setBoolean(engine, false)
+            flag.setBoolean(ownedEngine, false)
         }
     }
 

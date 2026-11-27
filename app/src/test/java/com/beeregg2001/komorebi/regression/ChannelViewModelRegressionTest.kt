@@ -13,8 +13,8 @@ import com.beeregg2001.komorebi.data.repository.WatchHistoryRepository
 import com.beeregg2001.komorebi.viewmodel.ChannelViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
@@ -69,6 +69,20 @@ class ChannelViewModelRegressionTest {
             Mockito.mock(WatchHistoryRepository::class.java), settings(backend)
         )
 
+    private fun fetchJob(vm: ChannelViewModel): Job =
+        ChannelViewModel::class.java.getDeclaredField("fetchJob").let { field ->
+            field.isAccessible = true
+            field.get(vm) as Job
+        }
+
+    private suspend fun awaitObservedBackend(vm: ChannelViewModel, backend: String) {
+        val field = ChannelViewModel::class.java.getDeclaredField("observedBackend")
+        field.isAccessible = true
+        withTimeout(10_000L) {
+            while (field.get(vm) != backend) kotlinx.coroutines.delay(10L)
+        }
+    }
+
     @Test
     fun successfulEmptyChannelListIsNotMisclassifiedAsConnectionFailure() = runBlocking {
         val live = Mockito.mock(LiveProvider::class.java)
@@ -78,6 +92,7 @@ class ChannelViewModelRegressionTest {
         try {
             vm.fetchChannels(force = true)
             withTimeout(10_000L) { vm.isLoading.first { !it } }
+            Mockito.verify(live, Mockito.atLeastOnce()).getChannels()
             assertFalse(vm.connectionError.value)
             assertTrue(vm.groupedChannels.value.isEmpty())
             assertTrue(vm.liveRows.value.isEmpty())
@@ -91,8 +106,10 @@ class ChannelViewModelRegressionTest {
     fun changingBackendClearsPreviousTransportFailureAndAcceptsNewEmptyResult() = runBlocking {
         val live = Mockito.mock(LiveProvider::class.java)
         val shouldFail = AtomicBoolean(true)
+        val successfulRequests = AtomicInteger()
         Mockito.doAnswer {
             if (shouldFail.get()) throw IllegalStateException("old backend unavailable")
+            successfulRequests.incrementAndGet()
             ChannelApiResponse()
         }.`when`(live).getChannels()
 
@@ -104,6 +121,7 @@ class ChannelViewModelRegressionTest {
             shouldFail.set(false)
             backend.value = "EDCB"
             withTimeout(10_000L) { vm.isLoading.first { !it } }
+            assertEquals(1, successfulRequests.get())
             assertFalse(vm.connectionError.value)
             assertTrue(vm.groupedChannels.value.isEmpty())
         } finally {
@@ -146,22 +164,28 @@ class ChannelViewModelRegressionTest {
         val backend = MutableStateFlow("KONOMITV")
         val vm = viewModel(live, backend)
         vm.stopPolling()
+        awaitObservedBackend(vm, "KONOMITV")
         Mockito.doAnswer {
             if (calls.incrementAndGet() == 1) {
                 started.countDown()
                 check(release.await(15, TimeUnit.SECONDS))
                 throw IllegalStateException("obsolete backend error")
             }
-            ChannelApiResponse()
+            ChannelApiResponse(terrestrial = listOf(networkChannel("new-edcb-101")))
         }.`when`(live).getChannels()
         try {
-            val trigger = async(Dispatchers.IO) { vm.fetchChannels(force = true) }
+            vm.fetchChannels(force = true)
+            val oldRequest = fetchJob(vm)
             assertTrue("old provider request never started", started.await(15, TimeUnit.SECONDS))
             backend.value = "EDCB"
+            withTimeout(10_000L) {
+                vm.groupedChannels.first { it["GR"]?.singleOrNull()?.id == "new-edcb-101" }
+            }
             release.countDown()
-            withTimeout(10_000L) { trigger.await() }
+            withTimeout(10_000L) { oldRequest.join() }
             withTimeout(10_000L) { vm.isLoading.first { !it } }
             assertFalse("old provider failure cannot contaminate new backend", vm.connectionError.value)
+            assertEquals("new-edcb-101", vm.groupedChannels.value["GR"]?.single()?.id)
         } finally {
             release.countDown()
             vm.stopPolling()
@@ -216,13 +240,7 @@ class ChannelViewModelRegressionTest {
         // The backend collector starts on Dispatchers.Default in this test.
         // Establish its actual initial observation before changing the backend;
         // otherwise "EDCB" may be the first value it sees, not a transition.
-        val observedField = ChannelViewModel::class.java.getDeclaredField("observedBackend")
-        observedField.isAccessible = true
-        withTimeout(10_000L) {
-            while (observedField.get(vm) != "KONOMITV") {
-                kotlinx.coroutines.delay(10L)
-            }
-        }
+        awaitObservedBackend(vm, "KONOMITV")
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         val calls = AtomicInteger()
@@ -235,13 +253,14 @@ class ChannelViewModelRegressionTest {
         }.`when`(live).getChannels()
         try {
             vm.fetchChannels(force = true)
+            val oldRequest = fetchJob(vm)
             assertTrue(entered.await(15, TimeUnit.SECONDS))
             backend.value = "EDCB"
             withTimeout(10_000L) {
                 vm.groupedChannels.first { it["GR"]?.singleOrNull()?.id == "new-edcb-101" }
             }
             release.countDown()
-            kotlinx.coroutines.delay(150L)
+            withTimeout(10_000L) { oldRequest.join() }
             assertEquals("new-edcb-101", vm.groupedChannels.value["GR"]?.single()?.id)
             assertFalse(vm.connectionError.value)
             assertFalse(vm.isLoading.value)
@@ -270,13 +289,14 @@ class ChannelViewModelRegressionTest {
         }.`when`(live).getChannels()
         try {
             vm.fetchChannels(force = true)
+            val oldRequest = fetchJob(vm)
             assertTrue(entered.await(15, TimeUnit.SECONDS))
             vm.fetchChannels(force = true)
             withTimeout(10_000L) {
                 vm.groupedChannels.first { it["GR"]?.singleOrNull()?.id == "later-request" }
             }
             release.countDown()
-            kotlinx.coroutines.delay(150L)
+            withTimeout(10_000L) { oldRequest.join() }
             assertEquals("later-request", vm.groupedChannels.value["GR"]?.single()?.id)
             assertFalse(vm.isLoading.value)
         } finally {

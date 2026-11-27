@@ -5,11 +5,13 @@ import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.model.EpgChannel
+import com.beeregg2001.komorebi.data.model.EpgChannelWrapper
 import com.beeregg2001.komorebi.data.model.EpgProgram
 import com.beeregg2001.komorebi.data.repository.EpgRepository
 import com.beeregg2001.komorebi.data.repository.EpgSearchResultItem
 import com.beeregg2001.komorebi.data.repository.LiveProvider
 import com.beeregg2001.komorebi.viewmodel.EpgViewModel
+import com.beeregg2001.komorebi.viewmodel.EpgUiState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -34,6 +36,7 @@ import org.robolectric.annotation.Config
 import java.time.OffsetDateTime
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Tests production EpgViewModel's request and backend generation boundaries. */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -57,7 +60,7 @@ class EpgViewModelGenerationRegressionTest {
         Mockito.`when`(settings.mirakurunPort).thenReturn(flowOf(""))
         val live = Mockito.mock(LiveProvider::class.java)
         runBlocking {
-            Mockito.doReturn("test-logo").`when`(live).getChannelLogoUrl("channel-1")
+            Mockito.doReturn("test-logo").`when`(live).getChannelLogoUrl(Mockito.anyString())
         }
         viewModel = EpgViewModel(
             repository, live, settings,
@@ -81,13 +84,22 @@ class EpgViewModelGenerationRegressionTest {
     }
 
     @Test
-    fun clearingSearchResetsQueryAndResultsWithoutStartingNewRequest() {
+    fun clearingSearchResetsQueryAndResultsWithoutStartingNewRequest() = runBlocking {
+        val item = searchItem()
+        Mockito.doReturn(listOf(item)).`when`(repository)
+            .searchFuturePrograms("previous query", null, null, false, null)
+        viewModel.executeSearch("previous query")
+        withTimeout(10_000L) { job("searchJob").join() }
+        assertSame(item.program, viewModel.searchResults.value.single().program)
+        assertEquals("previous query", viewModel.activeSearchQuery.value)
+        Mockito.clearInvocations(repository)
         viewModel.updateSearchQuery("pending query")
         viewModel.clearSearch()
         assertEquals("", viewModel.searchQuery.value)
         assertEquals("", viewModel.activeSearchQuery.value)
         assertTrue(viewModel.searchResults.value.isEmpty())
         assertFalse(viewModel.isSearching.value)
+        Mockito.verifyNoInteractions(repository)
     }
 
     @Test
@@ -142,10 +154,21 @@ class EpgViewModelGenerationRegressionTest {
         assertEquals("test-logo", results.single().logoUrl)
     }
 
-    private fun setPrivate(name: String, value: Any) {
+    private fun job(name: String): Job {
         val field = EpgViewModel::class.java.getDeclaredField(name)
         field.isAccessible = true
-        field.set(viewModel, value)
+        return field.get(viewModel) as Job
+    }
+
+    private suspend fun loadEpg(type: String, result: Result<List<EpgChannelWrapper>>) {
+        val now = OffsetDateTime.now()
+        Mockito.doReturn(flowOf(result)).`when`(repository).getEpgDataStream(
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.eq(type) ?: type
+        )
+        viewModel.refreshEpgData(type)
+        withTimeout(10_000L) { job("epgJob").join() }
     }
 
     @Test
@@ -158,11 +181,11 @@ class EpgViewModelGenerationRegressionTest {
     }
 
     @Test
-    fun successfulEmptyEpgDataProducesSuccessInsteadOfStuckLoading() {
+    fun successfulEmptyEpgDataProducesSuccessInsteadOfStuckLoading() = runBlocking {
         val target = OffsetDateTime.parse("2030-01-02T18:30:00+09:00")
-        setPrivate("hasDisplayedDataForType", true)
-        setPrivate("fullEpgData", emptyList<com.beeregg2001.komorebi.data.model.EpgChannelWrapper>())
         viewModel.updateTargetTime(target)
+        assertSame(EpgUiState.Loading, viewModel.uiState)
+        loadEpg("GR", Result.success(emptyList()))
         val state = viewModel.uiState
         assertTrue("valid empty result must not remain Loading", state is com.beeregg2001.komorebi.viewmodel.EpgUiState.Success)
         val success = state as com.beeregg2001.komorebi.viewmodel.EpgUiState.Success
@@ -175,30 +198,41 @@ class EpgViewModelGenerationRegressionTest {
     fun latestDateSliceWinsWhenTargetTimeChangesTwice() = runBlocking {
         val target1 = OffsetDateTime.parse("2030-01-02T18:30:00+09:00")
         val target2 = target1.plusDays(1)
-        val channel = Mockito.mock(EpgChannel::class.java)
-        val program = Mockito.mock(EpgProgram::class.java)
-        Mockito.`when`(program.start_time).thenReturn(target2.plusHours(2).toString())
-        Mockito.`when`(program.end_time).thenReturn(target2.plusHours(3).toString())
-        setPrivate("hasDisplayedDataForType", true)
-        setPrivate("displayedBroadcastingType", "GR")
-        setPrivate("fullEpgData", listOf(com.beeregg2001.komorebi.data.model.EpgChannelWrapper(channel, listOf(program))))
-        viewModel.updateTargetTime(target1)
-        viewModel.updateTargetTime(target2)
-        val field = EpgViewModel::class.java.getDeclaredField("sliceJob")
-        field.isAccessible = true
-        val job = field.get(viewModel) as kotlinx.coroutines.Job
-        withTimeout(10_000L) { job.join() }
-        val ui = viewModel.uiState
-        assertTrue(ui is com.beeregg2001.komorebi.viewmodel.EpgUiState.Success)
-        val success = ui as com.beeregg2001.komorebi.viewmodel.EpgUiState.Success
-        assertEquals("stale date must not overwrite latest", target2, success.targetTime)
-        assertEquals(1, success.data.single().programs.size)
+        val old = epgFixture("old", "Old day's program", target1.plusHours(2))
+        val latest = epgFixture("latest", "Latest day's program", target2.plusHours(2))
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val blockNextRead = AtomicBoolean(false)
+        val oldProgram = Mockito.spy(old.programs.single())
+        Mockito.doAnswer {
+            if (blockNextRead.compareAndSet(true, false)) {
+                entered.countDown()
+                check(release.await(15, TimeUnit.SECONDS))
+            }
+            it.callRealMethod()
+        }.`when`(oldProgram).start_time
+        loadEpg("GR", Result.success(listOf(old.copy(programs = listOf(oldProgram)), latest)))
+        withTimeout(10_000L) { job("sliceJob").join() }
+        try {
+            blockNextRead.set(true)
+            viewModel.updateTargetTime(target1)
+            val oldSlice = job("sliceJob")
+            assertTrue("previous day must still be computing", entered.await(15, TimeUnit.SECONDS))
+            viewModel.updateTargetTime(target2)
+            withTimeout(10_000L) { job("sliceJob").join() }
+            release.countDown()
+            withTimeout(10_000L) { oldSlice.join() }
+            val success = viewModel.uiState as EpgUiState.Success
+            assertEquals("stale date must not overwrite latest", target2, success.targetTime)
+            assertEquals(latest.programs, success.data.flatMap { it.programs })
+        } finally {
+            release.countDown()
+        }
     }
 
     @Test
-    fun broadcastingTypeSwitchImmediatelyInvalidatesPreviousSuccess() {
-        setPrivate("hasDisplayedDataForType", true)
-        viewModel.updateTargetTime(OffsetDateTime.parse("2030-01-02T18:00:00+09:00"))
+    fun broadcastingTypeSwitchImmediatelyInvalidatesPreviousSuccess() = runBlocking {
+        loadEpg("GR", Result.success(emptyList()))
         assertTrue(viewModel.uiState is com.beeregg2001.komorebi.viewmodel.EpgUiState.Success)
         viewModel.updateBroadcastingType("BS")
         assertEquals("BS", viewModel.selectedBroadcastingType.value)
@@ -207,25 +241,11 @@ class EpgViewModelGenerationRegressionTest {
 
     @Test
     fun requestedBroadcastTypeFailureNeverReusesPreviousTypesSuccess() = runBlocking {
-        setPrivate("hasDisplayedDataForType", true)
-        viewModel.updateTargetTime(OffsetDateTime.parse("2030-01-02T18:00:00+09:00"))
+        loadEpg("GR", Result.success(emptyList()))
         assertTrue(viewModel.uiState is com.beeregg2001.komorebi.viewmodel.EpgUiState.Success)
         viewModel.updateBroadcastingType("BS")
-        val now = OffsetDateTime.now()
-        Mockito.doReturn(flowOf(Result.failure<List<com.beeregg2001.komorebi.data.model.EpgChannelWrapper>>(
-            IllegalStateException("BS backend unavailable")
-        ))).`when`(repository).getEpgDataStream(
-            Mockito.any(OffsetDateTime::class.java) ?: now,
-            Mockito.any(OffsetDateTime::class.java) ?: now,
-            Mockito.eq("BS") ?: "BS"
-        )
-        viewModel.refreshEpgData("BS")
-        val field = EpgViewModel::class.java.getDeclaredField("epgJob")
-        field.isAccessible = true
-        val request = field.get(viewModel) as kotlinx.coroutines.Job
-        withTimeout(10_000L) { request.join() }
-        assertTrue("BS failure must not leave previous GR Success",
-            viewModel.uiState is com.beeregg2001.komorebi.viewmodel.EpgUiState.Error)
+        loadEpg("BS", Result.failure(IllegalStateException("BS backend unavailable")))
+        assertEquals(EpgUiState.Error("BS backend unavailable"), viewModel.uiState)
     }
 
     @Test
@@ -259,16 +279,13 @@ class EpgViewModelGenerationRegressionTest {
         val field = EpgViewModel::class.java.getDeclaredField("preloadJob")
         field.isAccessible = true
         withTimeout(10_000L) { (field.get(viewModel) as Job).join() }
+        val broadcastTypes = org.mockito.ArgumentCaptor.forClass(String::class.java)
         Mockito.verify(repository, Mockito.times(2)).fetchAndCacheEpgDataSilently(
             Mockito.any(OffsetDateTime::class.java) ?: now,
             Mockito.any(OffsetDateTime::class.java) ?: now,
-            Mockito.anyString() ?: "GR"
+            broadcastTypes.capture() ?: "GR"
         )
-        Mockito.verify(repository, Mockito.never()).fetchAndCacheEpgDataSilently(
-            Mockito.any(OffsetDateTime::class.java) ?: now,
-            Mockito.any(OffsetDateTime::class.java) ?: now,
-            Mockito.eq("UNSUPPORTED") ?: "UNSUPPORTED"
-        )
+        assertEquals(listOf("BS", "GR"), broadcastTypes.allValues.sorted())
     }
 
     @Test
@@ -286,13 +303,14 @@ class EpgViewModelGenerationRegressionTest {
             .searchFuturePrograms("newer", null, null, false, null)
         try {
             viewModel.executeSearch("older")
+            val olderSearch = job("searchJob")
             assertTrue("older search did not start", entered.await(15, TimeUnit.SECONDS))
             viewModel.executeSearch("newer")
             withTimeout(10_000L) {
                 viewModel.searchResults.first { it.singleOrNull()?.program === newItem.program }
             }
             release.countDown()
-            kotlinx.coroutines.delay(150L)
+            withTimeout(10_000L) { olderSearch.join() }
             assertSame(newItem.program, viewModel.searchResults.value.single().program)
             assertEquals("newer", viewModel.activeSearchQuery.value)
             assertFalse(viewModel.isSearching.value)

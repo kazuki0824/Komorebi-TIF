@@ -140,17 +140,20 @@ class VideoPlayerSessionBackendUiRegressionTest {
 
     @Test
     fun backendChangeDuringPlaybackDoesNotRelabelRecordedSessionHistory() {
+        // The UI's startup default can differ from the persisted backend.
+        confirmed.value = "EDCB"
         val program = recording()
         render(program)
         compose.waitUntil(10_000L) { stopCallback.get() != null }
         compose.runOnIdle {
-            backend.value = "EDCB"
-            confirmed.value = "EDCB"
+            backend.value = "EPGSTATION"
+            confirmed.value = "EPGSTATION"
         }
         compose.waitForIdle()
         compose.runOnIdle { stopCallback.get()!!.invoke(player) }
-        Mockito.verify(vm).updateWatchHistory(program, 120.0, "KONOMITV")
-        Mockito.verify(vm, Mockito.never()).updateWatchHistory(program, 120.0, "EDCB")
+        Mockito.verify(vm).updateWatchHistory(program, 120.0, "EDCB")
+        Mockito.verify(vm, Mockito.never()).updateWatchHistory(program, 120.0, "KONOMITV")
+        Mockito.verify(vm, Mockito.never()).updateWatchHistory(program, 120.0, "EPGSTATION")
     }
 
     @Test

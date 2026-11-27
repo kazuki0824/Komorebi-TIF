@@ -91,7 +91,8 @@ class EpgSearchBackendRegressionTest {
         val repo = repository("KONOMITV")
         cache(repo)["KONOMITV_GR"] = listOf(
             wrapper("NHK", "baseball live"),
-            wrapper("NHK", "baseball digest")
+            wrapper("NHK", "baseball digest"),
+            wrapper("NHK", "soccer live")
         )
         assertEquals(listOf("baseball live"),
             repo.searchFuturePrograms(query = "baseball live").map { it.program.title })
