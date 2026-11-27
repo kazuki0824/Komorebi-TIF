@@ -537,4 +537,41 @@ class EpgViewModelGenerationRegressionTest {
         } finally { release.countDown() }
     }
 
+
+    @Test
+    fun cancelledOldSearchFinallyCannotStopNewSearch() = runBlocking {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val nextEntered = CountDownLatch(1)
+        val nextRelease = CountDownLatch(1)
+        val replacement = searchItem()
+        Mockito.doAnswer {
+            entered.countDown()
+            check(release.await(15, TimeUnit.SECONDS))
+            throw CancellationException("old search cancelled")
+        }.`when`(repository).searchFuturePrograms("old-cancelled", null, null, false, null)
+        Mockito.doAnswer {
+            nextEntered.countDown()
+            check(nextRelease.await(15, TimeUnit.SECONDS))
+            listOf(replacement)
+        }.`when`(repository).searchFuturePrograms("new-pending", null, null, false, null)
+        try {
+            viewModel.executeSearch("old-cancelled")
+            val old = job("searchJob")
+            assertTrue(entered.await(15, TimeUnit.SECONDS))
+            viewModel.executeSearch("new-pending")
+            assertTrue(nextEntered.await(15, TimeUnit.SECONDS))
+            release.countDown()
+            withTimeout(10_000L) { old.join() }
+            assertTrue(viewModel.isSearching.value)
+            assertEquals("new-pending", viewModel.activeSearchQuery.value)
+            nextRelease.countDown()
+            withTimeout(10_000L) { job("searchJob").join() }
+            assertSame(replacement.program, viewModel.searchResults.value.single().program)
+        } finally {
+            release.countDown()
+            nextRelease.countDown()
+        }
+    }
+
 }
