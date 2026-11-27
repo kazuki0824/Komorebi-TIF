@@ -485,4 +485,38 @@ class HomeLauncherHistoryUiRegressionTest {
             captured.get()!!.map { it.id })
     }
 
+
+    @Test
+    fun verifiedHistoryPlaybackRejectsUnparsedAndClampsResumeBoundaryPositions() {
+        val state = MainRootState()
+        val epoch = mutableIntStateOf(10)
+        val program = Mockito.mock(RecordedProgram::class.java)
+        val video = Mockito.mock(RecordedVideo::class.java)
+        Mockito.`when`(program.id).thenReturn(202)
+        Mockito.`when`(program.recordedVideo).thenReturn(video)
+        interceptMainRootHistoryCallback()
+        renderThroughMainRootBackground(state, epoch)
+        compose.waitUntil(10_000L) { verifiedSelection.get() != null }
+        compose.runOnIdle {
+            Mockito.`when`(video.hasKeyFrames).thenReturn(false)
+            verifiedSelection.get()!!.invoke(program, 32.5)
+            assertNull("unparsed recording may not start", state.selectedProgram)
+            assertEquals(10, epoch.intValue)
+
+            Mockito.`when`(video.hasKeyFrames).thenReturn(true)
+            Mockito.`when`(video.duration).thenReturn(3600.0)
+            verifiedSelection.get()!!.invoke(program, 4.9)
+            assertSame(program, state.selectedProgram)
+            assertEquals(0L, state.initialPlaybackPositionMs)
+
+            verifiedSelection.get()!!.invoke(program, 3595.0)
+            assertEquals(0L, state.initialPlaybackPositionMs)
+
+            Mockito.`when`(video.duration).thenReturn(0.0)
+            verifiedSelection.get()!!.invoke(program, 16.25)
+            assertEquals(16250L, state.initialPlaybackPositionMs)
+            assertEquals(13, epoch.intValue)
+        }
+    }
+
 }
