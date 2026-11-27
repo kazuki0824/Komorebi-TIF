@@ -15,6 +15,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
+import java.util.zip.GZIPOutputStream
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.*
@@ -235,6 +240,35 @@ class EpgInFlightBackendRegressionTest {
             assertEquals(programs, memoryCache(reopened)["KONOMITV_GR"])
         } finally {
             f.releaseProvider.countDown()
+            f.cacheFile.delete()
+        }
+    }
+
+
+    @Test
+    fun diskCacheIsEmittedBeforeBlockedNetworkResponse() = runBlocking {
+        val f = fixture()
+        val disk = listOf(epgFixture("disk-own", "Disk before network", start))
+        GZIPOutputStream(f.cacheFile.outputStream()).use {
+            it.write(Gson().toJson(disk).toByteArray(Charsets.UTF_8))
+        }
+        Mockito.doReturn(EpgCacheEntity("KONOMITV_GR", "FILE_BASED", 10L))
+            .`when`(f.dao).getCache("KONOMITV_GR")
+        val observed = Channel<Result<List<EpgChannelWrapper>>>(Channel.UNLIMITED)
+        val collector = launch(Dispatchers.IO) {
+            f.repo.getEpgDataStream(start, end, "GR").collect { observed.send(it) }
+        }
+        try {
+            val first = withTimeout(15_000L) { observed.receive() }
+            assertEquals(disk, first.getOrThrow())
+            assertTrue(f.enteredProvider.await(15, TimeUnit.SECONDS))
+            f.releaseProvider.countDown()
+            val second = withTimeout(15_000L) { observed.receive() }
+            assertEquals(programs, second.getOrThrow())
+        } finally {
+            f.releaseProvider.countDown()
+            collector.cancelAndJoin()
+            observed.close()
             f.cacheFile.delete()
         }
     }
