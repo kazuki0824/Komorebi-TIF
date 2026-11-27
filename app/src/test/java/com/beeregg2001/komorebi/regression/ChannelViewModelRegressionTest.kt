@@ -629,4 +629,47 @@ class ChannelViewModelRegressionTest {
         }
     }
 
+
+    @Test
+    fun sameBackendObsoleteFailureCannotClearLoadingOrSetErrorForLaterForcedFetch() = runBlocking {
+        Dispatchers.setMain(Dispatchers.Default)
+        val live = Mockito.mock(LiveProvider::class.java)
+        Mockito.doReturn(ChannelApiResponse()).`when`(live).getChannels()
+        val vm = viewModel(live, MutableStateFlow("EDCB"))
+        vm.stopPolling()
+        awaitObservedBackend(vm, "EDCB")
+        val oldEntered = CountDownLatch(1)
+        val oldRelease = CountDownLatch(1)
+        val newEntered = CountDownLatch(1)
+        val newRelease = CountDownLatch(1)
+        val calls = AtomicInteger()
+        Mockito.doAnswer {
+            if (calls.incrementAndGet() == 1) {
+                oldEntered.countDown()
+                check(oldRelease.await(15, TimeUnit.SECONDS))
+                throw IllegalStateException("old forced call failed")
+            }
+            newEntered.countDown()
+            check(newRelease.await(15, TimeUnit.SECONDS))
+            ChannelApiResponse(terrestrial = listOf(networkChannel("new-forced-result")))
+        }.`when`(live).getChannels()
+        try {
+            vm.fetchChannels(force = true)
+            val oldJob = fetchJob(vm)
+            assertTrue(oldEntered.await(15, TimeUnit.SECONDS))
+            vm.fetchChannels(force = true)
+            assertTrue(newEntered.await(15, TimeUnit.SECONDS))
+            oldRelease.countDown()
+            withTimeout(10_000L) { oldJob.join() }
+            assertTrue("older finally may not clear latest loading", vm.isLoading.value)
+            assertFalse("older failure may not set current error", vm.connectionError.value)
+            newRelease.countDown()
+            withTimeout(10_000L) { vm.isLoading.first { !it } }
+            assertEquals("new-forced-result", vm.groupedChannels.value["GR"]?.single()?.id)
+        } finally {
+            oldRelease.countDown(); newRelease.countDown()
+            vm.stopPolling(); vm.viewModelScope.cancel()
+        }
+    }
+
 }
