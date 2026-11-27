@@ -212,4 +212,56 @@ class EpgFileCacheRegressionTest {
         } finally { release.countDown() }
     }
 
+
+    private fun reopenedRepository(): EpgRepository {
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(backend)
+        return EpgRepository(context, provider, dao, gson, settings)
+    }
+
+    @Test
+    fun freshQualifiedGzipReusedAfterRepositoryRecreationWithoutProviderCall() = runBlocking {
+        val fresh = listOf(epgFixture("fresh", "Fresh disk program", start.plusDays(3)))
+        writeCompressed("KONOMITV_GR", gson.toJson(fresh))
+        Mockito.doReturn(EpgCacheEntity("KONOMITV_GR", "FILE_BASED", 100L))
+            .`when`(dao).getCache("KONOMITV_GR")
+        val reopened = reopenedRepository()
+        reopened.fetchAndCacheEpgDataSilently(start, end, "GR")
+        Mockito.verifyNoInteractions(provider)
+        assertEquals("Fresh disk program",
+            reopened.searchFuturePrograms(query = "Fresh disk program").single().program.title)
+        assertStoredPrograms("KONOMITV_GR", fresh)
+    }
+
+    @Test
+    fun expiredQualifiedDiskCacheIsRefreshedFromSelectedProvider() = runBlocking {
+        val expired = listOf(epgFixture("old", "Expired old show", start.minusDays(6)))
+        writeCompressed("KONOMITV_GR", gson.toJson(expired))
+        Mockito.doReturn(EpgCacheEntity("KONOMITV_GR", "FILE_BASED", 100L))
+            .`when`(dao).getCache("KONOMITV_GR")
+        Mockito.doReturn(konomiPrograms).`when`(provider).getEpgProgramsForBackend(
+            "KONOMITV", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+            end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "GR"
+        )
+        val reopened = reopenedRepository()
+        reopened.fetchAndCacheEpgDataSilently(start, end, "GR")
+        Mockito.verify(provider, Mockito.times(1)).getEpgProgramsForBackend(
+            "KONOMITV", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+            end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "GR"
+        )
+        assertStoredPrograms("KONOMITV_GR", konomiPrograms)
+        assertTrue(reopened.searchFuturePrograms(query = "Expired old show").isEmpty())
+    }
+
+    @Test
+    fun repeatedSilentPrefetchUsesMemoryCacheWithoutSecondProviderRequest() = runBlocking {
+        fetch("KONOMITV")
+        repo.fetchAndCacheEpgDataSilently(start, end, "GR")
+        Mockito.verify(provider, Mockito.times(1)).getEpgProgramsForBackend(
+            "KONOMITV", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+            end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "GR"
+        )
+        assertStoredPrograms("KONOMITV_GR", konomiPrograms)
+    }
+
 }
