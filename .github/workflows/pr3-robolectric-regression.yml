@@ -160,7 +160,7 @@ jobs:
               "MainRootDialogEpochUiRegressionTest": 1,
               "MainRootScreenStateUiRegressionTest": 9,
               "RecordCacheOwnershipRegressionTest": 6,
-              "RecordSyncBackendTransitionRegressionTest": 11,
+              "RecordSyncBackendTransitionRegressionTest": 12,
               "RecordSyncFullSyncOwnerRegressionTest": 6,
               "RecordViewModelRegressionTest": 12,
               "WatchHistoryRepositoryRegressionTest": 10,
