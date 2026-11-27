@@ -95,7 +95,7 @@ class SettingScreenBackendWriteUiRegressionTest {
         compose.runOnUiThread {
             uiSettingsConstruction = Mockito.mockConstruction(
                 SettingsRepository::class.java,
-                Mockito.withSettings().defaultAnswer(AdditionalAnswers.delegatesTo(store))
+                Mockito.withSettings().defaultAnswer(AdditionalAnswers.delegatesTo<Any>(store))
             )
         }
         compose.setContent {
