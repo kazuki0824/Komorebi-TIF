@@ -5,6 +5,11 @@ import com.beeregg2001.komorebi.ui.epg.engine.EpgConfig
 import com.beeregg2001.komorebi.ui.epg.engine.EpgState
 import com.beeregg2001.komorebi.ui.theme.MonotonePalette
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeout
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import org.mockito.Mockito
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -87,4 +92,35 @@ class EpgStateRegressionTest {
         assertTrue(epg.filledChannelWrappers.isEmpty())
         assertNull(epg.currentFocusedProgram)
     }
+
+    @Test
+    fun clearDataWhileRealEpgConversionIsInFlightResetsCalculatingAndDoesNotReappear() = runBlocking {
+        val epg = state()
+        val now = OffsetDateTime.parse("2030-01-04T18:30:00+09:00")
+        val wrapper = epgFixture("old-station", "stale old broadcast", now)
+        val program = Mockito.spy(wrapper.programs.single())
+        val reachedParser = CountDownLatch(1)
+        val releaseParser = CountDownLatch(1)
+        Mockito.doAnswer {
+            reachedParser.countDown()
+            check(releaseParser.await(15, TimeUnit.SECONDS))
+            it.callRealMethod()
+        }.`when`(program).start_time
+        try {
+            val calculating = async(Dispatchers.Default) {
+                epg.updateData(listOf(wrapper.copy(programs = listOf(program))), now, "GR")
+            }
+            assertTrue(reachedParser.await(15, TimeUnit.SECONDS))
+            assertTrue("actual concurrent conversion must have set flag", epg.isCalculating)
+            epg.clearData()
+            assertFalse("clear must reset calculation flag while conversion is active", epg.isCalculating)
+            assertFalse(epg.hasData)
+            assertTrue(epg.filledChannelWrappers.isEmpty())
+            releaseParser.countDown()
+            withTimeout(15_000L) { calculating.await() }
+            assertFalse("completed old computation cannot republish cleared result", epg.hasData)
+            assertFalse(epg.isCalculating)
+        } finally { releaseParser.countDown() }
+    }
+
 }
