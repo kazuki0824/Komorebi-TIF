@@ -165,7 +165,7 @@ jobs:
               "RecordViewModelRegressionTest": 12,
               "WatchHistoryRepositoryRegressionTest": 9,
               "VideoPlaybackHistoryOwnershipRegressionTest": 2,
-              "VideoPlayerSessionBackendUiRegressionTest": 2,
+              "VideoPlayerSessionBackendUiRegressionTest": 3,
               "VideoTabSmbNavigationUiRegressionTest": 2,
           }
           print(f"PR3 regression cases: {len(cases)}; failed: {failures}; skipped: {skipped}")
