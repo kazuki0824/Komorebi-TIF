@@ -12,6 +12,11 @@ import com.beeregg2001.komorebi.data.repository.WatchHistoryRepository
 import com.google.gson.Gson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
@@ -106,4 +111,56 @@ class WatchHistoryRepositoryRegressionTest {
         assertNull(repository.getHistoryEntityById(66, "KONOMITV"))
         assertEquals("payload", db.epgCacheDao().getCache("KONOMITV_GR")?.dataJson)
     }
+
+    @Test
+    fun continuousHistorySubscriptionNeverCombinesNewOwnerWithOldRows() = runBlocking {
+        repository.saveToLocalHistory(history(42, "Konomi title"), "KONOMITV")
+        repository.saveToLocalHistory(history(42, "EDCB title"), "EDCB")
+        val observations = async(Dispatchers.Default) {
+            withTimeout(10_000L) { repository.getOwnedLocalWatchHistory().take(2).toList() }
+        }
+        // Wait until the original owner emission has been observed before switching.
+        withTimeout(10_000L) {
+            while (true) {
+                // Observe subscription readiness through a separate owner read.
+                if (selectedBackend.value == "KONOMITV") break
+                kotlinx.coroutines.yield()
+            }
+        }
+        // Give the collecting coroutine an opportunity to register with Room.
+        kotlinx.coroutines.delay(100)
+        selectedBackend.value = "EDCB"
+        val emissions = observations.await()
+        assertEquals(2, emissions.size)
+        assertEquals("KONOMITV" to listOf("Konomi title"),
+            emissions[0].first to emissions[0].second.map { it.title })
+        assertEquals("EDCB" to listOf("EDCB title"),
+            emissions[1].first to emissions[1].second.map { it.title })
+    }
+
+    @Test
+    fun failureDeletingLegacyHistoryRollsBackEarlierBackendHistoryDeletion() = runBlocking {
+        db.watchHistoryDao().insertOrUpdate(history(66, "legacy"))
+        repository.saveToLocalHistory(history(66, "Konomi"), "KONOMITV")
+        repository.saveToLocalHistory(history(66, "EDCB"), "EDCB")
+        val sql = db.openHelper.writableDatabase
+        sql.execSQL(
+            """CREATE TRIGGER fail_legacy_history_delete BEFORE DELETE ON watch_history
+               BEGIN SELECT RAISE(ABORT, 'injected legacy deletion failure'); END"""
+        )
+        try {
+            try {
+                repository.clearWatchHistory()
+                fail("Failure injection must abort the transaction")
+            } catch (e: android.database.sqlite.SQLiteException) {
+                assertTrue(e.message.orEmpty().contains("injected"))
+            }
+            assertNotNull(db.watchHistoryDao().getById(66))
+            assertEquals("Konomi", repository.getHistoryEntityById(66, "KONOMITV")?.title)
+            assertEquals("EDCB", repository.getHistoryEntityById(66, "EDCB")?.title)
+        } finally {
+            sql.execSQL("DROP TRIGGER IF EXISTS fail_legacy_history_delete")
+        }
+    }
+
 }
