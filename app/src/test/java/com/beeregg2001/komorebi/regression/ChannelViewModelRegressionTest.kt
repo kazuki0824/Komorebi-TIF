@@ -484,4 +484,45 @@ class ChannelViewModelRegressionTest {
         }
     }
 
+
+    @Test
+    fun switchingBackendHidesAlreadyDisplayedOldChannelsWhileNewProviderIsBlocked() = runBlocking {
+        Dispatchers.setMain(Dispatchers.Default)
+        val live = Mockito.mock(LiveProvider::class.java)
+        Mockito.doReturn(ChannelApiResponse()).`when`(live).getChannels()
+        val backend = MutableStateFlow("KONOMITV")
+        val vm = viewModel(live, backend)
+        vm.stopPolling()
+        awaitObservedBackend(vm, "KONOMITV")
+        Mockito.doReturn(ChannelApiResponse(terrestrial = listOf(networkChannel("old-visible"))))
+            .`when`(live).getChannels()
+        vm.fetchChannels(force = true)
+        withTimeout(10_000L) {
+            vm.groupedChannels.first { it["GR"]?.singleOrNull()?.id == "old-visible" }
+        }
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        Mockito.doAnswer {
+            started.countDown()
+            check(release.await(15, TimeUnit.SECONDS))
+            ChannelApiResponse(terrestrial = listOf(networkChannel("new-visible")))
+        }.`when`(live).getChannels()
+        try {
+            backend.value = "EDCB"
+            assertTrue(started.await(15, TimeUnit.SECONDS))
+            assertTrue(vm.groupedChannels.value.isEmpty())
+            assertTrue(vm.liveRows.value.isEmpty())
+            assertTrue(vm.isLoading.value)
+            release.countDown()
+            withTimeout(10_000L) {
+                vm.groupedChannels.first { it["GR"]?.singleOrNull()?.id == "new-visible" }
+            }
+            assertFalse(vm.isLoading.value)
+        } finally {
+            release.countDown()
+            vm.stopPolling()
+            vm.viewModelScope.cancel()
+        }
+    }
+
 }
