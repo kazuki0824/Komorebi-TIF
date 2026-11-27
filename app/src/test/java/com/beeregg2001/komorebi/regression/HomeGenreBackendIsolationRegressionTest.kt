@@ -202,4 +202,31 @@ class HomeGenreBackendIsolationRegressionTest {
         assertEquals(0, vm.baseballDateOffset.value)
     }
 
+
+    @Test
+    fun switchingBackendRevokesAlreadyPublishedGenreAndBaseballCardsBeforeNewFetch() = runBlocking {
+        baseballTomorrow()
+        withTimeout(10_000L) { vm.favoriteBaseballTeams.first { "巨人" in it } }
+        val completed = startAndGetJob()
+        assertTrue(entered.await(15, TimeUnit.SECONDS))
+        release.countDown()
+        withTimeout(15_000L) { completed.join() }
+        assertTrue("existing backend must have visible genre cards", vm.genrePickupPrograms.value.isNotEmpty())
+        vm.updateBaseballDateOffset(1)
+        withTimeout(10_000L) {
+            vm.favoriteBaseballGames.first { it.isNotEmpty() }
+        }
+        assertTrue("existing backend must have visible baseball cards", vm.favoriteBaseballGames.value.isNotEmpty())
+        backend.value = "EDCB"
+        withTimeout(10_000L) {
+            vm.genrePickupPrograms.first { it.isEmpty() }
+            vm.favoriteBaseballGames.first { it.isEmpty() }
+        }
+        assertTrue("old genre cards must vanish on backend change", vm.genrePickupPrograms.value.isEmpty())
+        assertTrue("old baseball cards must vanish on backend change", vm.favoriteBaseballGames.value.isEmpty())
+        val field = HomeViewModel::class.java.getDeclaredField("cachedBaseballPrograms")
+            .apply { isAccessible = true }
+        assertTrue((field.get(vm) as List<*>).isEmpty())
+    }
+
 }
