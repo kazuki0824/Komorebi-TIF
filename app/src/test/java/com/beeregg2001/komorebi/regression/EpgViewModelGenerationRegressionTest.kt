@@ -25,6 +25,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
@@ -445,6 +447,58 @@ class EpgViewModelGenerationRegressionTest {
         val retained = viewModel.uiState as EpgUiState.Success
         assertEquals(before.data, retained.data)
         assertTrue(viewModel.selectedBroadcastingType.value == "GR")
+    }
+
+
+    @Test
+    fun initializedVmSwitchBeforeScheduledTenSecondPreloadInvalidatesPreviousEpg() = runBlocking {
+        viewModel.viewModelScope.cancel()
+        val initialized = MutableStateFlow(true)
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.isInitialized).thenReturn(initialized)
+        Mockito.`when`(settings.backendType).thenReturn(backend)
+        Mockito.`when`(settings.mirakurunIp).thenReturn(flowOf(""))
+        Mockito.`when`(settings.mirakurunPort).thenReturn(flowOf(""))
+        val live = Mockito.mock(LiveProvider::class.java)
+        Mockito.doReturn("logo").`when`(live).getChannelLogoUrl(Mockito.anyString())
+        val now = OffsetDateTime.now()
+        val old = listOf(epgFixture("old-owner", "previous EPG", now))
+        val latest = listOf(epgFixture("new-owner", "replacement EPG", now))
+        Mockito.doAnswer {
+            flowOf(Result.success(if (backend.value == "KONOMITV") old else latest))
+        }.`when`(repository).getEpgDataStream(
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.eq("GR") ?: "GR"
+        )
+        Mockito.doReturn(Unit).`when`(repository).fetchAndCacheEpgDataSilently(
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.anyString() ?: "GR"
+        )
+        viewModel = EpgViewModel(
+            repository, live, settings, ApplicationProvider.getApplicationContext()
+        )
+        withTimeout(10_000L) {
+            while ((viewModel.uiState as? EpgUiState.Success)?.data?.isEmpty() != false)
+                kotlinx.coroutines.delay(10L)
+        }
+        val oldPreload = job("preloadJob")
+        backend.value = "EDCB"
+        withTimeout(10_000L) {
+            while ((viewModel.uiState as? EpgUiState.Success)?.data?.any {
+                    it.channel.id == "new-owner"
+                } != true) kotlinx.coroutines.delay(10L)
+        }
+        assertTrue(oldPreload.isCancelled)
+        assertEquals("GR", viewModel.selectedBroadcastingType.value)
+        val replacement = viewModel.uiState as EpgUiState.Success
+        assertTrue(replacement.data.none { it.channel.id == "old-owner" })
+        Mockito.verify(repository, Mockito.never()).fetchAndCacheEpgDataSilently(
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.anyString() ?: "GR"
+        )
     }
 
 }
