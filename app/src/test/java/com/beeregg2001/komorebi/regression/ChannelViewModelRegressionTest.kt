@@ -523,6 +523,9 @@ class ChannelViewModelRegressionTest {
             withTimeout(10_000L) {
                 vm.groupedChannels.first { it["GR"]?.singleOrNull()?.id == "new-visible" }
             }
+            // The list is published before the request's finally block resets loading.
+            // Await the completed state rather than assuming synchronous ordering.
+            withTimeout(10_000L) { vm.isLoading.first { !it } }
             assertFalse(vm.isLoading.value)
         } finally {
             release.countDown()
