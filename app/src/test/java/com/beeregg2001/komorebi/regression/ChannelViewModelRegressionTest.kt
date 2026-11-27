@@ -434,4 +434,54 @@ class ChannelViewModelRegressionTest {
         }
     }
 
+
+    @Test
+    fun obsoleteFetchFinallyCannotClearLoadingWhileNewBackendFetchIsStillPending() = runBlocking {
+        Dispatchers.setMain(Dispatchers.Default)
+        val live = Mockito.mock(LiveProvider::class.java)
+        val oldEntered = CountDownLatch(1)
+        val oldRelease = CountDownLatch(1)
+        val newEntered = CountDownLatch(1)
+        val newRelease = CountDownLatch(1)
+        val calls = AtomicInteger()
+        Mockito.doAnswer {
+            when (calls.incrementAndGet()) {
+                1 -> {
+                    oldEntered.countDown()
+                    check(oldRelease.await(15, TimeUnit.SECONDS))
+                    throw IllegalStateException("obsolete fetch failed")
+                }
+                else -> {
+                    newEntered.countDown()
+                    check(newRelease.await(15, TimeUnit.SECONDS))
+                    ChannelApiResponse(terrestrial = listOf(networkChannel("new-backend")))
+                }
+            }
+        }.`when`(live).getChannels()
+        val backend = MutableStateFlow("KONOMITV")
+        val vm = viewModel(live, backend)
+        vm.stopPolling()
+        awaitObservedBackend(vm, "KONOMITV")
+        try {
+            vm.fetchChannels(force = true)
+            val obsoleteJob = fetchJob(vm)
+            assertTrue(oldEntered.await(15, TimeUnit.SECONDS))
+            backend.value = "EDCB"
+            assertTrue(newEntered.await(15, TimeUnit.SECONDS))
+            assertTrue(vm.isLoading.value)
+            oldRelease.countDown()
+            withTimeout(10_000L) { obsoleteJob.join() }
+            assertTrue("old finally cannot end latest loading", vm.isLoading.value)
+            assertFalse("old failure cannot mark new request failed", vm.connectionError.value)
+            newRelease.countDown()
+            withTimeout(10_000L) { vm.isLoading.first { !it } }
+            assertEquals("new-backend", vm.groupedChannels.value["GR"]?.single()?.id)
+        } finally {
+            oldRelease.countDown()
+            newRelease.countDown()
+            vm.stopPolling()
+            vm.viewModelScope.cancel()
+        }
+    }
+
 }
