@@ -58,6 +58,7 @@ class MainRootScreenStateUiRegressionTest {
     private val mocked = mutableListOf<MockedStatic<Any>>()
     private val renderedRoot = AtomicReference<MainRootState?>()
     private val exposedEpoch = AtomicReference<MutableIntState?>()
+    private val dialogEpoch = AtomicReference<MutableIntState?>()
     private val smbProgram = AtomicReference<RecordedProgram?>()
     private val liveSelect = AtomicReference<((Channel) -> Unit)?>(null)
 
@@ -157,7 +158,10 @@ class MainRootScreenStateUiRegressionTest {
             } else it.callRealMethod()
         }
         intercept("com.beeregg2001.komorebi.ui.main.MainRootDialogsKt") {
-            if (it.method.name == "MainRootDialogs") null else it.callRealMethod()
+            if (it.method.name == "MainRootDialogs") {
+                dialogEpoch.set(it.arguments[1] as MutableIntState)
+                null
+            } else it.callRealMethod()
         }
         intercept("com.beeregg2001.komorebi.ui.video.player.VideoPlayerScreenKt") {
             if (it.method.name == "VideoPlayerScreen") null else it.callRealMethod()
@@ -369,6 +373,17 @@ class MainRootScreenStateUiRegressionTest {
         assertEquals("manual selection must take precedence over delayed startup", manual.id,
             state.selectedChannel?.id)
         assertEquals(manual.id, state.lastSelectedChannelId)
+    }
+
+
+    @Test
+    fun rootPassesIdenticalSelectionGenerationToBackgroundAndDialogs() {
+        render()
+        compose.waitUntil(10_000L) { exposedEpoch.get() != null && dialogEpoch.get() != null }
+        assertSame("both selection components must share the same mutable epoch",
+            exposedEpoch.get(), dialogEpoch.get())
+        compose.runOnIdle { exposedEpoch.get()!!.intValue += 3 }
+        assertEquals(3, dialogEpoch.get()!!.intValue)
     }
 
 }
