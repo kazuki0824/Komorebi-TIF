@@ -144,7 +144,7 @@ jobs:
               "DtvProviderProxyRoutingRegressionTest": 7,
               "SettingsBackendFailureRegressionTest": 8,
               "SettingScreenBackendWriteUiRegressionTest": 1,
-              "EpgInFlightBackendRegressionTest": 8,
+              "EpgInFlightBackendRegressionTest": 9,
               "EpgFileCacheRegressionTest": 10,
               "EpgSearchBackendRegressionTest": 8,
               "EpgStateRegressionTest": 2,
