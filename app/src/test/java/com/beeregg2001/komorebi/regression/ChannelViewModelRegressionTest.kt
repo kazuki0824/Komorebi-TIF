@@ -576,4 +576,57 @@ class ChannelViewModelRegressionTest {
         }
     }
 
+
+    @Test
+    fun inFlightProgressRecalculationFromOldBackendCannotRepaintNewRows() = runBlocking {
+        val now = java.time.OffsetDateTime.now()
+        val oldProgram = Mockito.spy(com.beeregg2001.komorebi.data.model.Program(
+            id = "old-epg", title = "old current show", description = "", detail = null,
+            startTime = now.minusMinutes(10).toString(),
+            endTime = now.plusMinutes(50).toString(), duration = 3600,
+            genres = null, videoResolution = null
+        ))
+        val block = AtomicBoolean(false)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        Mockito.doAnswer {
+            if (block.compareAndSet(true, false)) {
+                entered.countDown()
+                check(release.await(15, TimeUnit.SECONDS))
+            }
+            it.callRealMethod()
+        }.`when`(oldProgram).startTime
+        val old = networkChannel("old-row").copy(programPresent = oldProgram)
+        val latest = networkChannel("new-row")
+        val backend = MutableStateFlow("KONOMITV")
+        val live = Mockito.mock(LiveProvider::class.java)
+        Mockito.doAnswer {
+            ChannelApiResponse(terrestrial = listOf(if (backend.value == "KONOMITV") old else latest))
+        }.`when`(live).getChannels()
+        val vm = viewModel(live, backend)
+        try {
+            withTimeout(10_000L) {
+                vm.groupedChannels.first { it["GR"]?.singleOrNull()?.id == "old-row" }
+            }
+            block.set(true)
+            testDispatcher.scheduler.advanceTimeBy(15_010L)
+            testDispatcher.scheduler.runCurrent()
+            assertTrue("production progress updater did not recalculate old row",
+                entered.await(15, TimeUnit.SECONDS))
+            backend.value = "EDCB"
+            withTimeout(10_000L) {
+                vm.liveRows.first { it.flatMap { row -> row.channels }.any { it.channel.id == "new-row" } }
+            }
+            release.countDown()
+            withTimeout(10_000L) {
+                vm.liveRows.first { it.flatMap { row -> row.channels }.all { it.channel.id != "old-row" } }
+            }
+            assertEquals("new-row", vm.liveRows.value.single().channels.single().channel.id)
+        } finally {
+            release.countDown()
+            vm.stopPolling()
+            vm.viewModelScope.cancel()
+        }
+    }
+
 }
