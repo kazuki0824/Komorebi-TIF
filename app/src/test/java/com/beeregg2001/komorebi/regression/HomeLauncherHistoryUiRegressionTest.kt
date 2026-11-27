@@ -460,4 +460,29 @@ class HomeLauncherHistoryUiRegressionTest {
         assertNull("late history response must never override later selection", resumed.get())
     }
 
+
+    @Test
+    fun homeFlowFiltersUnavailableHistoryBeforeLimitingToTen() {
+        val captured = AtomicReference<List<Channel>?>()
+        compose.runOnUiThread {
+            @Suppress("UNCHECKED_CAST")
+            val cls = Class.forName("com.beeregg2001.komorebi.ui.home.HomeContentsKt") as Class<Any>
+            staticMocks += Mockito.mockStatic(cls, Answer { invocation ->
+                if (invocation.method.name == "HomeContents") {
+                    @Suppress("UNCHECKED_CAST")
+                    captured.set(invocation.arguments[0] as List<Channel>)
+                    null
+                } else invocation.callRealMethod()
+            })
+        }
+        owned.value = "EDCB" to emptyList()
+        val all = (1..25).map { channel("channel-$it", "Channel $it") }
+        // First ten history entries (25..16) are unavailable; 15..1 can be tuned.
+        lastChannelFlow.value = all.asReversed()
+        render(initialTabIndex = 0, groupedChannels = mapOf("GR" to all.take(15)))
+        compose.waitUntil(10_000L) { captured.get() != null }
+        assertEquals((15 downTo 6).map { "channel-$it" },
+            captured.get()!!.map { it.id })
+    }
+
 }
