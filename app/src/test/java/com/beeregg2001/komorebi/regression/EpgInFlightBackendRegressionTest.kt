@@ -9,6 +9,7 @@ import com.beeregg2001.komorebi.data.model.EpgChannelWrapper
 import com.beeregg2001.komorebi.data.repository.DtvProviderProxy
 import com.beeregg2001.komorebi.data.repository.EpgRepository
 import com.google.gson.Gson
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -128,6 +129,64 @@ class EpgInFlightBackendRegressionTest {
             assertFalse(memoryCache(f.repo).containsKey("EDCB_GR"))
         } finally {
             f.releaseProvider.countDown()
+        }
+    }
+
+
+    @Test
+    fun memoryCacheIsEmittedBeforeProviderFailureAndRetained() = runBlocking {
+        val f = fixture()
+        f.releaseProvider.countDown()
+        val old = listOf(epgFixture("memory-own", "Cached EPG", start))
+        @Suppress("UNCHECKED_CAST")
+        val field = EpgRepository::class.java.getDeclaredField("memoryCache").apply { isAccessible = true }
+        val cache = field.get(f.repo) as MutableMap<String, List<EpgChannelWrapper>>
+        cache["KONOMITV_GR"] = old
+        val emissions = f.repo.getEpgDataStream(start, end, "GR").toList()
+        assertTrue(emissions.isNotEmpty())
+        assertEquals(old, emissions.first().getOrThrow())
+        assertEquals(old, cache["KONOMITV_GR"])
+    }
+
+    @Test
+    fun providerFailureWithoutCacheProducesResultFailure() = runBlocking {
+        val backend = MutableStateFlow("KONOMITV")
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(backend)
+        val provider = Mockito.mock(DtvProviderProxy::class.java)
+        val startStr = start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+        val endStr = end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+        Mockito.doAnswer { throw IllegalStateException("network failure injected") }
+            .`when`(provider).getEpgProgramsForBackend("KONOMITV", startStr, endStr, "GR")
+        val repo = EpgRepository(
+            ApplicationProvider.getApplicationContext(), provider,
+            Mockito.mock(EpgCacheDao::class.java), Gson(), settings
+        )
+        val emissions = repo.getEpgDataStream(start, end, "GR").toList()
+        assertEquals(1, emissions.size)
+        assertTrue(emissions.single().isFailure)
+        assertTrue(emissions.single().exceptionOrNull() is IllegalStateException)
+    }
+
+    @Test
+    fun providerCancellationPropagatesInsteadOfReturningAnEmptyEpg() = runBlocking {
+        val backend = MutableStateFlow("KONOMITV")
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(backend)
+        val provider = Mockito.mock(DtvProviderProxy::class.java)
+        val startStr = start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+        val endStr = end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+        Mockito.doAnswer { throw CancellationException("cancel injected") }
+            .`when`(provider).getEpgProgramsForBackend("KONOMITV", startStr, endStr, "GR")
+        val repo = EpgRepository(
+            ApplicationProvider.getApplicationContext(), provider,
+            Mockito.mock(EpgCacheDao::class.java), Gson(), settings
+        )
+        try {
+            repo.getEpgDataStream(start, end, "GR").toList()
+            fail("Cancellation must not become an empty or successful result")
+        } catch (expected: CancellationException) {
+            assertEquals("cancel injected", expected.message)
         }
     }
 
