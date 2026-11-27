@@ -135,16 +135,26 @@ class EpgInFlightBackendRegressionTest {
 
     @Test
     fun memoryCacheIsEmittedBeforeProviderFailureAndRetained() = runBlocking {
-        val f = fixture()
-        f.releaseProvider.countDown()
+        val backend = MutableStateFlow("KONOMITV")
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(backend)
+        val provider = Mockito.mock(DtvProviderProxy::class.java)
+        val startStr = start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+        val endStr = end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+        Mockito.doAnswer { throw IllegalStateException("refresh failed") }
+            .`when`(provider).getEpgProgramsForBackend("KONOMITV", startStr, endStr, "GR")
+        val repo = EpgRepository(
+            ApplicationProvider.getApplicationContext(), provider,
+            Mockito.mock(EpgCacheDao::class.java), Gson(), settings
+        )
         val old = listOf(epgFixture("memory-own", "Cached EPG", start))
         @Suppress("UNCHECKED_CAST")
         val field = EpgRepository::class.java.getDeclaredField("memoryCache").apply { isAccessible = true }
-        val cache = field.get(f.repo) as MutableMap<String, List<EpgChannelWrapper>>
+        val cache = field.get(repo) as MutableMap<String, List<EpgChannelWrapper>>
         cache["KONOMITV_GR"] = old
-        val emissions = f.repo.getEpgDataStream(start, end, "GR").toList()
-        assertTrue(emissions.isNotEmpty())
-        assertEquals(old, emissions.first().getOrThrow())
+        val emissions = repo.getEpgDataStream(start, end, "GR").toList()
+        assertEquals(1, emissions.size)
+        assertEquals(old, emissions.single().getOrThrow())
         assertEquals(old, cache["KONOMITV_GR"])
     }
 
