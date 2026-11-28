@@ -305,7 +305,7 @@ class EpgInFlightBackendRegressionTest {
 
 
     @Test
-    fun memoryCacheEmitsBeforeProviderCompletesAndRefreshStillCallsProvider() = runBlocking {
+    fun memoryCacheEmitsBeforeProviderCompletesAndRefreshStillCallsProvider(): Unit = runBlocking {
         val backend = MutableStateFlow("KONOMITV")
         val settings = Mockito.mock(SettingsRepository::class.java)
         Mockito.`when`(settings.backendType).thenReturn(backend)
