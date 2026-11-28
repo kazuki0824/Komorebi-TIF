@@ -5,8 +5,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.onRoot
-import androidx.compose.ui.test.captureToImage
-import androidx.compose.ui.graphics.toPixelMap
+import androidx.compose.ui.platform.LocalView
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import java.util.concurrent.atomic.AtomicReference
 import androidx.compose.ui.test.hasProgressBarRangeInfo
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.test.performKeyInput
@@ -46,6 +48,7 @@ import java.time.OffsetDateTime
 class EpgCanvasOverlayUiRegressionTest {
     @get:Rule val compose = createComposeRule()
     private val store = ViewModelStore()
+    private val rootAndroidView = AtomicReference<android.view.View?>()
     private val owner = object : ViewModelStoreOwner {
         override val viewModelStore: ViewModelStore = store
     }
@@ -69,6 +72,7 @@ class EpgCanvasOverlayUiRegressionTest {
         Mockito.`when`(settings.epgFontSizeScale).thenReturn(MutableStateFlow("1.0"))
         Mockito.`when`(settings.epgVisibleHours).thenReturn(MutableStateFlow("6"))
         compose.setContent {
+            rootAndroidView.set(LocalView.current)
             CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
                 KomorebiTheme {
                     ModernEpgCanvasEngine_Smooth(
@@ -91,6 +95,16 @@ class EpgCanvasOverlayUiRegressionTest {
                         settingsViewModel = settings
                     )
                 }
+            }
+        }
+    }
+
+    private fun drawRootBitmap(): Bitmap {
+        return compose.runOnIdle {
+            val v = requireNotNull(rootAndroidView.get())
+            assertTrue("Android view must have been laid out", v.width > 0 && v.height > 0)
+            Bitmap.createBitmap(v.width, v.height, Bitmap.Config.ARGB_8888).also { bitmap ->
+                v.draw(Canvas(bitmap))
             }
         }
     }
@@ -238,7 +252,7 @@ class EpgCanvasOverlayUiRegressionTest {
         compose.runOnIdle { state.value = EpgUiState.Loading }
         compose.waitForIdle()
         compose.onNode(hasProgressBarRangeInfo(ProgressBarRangeInfo.Indeterminate)).assertExists()
-        val loading = compose.onRoot().captureToImage().toPixelMap()
+        val loading = drawRootBitmap()
         compose.runOnIdle { state.value = EpgUiState.Error("failed") }
         compose.waitForIdle()
         val error = compose.onRoot().captureToImage().toPixelMap()
@@ -249,7 +263,7 @@ class EpgCanvasOverlayUiRegressionTest {
                 val x = (loading.width * xFraction).toInt()
                 val y = (loading.height * yFraction).toInt()
                 assertEquals("Loading must fully obscure stale Canvas at $x,$y",
-                    error[x, y], loading[x, y])
+                    error.getPixel(x, y), loading.getPixel(x, y))
             }
         }
     }
