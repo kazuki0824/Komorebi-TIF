@@ -142,13 +142,19 @@ class SettingScreenBackendWriteUiRegressionTest {
             "must observe the exact SettingsScreen rememberCoroutineScope"
         }
         val owningJob = requireNotNull(activeScope.coroutineContext[Job])
-        val before = owningJob.children.toSet()
-        compose.runOnIdle { backendDialogSelection.get()!!.invoke("EDCB") }
+        val selectionJobs = AtomicReference<List<Job>>(emptyList())
+        // Take both snapshots inside a single UI-idle callback. No unrelated
+        // recomposition can add long-lived collectors between the snapshots.
+        compose.runOnIdle {
+            val before = owningJob.children.toSet()
+            backendDialogSelection.get()!!.invoke("EDCB")
+            selectionJobs.set(owningJob.children.filter { it !in before }.toList())
+        }
         Mockito.verify(vm, Mockito.timeout(10_000L).times(1)).updateBackendType("EDCB")
-        // Unlike Compose waitForIdle, this joins the actual child jobs launched by
-        // the SettingsScreen scope, including Dispatchers.IO background writes.
-        val launched = owningJob.children.filter { it !in before }.toList()
-        withTimeout(10_000L) { launched.joinAll() }
+        // The only relevant Dispatchers.IO jobs are those launched by the
+        // selection callback itself; joining all screen descendants can hang
+        // on collectors intentionally alive throughout the composition.
+        withTimeout(10_000L) { selectionJobs.get().joinAll() }
         compose.waitForIdle()
         val created = requireNotNull(uiSettingsConstruction).constructed()
         org.junit.Assert.assertTrue("the real screen must construct its repository", created.isNotEmpty())
