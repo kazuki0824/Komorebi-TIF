@@ -371,6 +371,41 @@ class RecordViewModelRegressionTest {
         } finally { release.countDown() }
     }
 
+
+    @Test
+    fun losingOnlyReadyDuringLocalReadRejectsTheRecordingEvenIfGenerationUnchanged() = runBlocking {
+        cacheReady.value = true
+        val generationBefore = ownerGeneration.value
+        val entered = CountDownLatch(1)
+        val released = CountDownLatch(1)
+        Mockito.doReturn(historyEntry()).`when`(historyRepo)
+            .getHistoryEntityById(55, "KONOMITV")
+        Mockito.doAnswer {
+            entered.countDown()
+            check(released.await(15, TimeUnit.SECONDS))
+            RecordedProgramEntity(
+                id = 55, title = "revoked local recording",
+                startTime = "2030-01-01T00:00:00+09:00",
+                endTime = "2030-01-01T01:00:00+09:00",
+                videoDuration = 3600.0, hasKeyFrames = true, isRecording = false,
+                playbackPosition = 0.0, channelId = null, channelType = null,
+                channelName = null, genres = null
+            )
+        }.`when`(programDaoUnderTest).getById(55)
+        try {
+            val pending = async(Dispatchers.IO) {
+                viewModel.getResumableHistoryProgram(55, "KONOMITV")
+            }
+            assertTrue(entered.await(15, TimeUnit.SECONDS))
+            cacheReady.value = false
+            assertEquals("generation stays identical to isolate ready guard",
+                generationBefore, ownerGeneration.value)
+            released.countDown()
+            assertNull(withTimeout(15_000L) { pending.await() })
+            assertTrue(viewModel.historyResumeError.value.orEmpty().contains("変更"))
+            Mockito.verifyNoInteractions(provider)
+        } finally { released.countDown() }
+    }
     @Test
     fun remoteResumeProviderFailureReportsErrorButCancellationPropagates() = runBlocking {
         Mockito.doReturn(historyEntry()).`when`(historyRepo)
