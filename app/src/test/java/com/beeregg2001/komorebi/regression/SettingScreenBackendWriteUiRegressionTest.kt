@@ -97,17 +97,18 @@ class SettingScreenBackendWriteUiRegressionTest {
                 } else invocation.callRealMethod()
             })
         }
-        // Capture the exact rememberCoroutineScope() owned by SettingsScreen.
+        // rememberCoroutineScope() is inline in Compose, so intercept its
+        // non-inline createCompositionCoroutineScope() factory instead.
         // Jobs launched on Dispatchers.IO are still its children and can be joined.
         compose.runOnUiThread {
             @Suppress("UNCHECKED_CAST")
             val effects = Class.forName("androidx.compose.runtime.EffectsKt") as Class<Any>
             scopeMock = Mockito.mockStatic(effects, Answer { invocation ->
                 val value = invocation.callRealMethod()
-                if (invocation.method.name == "rememberCoroutineScope" &&
+                if (invocation.method.name == "createCompositionCoroutineScope" &&
                     value is CoroutineScope &&
                     Thread.currentThread().stackTrace.any {
-                        it.className.contains("SettingScreenKt") && it.methodName == "SettingsScreen"
+                        it.className.contains("SettingScreenKt")
                     }) {
                     screenScope.compareAndSet(null, value)
                 }
