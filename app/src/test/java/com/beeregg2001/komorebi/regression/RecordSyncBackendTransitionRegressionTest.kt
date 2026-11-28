@@ -534,4 +534,64 @@ class RecordSyncBackendTransitionRegressionTest {
         } finally { release.countDown() }
     }
 
+
+    @Test
+    fun smartSyncPassingOuterLockCheckMustRecheckSwitchAfterWaitingForMutex() = runBlocking {
+        seedIndependentData()
+        db.syncMetaDao().upsert(SyncMetaEntity(1, 18, 44L, true))
+        assertTrue(context.getSharedPreferences("record_cache_backend_owner", Context.MODE_PRIVATE)
+            .edit().putString("backend", "KONOMITV").putBoolean("pending", false).commit())
+        val provider = Mockito.mock(RecordProvider::class.java)
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(selectedBackend)
+        val actual = RecordSyncEngine(provider, db, settings, db.aiSeriesDictionaryDao(), context)
+        val ready = RecordSyncEngine::class.java.getDeclaredField("ownerInitialized")
+            .apply { isAccessible = true }.get(actual) as CompletableDeferred<*>
+        withTimeout(10_000L) { ready.await() }
+        assertTrue(actual.recordCacheReady.value)
+        val field = RecordSyncEngine::class.java.getDeclaredField("syncMutex")
+            .apply { isAccessible = true }
+        val raw = field.get(actual) as Mutex
+        val checked = CompletableDeferred<Unit>()
+        val switchAttempt = CompletableDeferred<Unit>()
+        val releaseSwitch = CompletableDeferred<Unit>()
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        field.set(actual, object : Mutex by raw {
+            override val isLocked: Boolean
+                get() {
+                    // Race injection: smartSync observes an unlocked mutex,
+                    // then contends for it, proving the *inner* guard independently.
+                    checked.complete(Unit)
+                    return false
+                }
+            override suspend fun lock(owner: Any?) {
+                if (calls.incrementAndGet() == 2) {
+                    switchAttempt.complete(Unit)
+                    releaseSwitch.await()
+                }
+                raw.lock(owner)
+            }
+        })
+        raw.lock()
+        try {
+            val smart = async(Dispatchers.IO) { actual.smartSync() }
+            withTimeout(10_000L) { checked.await() }
+            val switching = async(Dispatchers.IO) {
+                actual.switchBackend { selectedBackend.value = "EDCB" }
+            }
+            withTimeout(10_000L) { switchAttempt.await() }
+            raw.unlock()
+            withTimeout(10_000L) { smart.await() }
+            assertEquals("smartSync must not read old Provider after switch begins", 0,
+                Mockito.mockingDetails(provider).invocations.size)
+            assertEquals("smartSync must not clear rows before legitimate switch", listOf(19),
+                db.recordedProgramDao().getAllIds())
+            releaseSwitch.complete(Unit)
+            withTimeout(15_000L) { switching.await() }
+        } finally {
+            releaseSwitch.complete(Unit)
+            if (raw.isLocked) raw.unlock()
+        }
+    }
+
 }
