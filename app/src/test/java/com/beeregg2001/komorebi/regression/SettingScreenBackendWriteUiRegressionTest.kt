@@ -24,6 +24,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.yield
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withTimeout
@@ -211,11 +212,12 @@ class SettingScreenBackendWriteUiRegressionTest {
         withTimeout(10_000L) { injectedStarted.await() }
         assertEquals("positive control must be captured by same scope factory",
             previouslyCaptured + 1, constructedSelectionScopes.size)
-        val observer = async(Dispatchers.Default) { joinCapturedSelectionJobs() }
+        val observer = async(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
+            joinCapturedSelectionJobs()
+        }
         try {
             // The exact same join path must remain pending while the captured
             // UI-owned child cannot complete.
-            yield()
             assertTrue("captured child must gate the verification", !observer.isCompleted)
             allowInjectedWrite.complete(Unit)
             withTimeout(10_000L) { observer.await() }
