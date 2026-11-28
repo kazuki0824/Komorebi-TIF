@@ -43,6 +43,7 @@ import org.mockito.MockedStatic
 import org.mockito.stubbing.Answer
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowToast
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
@@ -579,6 +580,7 @@ class HomeLauncherHistoryUiRegressionTest {
         compose.waitUntil(10_000L) { historySelection.get() != null }
         compose.runOnIdle { historySelection.get()!!.invoke(owned.value.second.single()) }
         Mockito.verify(records, Mockito.timeout(10_000L).times(1)).clearHistoryResumeError()
+        assertEquals("The recording is unavailable", ShadowToast.getTextOfLatestToast())
         assertNull(resumed.get())
         assertNull(selectedProgramAfterClick.get())
         assertNull(reason.value)
@@ -605,9 +607,11 @@ class HomeLauncherHistoryUiRegressionTest {
         compose.waitUntil(10_000L) { deferred.get() != null }
         val later = Mockito.mock(RecordedProgram::class.java)
         compose.runOnIdle { recordedCardSelection.get()!!.invoke(later) }
+        val toastBefore = ShadowToast.getLatestToast()
         reason.value = "obsolete request rejected"
         deferred.get()!!.resume(null)
         compose.waitForIdle()
+        assertSame("stale failure must not post a new Toast", toastBefore, ShadowToast.getLatestToast())
         assertSame(later, selectedProgramAfterClick.get())
         assertNull(resumed.get())
         Mockito.verify(records, Mockito.never()).clearHistoryResumeError()
