@@ -544,4 +544,61 @@ class RecordViewModelRegressionTest {
         }
     }
 
+
+    @Test
+    fun delayedOldEpgStationCategoriesNeverReappearAfterNewOwnerPublishesRoomCategories() = runBlocking {
+        val old = SeriesProjection(
+            "Obsolete EPGStation group", 2, 301, true, null, null, null, null
+        )
+        val replacement = SeriesProjection(
+            "Current EDCB group", 2, 302, true, null, null, null, null
+        )
+        val apiEntered = CountDownLatch(1)
+        val releaseApi = CountDownLatch(1)
+        Mockito.doAnswer {
+            listOf(if (ownerBackend.value == "EPGSTATION") old else replacement)
+        }.`when`(programDaoUnderTest).getGroupedSeries()
+        Mockito.doAnswer {
+            listOf(ChannelProjection(
+                if (ownerBackend.value == "EPGSTATION") "old" else "current",
+                "GR", if (ownerBackend.value == "EPGSTATION") "Obsolete" else "Current"
+            ))
+        }.`when`(programDaoUnderTest).getDistinctChannels()
+        Mockito.doAnswer {
+            apiEntered.countDown()
+            check(releaseApi.await(15, TimeUnit.SECONDS))
+            null
+        }.`when`(seriesProvider).getSeriesList()
+        val emitted = java.util.concurrent.CopyOnWriteArrayList<Map<String, List<com.beeregg2001.komorebi.data.model.SeriesInfo>>>()
+        // The production StateFlow is observed without replacing its publication logic.
+        val subscription = launch(Dispatchers.Default) {
+            viewModel.groupedSeries.collect { emitted.add(it) }
+        }
+        try {
+            ownerBackend.value = "EPGSTATION"
+            syncState.value = SyncProgress(isSyncing = false)
+            cacheReady.value = true
+            assertTrue(apiEntered.await(15, TimeUnit.SECONDS))
+            cacheReady.value = false
+            ownerGeneration.value++
+            ownerBackend.value = "EDCB"
+            syncState.value = SyncProgress(isSyncing = true)
+            releaseApi.countDown()
+            syncState.value = SyncProgress(isSyncing = false)
+            cacheReady.value = true
+            withTimeout(15_000L) {
+                viewModel.groupedSeries.first { groups ->
+                    groups.values.flatten().any { it.displayTitle == "Current EDCB group" }
+                }
+            }
+            assertFalse("obsolete grouped series must never be republished",
+                emitted.any { groups -> groups.values.flatten().any { it.displayTitle == "Obsolete EPGStation group" } })
+            assertTrue(viewModel.groupedChannels.value.values.flatten()
+                .any { it.second == "Current" })
+        } finally {
+            releaseApi.countDown()
+            subscription.cancel()
+        }
+    }
+
 }
