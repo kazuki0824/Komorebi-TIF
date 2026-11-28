@@ -303,4 +303,52 @@ class EpgInFlightBackendRegressionTest {
         } finally { released.countDown() }
     }
 
+
+    @Test
+    fun memoryCacheEmitsBeforeProviderCompletesAndRefreshStillCallsProvider() = runBlocking {
+        val backend = MutableStateFlow("KONOMITV")
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(backend)
+        val provider = Mockito.mock(DtvProviderProxy::class.java)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        Mockito.doAnswer {
+            entered.countDown()
+            check(release.await(15, TimeUnit.SECONDS))
+            throw IllegalStateException("refresh failed after cache")
+        }.`when`(provider).getEpgProgramsForBackend(
+            "KONOMITV", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+            end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "GR"
+        )
+        val repo = EpgRepository(ApplicationProvider.getApplicationContext(),
+            provider, Mockito.mock(EpgCacheDao::class.java), Gson(), settings)
+        val cached = listOf(epgFixture("cached", "Cached before blocked IO", start))
+        @Suppress("UNCHECKED_CAST")
+        val memory = EpgRepository::class.java.getDeclaredField("memoryCache")
+            .apply { isAccessible = true }.get(repo)
+            as MutableMap<String, List<EpgChannelWrapper>>
+        memory["KONOMITV_GR"] = cached
+        val observed = Channel<Result<List<EpgChannelWrapper>>>(Channel.UNLIMITED)
+        val collector = launch(Dispatchers.IO) {
+            repo.getEpgDataStream(start, end, "GR").collect { observed.send(it) }
+        }
+        try {
+            assertEquals(cached, withTimeout(15_000L) { observed.receive() }.getOrThrow())
+            assertTrue("Provider must be requested even with memory cache", entered.await(15, TimeUnit.SECONDS))
+            assertFalse("cached emission occurs before refresh finishes", collector.isCompleted)
+            release.countDown()
+            withTimeout(15_000L) { collector.join() }
+            assertEquals(cached, memory["KONOMITV_GR"])
+            assertTrue(observed.isEmpty)
+            Mockito.verify(provider, Mockito.times(1)).getEpgProgramsForBackend(
+                "KONOMITV", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+                end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "GR"
+            )
+        } finally {
+            release.countDown()
+            collector.cancelAndJoin()
+            observed.close()
+        }
+    }
+
 }
