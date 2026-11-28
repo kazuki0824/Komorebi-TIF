@@ -599,13 +599,19 @@ class RecordViewModelRegressionTest {
     fun delayedOldRoomSeriesQueryCannotPublishAfterOwnerChange() = runBlocking {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
+        val newRoomEntered = CountDownLatch(1)
+        val releaseNewRoom = CountDownLatch(1)
         val calls = java.util.concurrent.atomic.AtomicInteger()
         Mockito.doAnswer {
             if (calls.incrementAndGet() == 1) {
                 entered.countDown()
                 check(release.await(15, TimeUnit.SECONDS))
                 listOf(SeriesProjection("Obsolete Room group", 1, 456, true, null, null, null, null))
-            } else listOf(SeriesProjection("Current Room group", 1, 457, true, null, null, null, null))
+            } else {
+                newRoomEntered.countDown()
+                check(releaseNewRoom.await(15, TimeUnit.SECONDS))
+                listOf(SeriesProjection("Current Room group", 1, 457, true, null, null, null, null))
+            }
         }.`when`(programDaoUnderTest).getGroupedSeries()
         Mockito.doReturn(listOf(ChannelProjection("id-2", "GR", "Current room channel")))
             .`when`(programDaoUnderTest).getDistinctChannels()
@@ -623,6 +629,13 @@ class RecordViewModelRegressionTest {
             release.countDown()
             syncState.value = SyncProgress(isSyncing = false)
             cacheReady.value = true
+            assertTrue("new owner must enter the DAO after the obsolete Room query has returned",
+                newRoomEntered.await(15, TimeUnit.SECONDS))
+            assertTrue("obsolete Room result must not appear while new Room query is blocked",
+                viewModel.groupedSeries.value.values.flatten().none {
+                    it.displayTitle == "Obsolete Room group"
+                })
+            releaseNewRoom.countDown()
             withTimeout(15_000L) {
                 viewModel.groupedSeries.first { groups ->
                     groups.values.flatten().any { it.displayTitle == "Current Room group" }
@@ -634,6 +647,7 @@ class RecordViewModelRegressionTest {
                 } })
         } finally {
             release.countDown()
+            releaseNewRoom.countDown()
             subscription.cancel()
         }
     }
