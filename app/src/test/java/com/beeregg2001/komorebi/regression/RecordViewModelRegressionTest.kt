@@ -592,13 +592,14 @@ class RecordViewModelRegressionTest {
             cacheReady.value = false
             ownerGeneration.value++
             ownerBackend.value = "EDCB"
-            syncState.value = SyncProgress(isSyncing = true)
+            // Keep isSyncing=false throughout. If the classification combine
+            // misses ready=false, its distinctUntilChanged will suppress the
+            // next ready=true and newDaoEntered will time out.
             // Wait for real revocation, not the initial empty StateFlow.
             withTimeout(10_000L) { viewModel.groupedSeries.first { it.isEmpty() } }
             release.countDown()
             cacheReady.value = true
-            syncState.value = SyncProgress(isSyncing = false)
-            assertTrue("new DAO must be entered before we permit any new classification",
+            assertTrue("new DAO must be entered only after classification observed ready=false",
                 newDaoEntered.await(15, TimeUnit.SECONDS))
             assertTrue("old API must not escape while replacement DAO is stopped",
                 viewModel.groupedSeries.value.values.flatten().none {
@@ -652,14 +653,14 @@ class RecordViewModelRegressionTest {
             cacheReady.value = false
             ownerGeneration.value++
             ownerBackend.value = "EDCB"
-            syncState.value = SyncProgress(isSyncing = true)
+            // isSyncing remains false: ready=false must be the sole source of
+            // shouldLoad=false, otherwise the subsequent true is suppressed.
             withTimeout(10_000L) { viewModel.groupedSeries.first { it.isEmpty() } }
             release.countDown()
             // Force an observable obsolete result rejection while revoked.
             // Only then allow the new owner to enter a distinct DAO call.
             cacheReady.value = true
-            syncState.value = SyncProgress(isSyncing = false)
-            assertTrue("new owner must enter the DAO after the obsolete Room query has returned",
+            assertTrue("new owner DAO proves classification observed ready=false before true",
                 newRoomEntered.await(15, TimeUnit.SECONDS))
             assertTrue("obsolete Room result must not appear while new Room query is blocked",
                 viewModel.groupedSeries.value.values.flatten().none {
