@@ -5,6 +5,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.onNode
+import androidx.compose.ui.test.hasProgressBarRangeInfo
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.input.key.Key
@@ -120,6 +123,7 @@ class EpgCanvasOverlayUiRegressionTest {
         compose.runOnIdle { state.value = EpgUiState.Loading }
         compose.onNodeWithText("番組表がありません").assertDoesNotExist()
         compose.onNodeWithText("番組表を取得できません").assertDoesNotExist()
+        compose.onNode(hasProgressBarRangeInfo(ProgressBarRangeInfo.Indeterminate)).assertExists()
     }
 
     @Test
