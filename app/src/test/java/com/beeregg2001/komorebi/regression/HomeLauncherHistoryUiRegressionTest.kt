@@ -513,6 +513,14 @@ class HomeLauncherHistoryUiRegressionTest {
             assertSame(program, state.selectedProgram)
             assertEquals(0L, state.initialPlaybackPositionMs)
 
+            verifiedSelection.get()!!.invoke(program, 5.0)
+            assertEquals("exactly five seconds is not eligible", 0L, state.initialPlaybackPositionMs)
+            verifiedSelection.get()!!.invoke(program, 5.001)
+            assertEquals(5001L, state.initialPlaybackPositionMs)
+            verifiedSelection.get()!!.invoke(program, 3590.0)
+            assertEquals("exactly ten seconds before end is not eligible", 0L, state.initialPlaybackPositionMs)
+            verifiedSelection.get()!!.invoke(program, 3589.999)
+            assertEquals(3589999L, state.initialPlaybackPositionMs)
             verifiedSelection.get()!!.invoke(program, 3595.0)
             assertEquals(0L, state.initialPlaybackPositionMs)
 
