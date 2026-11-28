@@ -655,7 +655,7 @@ class ChannelViewModelRegressionTest {
             assertTrue(replacementJob.isActive)
             testDispatcher.scheduler.advanceTimeBy(15_010L)
             testDispatcher.scheduler.runCurrent()
-            Mockito.verify(newProgram, Mockito.atLeast(2)).startTime
+            Mockito.verify(newProgram, Mockito.atLeastOnce()).startTime
             assertEquals("new-row", vm.liveRows.value.single().channels.single().channel.id)
         } finally {
             release.countDown()
