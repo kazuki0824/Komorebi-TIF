@@ -545,6 +545,99 @@ class RecordViewModelRegressionTest {
     }
 
 
+
+    @Test
+    fun nonemptyOldEpgstationApiResultCannotPublishAfterBackendChange() = runBlocking {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        Mockito.doReturn(listOf(SeriesProjection(
+            "New EDCB group", 1, 345, true, null, null, null, null
+        ))).`when`(programDaoUnderTest).getGroupedSeries()
+        Mockito.doReturn(listOf(ChannelProjection("new-channel", "GR", "New EDCB channel")))
+            .`when`(programDaoUnderTest).getDistinctChannels()
+        Mockito.doAnswer {
+            entered.countDown()
+            check(release.await(15, TimeUnit.SECONDS))
+            listOf(com.beeregg2001.komorebi.data.model.EsSeriesListItem(
+                id = 201, title = "Old EPGStation API", normalizedTitle = "Old EPGStation API",
+                recordedCount = 1
+            ))
+        }.`when`(seriesProvider).getSeriesList()
+        val observed = java.util.concurrent.CopyOnWriteArrayList<Map<String, List<com.beeregg2001.komorebi.viewmodel.SeriesInfo>>>()
+        val subscription = launch(Dispatchers.Default) { viewModel.groupedSeries.collect { observed.add(it) } }
+        try {
+            ownerBackend.value = "EPGSTATION"
+            cacheReady.value = true
+            syncState.value = SyncProgress(isSyncing = false)
+            assertTrue(entered.await(15, TimeUnit.SECONDS))
+            cacheReady.value = false
+            ownerGeneration.value++
+            ownerBackend.value = "EDCB"
+            syncState.value = SyncProgress(isSyncing = true)
+            release.countDown()
+            withTimeout(10_000L) {
+                viewModel.groupedSeries.first { it.isEmpty() }
+            }
+            syncState.value = SyncProgress(isSyncing = false)
+            cacheReady.value = true
+            withTimeout(15_000L) {
+                viewModel.groupedSeries.first { groups ->
+                    groups.values.flatten().any { it.displayTitle == "New EDCB group" }
+                }
+            }
+            assertTrue("obsolete EPGStation API series must never be published",
+                observed.none { groups -> groups.values.flatten().any {
+                    it.displayTitle == "Old EPGStation API"
+                } })
+        } finally {
+            release.countDown()
+            subscription.cancel()
+        }
+    }
+
+    @Test
+    fun delayedOldRoomSeriesQueryCannotPublishAfterOwnerChange() = runBlocking {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        Mockito.doAnswer {
+            if (calls.incrementAndGet() == 1) {
+                entered.countDown()
+                check(release.await(15, TimeUnit.SECONDS))
+                listOf(SeriesProjection("Obsolete Room group", 1, 456, true, null, null, null, null))
+            } else listOf(SeriesProjection("Current Room group", 1, 457, true, null, null, null, null))
+        }.`when`(programDaoUnderTest).getGroupedSeries()
+        Mockito.doReturn(listOf(ChannelProjection("id-2", "GR", "Current room channel")))
+            .`when`(programDaoUnderTest).getDistinctChannels()
+        val observed = java.util.concurrent.CopyOnWriteArrayList<Map<String, List<com.beeregg2001.komorebi.viewmodel.SeriesInfo>>>()
+        val subscription = launch(Dispatchers.Default) { viewModel.groupedSeries.collect { observed.add(it) } }
+        try {
+            ownerBackend.value = "KONOMITV"
+            cacheReady.value = true
+            syncState.value = SyncProgress(isSyncing = false)
+            assertTrue(entered.await(15, TimeUnit.SECONDS))
+            cacheReady.value = false
+            ownerGeneration.value++
+            ownerBackend.value = "EDCB"
+            syncState.value = SyncProgress(isSyncing = true)
+            release.countDown()
+            syncState.value = SyncProgress(isSyncing = false)
+            cacheReady.value = true
+            withTimeout(15_000L) {
+                viewModel.groupedSeries.first { groups ->
+                    groups.values.flatten().any { it.displayTitle == "Current Room group" }
+                }
+            }
+            assertTrue("old Room series must not escape the owner-generation gate",
+                observed.none { groups -> groups.values.flatten().any {
+                    it.displayTitle == "Obsolete Room group"
+                } })
+        } finally {
+            release.countDown()
+            subscription.cancel()
+        }
+    }
+
     @Test
     fun delayedOldEpgStationCategoriesNeverReappearAfterNewOwnerPublishesRoomCategories() = runBlocking {
         val old = SeriesProjection(
@@ -600,7 +693,7 @@ class RecordViewModelRegressionTest {
             assertFalse("obsolete grouped series must never be republished",
                 emitted.any { groups -> groups.values.flatten().any { it.displayTitle == "Obsolete EPGStation group" } })
             assertTrue(viewModel.groupedChannels.value.values.flatten()
-                .any { it.second == "Current" })
+                .any { it.first == "Current" && it.second == "current" })
         } finally {
             releaseApi.countDown()
             subscription.cancel()
