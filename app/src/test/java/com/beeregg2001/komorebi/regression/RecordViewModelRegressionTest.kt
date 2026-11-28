@@ -563,150 +563,134 @@ class RecordViewModelRegressionTest {
 
     @Test
     fun nonemptyOldEpgstationApiResultCannotPublishAfterBackendChange() = runBlocking {
-        val entered = CountDownLatch(1)
-        val release = CountDownLatch(1)
-        val newDaoEntered = CountDownLatch(1)
-        val releaseNewDao = CountDownLatch(1)
-        val oldApiReturned = AtomicBoolean(false)
-        val oldGuardCheckedReadyFalse = CountDownLatch(1)
-        Mockito.doAnswer {
-            if (oldApiReturned.get() && !cacheReady.value)
-                oldGuardCheckedReadyFalse.countDown()
-            cacheReady
-        }.`when`(sync).recordCacheReady
+        // Deliberately exercise a conflated revocation: the production
+        // classification combine is SUSPENDED in the old API call while
+        // the owner becomes unready, changes, and becomes ready again.
+        // Its output may not publish the old owner and must eventually reload
+        // the new owner even if the intermediate false was conflated.
+        val oldEntered = CountDownLatch(1)
+        val releaseOld = CountDownLatch(1)
+        val nextDaoEntered = CountDownLatch(1)
+        val releaseNextDao = CountDownLatch(1)
         Mockito.doAnswer {
             if (ownerBackend.value == "EDCB") {
-                newDaoEntered.countDown()
-                check(releaseNewDao.await(15, TimeUnit.SECONDS))
+                nextDaoEntered.countDown()
+                check(releaseNextDao.await(15, TimeUnit.SECONDS))
             }
             listOf(SeriesProjection("New EDCB group", 1, 345, true, null, null, null, null))
         }.`when`(programDaoUnderTest).getGroupedSeries()
         Mockito.doReturn(listOf(ChannelProjection("new-channel", "GR", "New EDCB channel")))
             .`when`(programDaoUnderTest).getDistinctChannels()
         Mockito.doAnswer {
-            entered.countDown()
-            check(release.await(15, TimeUnit.SECONDS))
-            oldApiReturned.set(true)
+            oldEntered.countDown()
+            check(releaseOld.await(15, TimeUnit.SECONDS))
             listOf(com.beeregg2001.komorebi.data.model.EsSeriesListItem(
-                id = 201, title = "Old EPGStation API", normalizedTitle = "Old EPGStation API",
-                recordedCount = 1
+                id = 201, title = "Obsolete EPGStation API",
+                normalizedTitle = "Obsolete EPGStation API", recordedCount = 1
             ))
         }.`when`(seriesProvider).getSeriesList()
-        val observed = java.util.concurrent.CopyOnWriteArrayList<Map<String, List<com.beeregg2001.komorebi.viewmodel.SeriesInfo>>>()
-        val subscription = launch(Dispatchers.Default) { viewModel.groupedSeries.collect { observed.add(it) } }
+        val observed = java.util.concurrent.CopyOnWriteArrayList<
+            Map<String, List<com.beeregg2001.komorebi.viewmodel.SeriesInfo>>
+        >()
+        val subscriber = launch(Dispatchers.Default) {
+            viewModel.groupedSeries.collect { observed.add(it) }
+        }
         try {
             ownerBackend.value = "EPGSTATION"
             cacheReady.value = true
             syncState.value = SyncProgress(isSyncing = false)
-            assertTrue(entered.await(15, TimeUnit.SECONDS))
-            markPreviouslyPublishedGroups()
+            assertTrue(oldEntered.await(15, TimeUnit.SECONDS))
+            // Keep the old loader blocked throughout the entire transition.
+            // No yield, timer or mock-getter notification is used as a false
+            // acknowledgment: those cannot prove combine processed false.
             cacheReady.value = false
             ownerGeneration.value++
             ownerBackend.value = "EDCB"
-            // Keep isSyncing=false throughout. If the classification combine
-            // misses ready=false, its distinctUntilChanged will suppress the
-            // next ready=true and newDaoEntered will time out.
-            // Wait for real revocation, not the initial empty StateFlow.
-            withTimeout(10_000L) { viewModel.groupedSeries.first { it.isEmpty() } }
-            release.countDown()
-            assertTrue("obsolete API result must reach the production ready=false guard",
-                oldGuardCheckedReadyFalse.await(15, TimeUnit.SECONDS))
-            // Give the resumed classification collector a turn to process its
-            // queued false while ready is still revoked (no clock sleeps).
-            withContext(Dispatchers.IO) { yield() }
             cacheReady.value = true
-            assertTrue("new DAO must be entered only after classification observed ready=false",
-                newDaoEntered.await(15, TimeUnit.SECONDS))
-            assertTrue("old API must not escape while replacement DAO is stopped",
+            releaseOld.countDown()
+            // This is an intentional negative race test. If the production
+            // combine loses the false->true edge, this times out and stays RED.
+            assertTrue("new owner must reload after a conflated readiness transition",
+                nextDaoEntered.await(15, TimeUnit.SECONDS))
+            assertTrue("old API data cannot publish before new DAO is released",
                 viewModel.groupedSeries.value.values.flatten().none {
-                    it.displayTitle == "Old EPGStation API"
+                    it.displayTitle == "Obsolete EPGStation API"
                 })
-            releaseNewDao.countDown()
+            releaseNextDao.countDown()
             withTimeout(15_000L) {
                 viewModel.groupedSeries.first { groups ->
                     groups.values.flatten().any { it.displayTitle == "New EDCB group" }
                 }
             }
-            assertTrue("obsolete EPGStation API series must never be published",
-                observed.none { groups -> groups.values.flatten().any {
-                    it.displayTitle == "Old EPGStation API"
-                } })
+            assertTrue(observed.none { groups ->
+                groups.values.flatten().any { it.displayTitle == "Obsolete EPGStation API" }
+            })
         } finally {
-            release.countDown()
-            releaseNewDao.countDown()
-            subscription.cancel()
+            releaseOld.countDown()
+            releaseNextDao.countDown()
+            subscriber.cancel()
         }
     }
 
     @Test
     fun delayedOldRoomSeriesQueryCannotPublishAfterOwnerChange() = runBlocking {
-        val entered = CountDownLatch(1)
-        val release = CountDownLatch(1)
-        val newRoomEntered = CountDownLatch(1)
-        val releaseNewRoom = CountDownLatch(1)
-        val oldRoomReturned = AtomicBoolean(false)
-        val oldGuardCheckedReadyFalse = CountDownLatch(1)
-        Mockito.doAnswer {
-            if (oldRoomReturned.get() && !cacheReady.value)
-                oldGuardCheckedReadyFalse.countDown()
-            cacheReady
-        }.`when`(sync).recordCacheReady
+        val oldEntered = CountDownLatch(1)
+        val releaseOld = CountDownLatch(1)
+        val nextDaoEntered = CountDownLatch(1)
+        val releaseNextDao = CountDownLatch(1)
         val calls = java.util.concurrent.atomic.AtomicInteger()
         Mockito.doAnswer {
             if (calls.incrementAndGet() == 1) {
-                entered.countDown()
-                check(release.await(15, TimeUnit.SECONDS))
-                oldRoomReturned.set(true)
+                oldEntered.countDown()
+                check(releaseOld.await(15, TimeUnit.SECONDS))
                 listOf(SeriesProjection("Obsolete Room group", 1, 456, true, null, null, null, null))
             } else {
-                newRoomEntered.countDown()
-                check(releaseNewRoom.await(15, TimeUnit.SECONDS))
+                nextDaoEntered.countDown()
+                check(releaseNextDao.await(15, TimeUnit.SECONDS))
                 listOf(SeriesProjection("Current Room group", 1, 457, true, null, null, null, null))
             }
         }.`when`(programDaoUnderTest).getGroupedSeries()
         Mockito.doReturn(listOf(ChannelProjection("id-2", "GR", "Current room channel")))
             .`when`(programDaoUnderTest).getDistinctChannels()
-        val observed = java.util.concurrent.CopyOnWriteArrayList<Map<String, List<com.beeregg2001.komorebi.viewmodel.SeriesInfo>>>()
-        val subscription = launch(Dispatchers.Default) { viewModel.groupedSeries.collect { observed.add(it) } }
+        val observed = java.util.concurrent.CopyOnWriteArrayList<
+            Map<String, List<com.beeregg2001.komorebi.viewmodel.SeriesInfo>>
+        >()
+        val subscriber = launch(Dispatchers.Default) {
+            viewModel.groupedSeries.collect { observed.add(it) }
+        }
         try {
             ownerBackend.value = "KONOMITV"
             cacheReady.value = true
             syncState.value = SyncProgress(isSyncing = false)
-            assertTrue(entered.await(15, TimeUnit.SECONDS))
-            markPreviouslyPublishedGroups()
+            assertTrue(oldEntered.await(15, TimeUnit.SECONDS))
+            // The old Room query is still suspended while ready emits
+            // false then true. This intentionally DOES NOT assert that
+            // the separate combine collector consumed false: the contract
+            // must survive notification conflation without test-side sleeps.
             cacheReady.value = false
             ownerGeneration.value++
             ownerBackend.value = "EDCB"
-            // isSyncing remains false: ready=false must be the sole source of
-            // shouldLoad=false, otherwise the subsequent true is suppressed.
-            withTimeout(10_000L) { viewModel.groupedSeries.first { it.isEmpty() } }
-            release.countDown()
-            assertTrue("obsolete Room result must reach the production ready=false guard",
-                oldGuardCheckedReadyFalse.await(15, TimeUnit.SECONDS))
-            // Keep the only false source active through the old request's
-            // completion. The following DAO reload proves false was consumed.
-            withContext(Dispatchers.IO) { yield() }
             cacheReady.value = true
-            assertTrue("new owner DAO proves classification observed ready=false before true",
-                newRoomEntered.await(15, TimeUnit.SECONDS))
-            assertTrue("obsolete Room result must not appear while new Room query is blocked",
+            releaseOld.countDown()
+            assertTrue("new owner must load despite conflated false->true",
+                nextDaoEntered.await(15, TimeUnit.SECONDS))
+            assertTrue("old Room result must not appear before replacement DAO returns",
                 viewModel.groupedSeries.value.values.flatten().none {
                     it.displayTitle == "Obsolete Room group"
                 })
-            releaseNewRoom.countDown()
+            releaseNextDao.countDown()
             withTimeout(15_000L) {
                 viewModel.groupedSeries.first { groups ->
                     groups.values.flatten().any { it.displayTitle == "Current Room group" }
                 }
             }
-            assertTrue("old Room series must not escape the owner-generation gate",
-                observed.none { groups -> groups.values.flatten().any {
-                    it.displayTitle == "Obsolete Room group"
-                } })
+            assertTrue("obsolete Room data must never be published", observed.none { groups ->
+                groups.values.flatten().any { it.displayTitle == "Obsolete Room group" }
+            })
         } finally {
-            release.countDown()
-            releaseNewRoom.countDown()
-            subscription.cancel()
+            releaseOld.countDown()
+            releaseNextDao.countDown()
+            subscriber.cancel()
         }
     }
 
