@@ -86,4 +86,16 @@ class LastChannelRegressionTest {
         val rows = db.lastChannelDao().getLastChannels().first()
         assertEquals(2, rows.size)
     }
+
+    @Test
+    fun actualHomeHistoryDaoReturnsAllTwentyFiveBeforeUiFiltersAndLimits() = runBlocking {
+        (1..25).forEach { db.lastChannelDao().insert(item(it)) }
+        val all = db.lastChannelDao().getLastChannels().first()
+        assertEquals("home DAO must not truncate rows before UI filters", 25, all.size)
+        assertEquals((25 downTo 1).map { "channel-$it" }, all.map { it.channelId })
+        val available = (1..10).map { "channel-$it" }.toSet()
+        assertEquals((10 downTo 1).map { "channel-$it" },
+            all.filter { it.channelId in available }.take(10).map { it.channelId })
+    }
+
 }
