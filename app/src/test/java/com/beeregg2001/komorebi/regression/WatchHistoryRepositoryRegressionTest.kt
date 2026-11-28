@@ -211,6 +211,9 @@ class WatchHistoryRepositoryRegressionTest {
         assertEquals(19.0, repository.getHistoryEntityById(99, "EPGSTATION")?.playbackPosition ?: -1.0, 0.001)
         assertEquals(7.25, repository.getHistoryEntityById(99, "KONOMITV")?.playbackPosition ?: -1.0, 0.001)
         Mockito.verify(konomi, Mockito.times(1)).syncPlaybackPosition("99", 7.25)
+        Mockito.verify(konomi, Mockito.times(1)).syncPlaybackPosition(
+            Mockito.anyString() ?: "", Mockito.anyDouble()
+        )
     }
 
     @Test
