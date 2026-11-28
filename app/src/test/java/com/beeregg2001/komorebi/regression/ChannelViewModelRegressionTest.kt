@@ -546,6 +546,7 @@ class ChannelViewModelRegressionTest {
         lastFetch.setLong(vm, System.currentTimeMillis())
         val entered = java.util.concurrent.atomic.AtomicReference<Continuation<ChannelApiResponse>?>()
         val calls = AtomicInteger()
+        val nextPeriodic = AtomicReference<Continuation<ChannelApiResponse>?>()
         Mockito.doAnswer { invocation ->
             when (calls.incrementAndGet()) {
                 1 -> {
@@ -553,7 +554,12 @@ class ChannelViewModelRegressionTest {
                     entered.set(invocation.rawArguments.last() as Continuation<ChannelApiResponse>)
                     COROUTINE_SUSPENDED
                 }
-                else -> ChannelApiResponse(terrestrial = listOf(networkChannel("explicit-latest")))
+                2 -> ChannelApiResponse(terrestrial = listOf(networkChannel("explicit-latest")))
+                else -> {
+                    @Suppress("UNCHECKED_CAST")
+                    nextPeriodic.set(invocation.rawArguments.last() as Continuation<ChannelApiResponse>)
+                    COROUTINE_SUSPENDED
+                }
             }
         }.`when`(live).getChannels()
         try {
@@ -570,8 +576,19 @@ class ChannelViewModelRegressionTest {
             entered.get()!!.resume(
                 ChannelApiResponse(terrestrial = listOf(networkChannel("obsolete-poll")))
             )
-            assertEquals("explicit-latest", vm.groupedChannels.value["GR"]?.single()?.id)
+            // A second periodic invocation is only possible after the first
+            // requestId=null fetch has returned to the polling loop.
+            testDispatcher.scheduler.advanceTimeBy(62_000L)
+            testDispatcher.scheduler.runCurrent()
+            withTimeout(10_000L) {
+                while (nextPeriodic.get() == null) kotlinx.coroutines.delay(10L)
+            }
+            assertEquals("stale first periodic response must not overwrite explicit result",
+                "explicit-latest", vm.groupedChannels.value["GR"]?.single()?.id)
             assertFalse(vm.connectionError.value)
+            nextPeriodic.get()!!.resume(
+                ChannelApiResponse(terrestrial = listOf(networkChannel("explicit-latest")))
+            )
             withTimeout(10_000L) { vm.isLoading.first { !it } }
         } finally {
             vm.stopPolling()
