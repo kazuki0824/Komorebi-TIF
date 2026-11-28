@@ -697,20 +697,36 @@ class RecordViewModelRegressionTest {
 
 
     /**
-     * The production classification coroutine has no completion callback:
-     * it returns to the Flow collector's next suspension after deciding
-     * whether to publish. Await that actual return on its captured IO thread,
-     * rather than interpreting a mock getter's pre-return latch as completion.
-     * While owner-ready remains false, no replacement classifier can start.
+     * A negative publication assertion must be ordered AFTER the old
+     * coroutine's publication decision. Its mock getter is still inside
+     * the dispatched coroutine, so use it to capture an ACTUAL running task
+     * frame, then await that frame's exit. A missing initial frame FAILS.
+     *
+     * Never infer coroutine completion from a missing invokeSuspend frame;
+     * Kotlin Flow's collector may execute synchronously below emit().
      */
-    private suspend fun awaitOldClassifierReturn(worker: Thread) {
+    private suspend fun awaitOldClassifierReturn(
+        worker: Thread,
+        initialTaskClass: String
+    ) {
         withTimeout(10_000L) {
             while (worker.stackTrace.any { frame ->
-                frame.className.startsWith(
-                    "com.beeregg2001.komorebi.viewmodel.RecordViewModel\$"
-                ) && frame.methodName == "invokeSuspend"
+                frame.className == initialTaskClass && frame.methodName == "run"
             }) kotlinx.coroutines.delay(5L)
         }
+    }
+
+    private fun coroutineTaskClassAtGetter(thread: Thread): String {
+        val dispatched = thread.stackTrace.firstOrNull { frame ->
+            frame.methodName == "run" && (
+                frame.className == "kotlinx.coroutines.DispatchedTask" ||
+                frame.className == "kotlinx.coroutines.internal.DispatchedContinuation" ||
+                frame.className == "kotlinx.coroutines.scheduling.TaskImpl"
+            )
+        }
+        return requireNotNull(dispatched) {
+            "No active coroutine dispatch task at old classification getter; cannot prove completion"
+        }.className
     }
 
     @Test
@@ -720,9 +736,15 @@ class RecordViewModelRegressionTest {
         val returned = AtomicBoolean(false)
         val readerThread = AtomicReference<Thread?>()
         val reachedPostQueryGuard = CountDownLatch(1)
+        val allowGetterReturn = CountDownLatch(1)
+        val dispatchedTaskClass = AtomicReference<String?>()
         Mockito.doAnswer {
             if (returned.get() && !cacheReady.value &&
-                Thread.currentThread() === readerThread.get()) reachedPostQueryGuard.countDown()
+                Thread.currentThread() === readerThread.get()) {
+                dispatchedTaskClass.set(coroutineTaskClassAtGetter(Thread.currentThread()))
+                reachedPostQueryGuard.countDown()
+                check(allowGetterReturn.await(15, TimeUnit.SECONDS))
+            }
             cacheReady
         }.`when`(sync).recordCacheReady
         Mockito.doAnswer {
@@ -752,7 +774,13 @@ class RecordViewModelRegressionTest {
             release.countDown()
             assertTrue("old Room result must reach the real post-query ownership guard",
                 reachedPostQueryGuard.await(15, TimeUnit.SECONDS))
-            awaitOldClassifierReturn(requireNotNull(readerThread.get()))
+            // The getter is stopped INSIDE a verified dispatched task.
+            // Only after releasing it may the task complete the guard and
+            // decide whether to publish; observe task exit before asserting.
+            allowGetterReturn.countDown()
+            awaitOldClassifierReturn(
+                requireNotNull(readerThread.get()), requireNotNull(dispatchedTaskClass.get())
+            )
             // Keep ready=false for the remainder; the guard cannot be made
             // stale by a test-induced restoration. No next-DAO requirement
             // prevents the nonpublication check from executing.
@@ -766,6 +794,7 @@ class RecordViewModelRegressionTest {
             })
         } finally {
             release.countDown()
+            allowGetterReturn.countDown()
             collector.cancel()
         }
     }
@@ -777,9 +806,15 @@ class RecordViewModelRegressionTest {
         val returned = AtomicBoolean(false)
         val readerThread = AtomicReference<Thread?>()
         val reachedPostApiGuard = CountDownLatch(1)
+        val allowGetterReturn = CountDownLatch(1)
+        val dispatchedTaskClass = AtomicReference<String?>()
         Mockito.doAnswer {
             if (returned.get() && !cacheReady.value &&
-                Thread.currentThread() === readerThread.get()) reachedPostApiGuard.countDown()
+                Thread.currentThread() === readerThread.get()) {
+                dispatchedTaskClass.set(coroutineTaskClassAtGetter(Thread.currentThread()))
+                reachedPostApiGuard.countDown()
+                check(allowGetterReturn.await(15, TimeUnit.SECONDS))
+            }
             cacheReady
         }.`when`(sync).recordCacheReady
         Mockito.doReturn(listOf(SeriesProjection("Old API metadata", 2, 700, true, null, null, null, null)))
@@ -815,7 +850,13 @@ class RecordViewModelRegressionTest {
             release.countDown()
             assertTrue("old API result must reach the real post-query ownership guard",
                 reachedPostApiGuard.await(15, TimeUnit.SECONDS))
-            awaitOldClassifierReturn(requireNotNull(readerThread.get()))
+            // The getter is stopped INSIDE a verified dispatched task.
+            // Only after releasing it may the task complete the guard and
+            // decide whether to publish; observe task exit before asserting.
+            allowGetterReturn.countDown()
+            awaitOldClassifierReturn(
+                requireNotNull(readerThread.get()), requireNotNull(dispatchedTaskClass.get())
+            )
             assertFalse(cacheReady.value)
             assertTrue("old API classification must remain unpublished",
                 viewModel.groupedSeries.value.values.flatten().none {
@@ -826,6 +867,7 @@ class RecordViewModelRegressionTest {
             })
         } finally {
             release.countDown()
+            allowGetterReturn.countDown()
             collector.cancel()
         }
     }
