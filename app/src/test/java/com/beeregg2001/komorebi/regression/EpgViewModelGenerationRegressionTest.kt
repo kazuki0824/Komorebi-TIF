@@ -627,4 +627,58 @@ class EpgViewModelGenerationRegressionTest {
         } finally { release.complete(Unit) }
     }
 
+
+    @Test
+    fun initializedTenSecondPreloadAlreadyInFlightIsCancelledOnBackendChange() = runBlocking {
+        viewModel.viewModelScope.cancel()
+        val initialized = MutableStateFlow(false)
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.isInitialized).thenReturn(initialized)
+        Mockito.`when`(settings.backendType).thenReturn(backend)
+        Mockito.`when`(settings.mirakurunIp).thenReturn(flowOf(""))
+        Mockito.`when`(settings.mirakurunPort).thenReturn(flowOf(""))
+        val live = Mockito.mock(LiveProvider::class.java)
+        val now = OffsetDateTime.now()
+        Mockito.doReturn(flowOf(Result.success(emptyList<EpgChannelWrapper>())))
+            .`when`(repository).getEpgDataStream(
+                Mockito.any(OffsetDateTime::class.java) ?: now,
+                Mockito.any(OffsetDateTime::class.java) ?: now,
+                Mockito.eq("GR") ?: "GR"
+            )
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        Mockito.doAnswer { invocation ->
+            if (backend.value == "KONOMITV" && invocation.arguments[2] == "GR") {
+                entered.countDown()
+                check(release.await(15, TimeUnit.SECONDS))
+            }
+            Unit
+        }.`when`(repository).fetchAndCacheEpgDataSilently(
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.any(OffsetDateTime::class.java) ?: now,
+            Mockito.anyString() ?: "GR"
+        )
+        viewModel = EpgViewModel(
+            repository, live, settings, ApplicationProvider.getApplicationContext()
+        )
+        try {
+            initialized.value = true
+            withTimeout(10_000L) {
+                while (viewModel.uiState !is EpgUiState.Success) kotlinx.coroutines.delay(10)
+            }
+            mainDispatcher.scheduler.advanceTimeBy(10_010L)
+            mainDispatcher.scheduler.runCurrent()
+            assertTrue("delayed preload must reach real repository method", entered.await(15, TimeUnit.SECONDS))
+            val obsolete = job("preloadJob")
+            backend.value = "EDCB"
+            release.countDown()
+            withTimeout(10_000L) { obsolete.join() }
+            assertTrue("old owner preload must be cancelled", obsolete.isCancelled)
+            assertEquals("GR", viewModel.selectedBroadcastingType.value)
+            withTimeout(10_000L) {
+                while (viewModel.uiState !is EpgUiState.Success) kotlinx.coroutines.delay(10)
+            }
+        } finally { release.countDown() }
+    }
+
 }
