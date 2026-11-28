@@ -428,10 +428,12 @@ class RecordSyncFullSyncOwnerRegressionTest {
             withTimeout(15_000L) { switchGateReached.await() }
             assertTrue(flag.getBoolean(sync))
             releasePostSyncGate.complete(Unit)
-            releaseSwitchGate.complete(Unit)
-            withTimeout(15_000L) { pending.await(); switching.await() }
+            withTimeout(15_000L) { pending.await() }
             val dict = RecordSyncEngine::class.java.getDeclaredField("dictionaryJob")
                 .apply { isAccessible = true }.get(sync) as? kotlinx.coroutines.Job
+            assertNull("no obsolete dictionary job may start while switch is blocked", dict)
+            releaseSwitchGate.complete(Unit)
+            withTimeout(15_000L) { switching.await() }
             assertTrue("old dictionary may not launch after switch began", dict == null || !dict.isActive)
             assertFalse(sync.recordCacheReady.value)
         } finally {
@@ -501,10 +503,12 @@ class RecordSyncFullSyncOwnerRegressionTest {
             withTimeout(15_000L) { switchGateReached.await() }
             assertTrue(flag.getBoolean(sync))
             releaseGate.complete(Unit)
-            releaseSwitchGate.complete(Unit)
-            withTimeout(15_000L) { smart.await(); switching.await() }
+            withTimeout(15_000L) { smart.await() }
             val oldJob = RecordSyncEngine::class.java.getDeclaredField("dictionaryJob")
                 .apply { isAccessible = true }.get(sync) as? kotlinx.coroutines.Job
+            assertNull("smartSync must not launch old dictionary while switch is held", oldJob)
+            releaseSwitchGate.complete(Unit)
+            withTimeout(15_000L) { switching.await() }
             assertTrue(oldJob == null || !oldJob.isActive)
             assertFalse(sync.recordCacheReady.value)
         } finally {
