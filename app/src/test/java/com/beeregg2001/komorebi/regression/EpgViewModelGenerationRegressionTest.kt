@@ -649,11 +649,14 @@ class EpgViewModelGenerationRegressionTest {
         val release = CountDownLatch(1)
         val newOwnerPrefetch = CountDownLatch(1)
         Mockito.doAnswer { invocation ->
-            if (backend.value == "KONOMITV" && invocation.arguments[2] == "GR") {
+            // Take a stable snapshot at ENTRY. The old suspended KonomiTV call
+            // must not count as a new-owner call if the flow changes meanwhile.
+            val backendAtEntry = backend.value
+            if (backendAtEntry == "KONOMITV" && invocation.arguments[2] == "GR") {
                 entered.countDown()
                 check(release.await(15, TimeUnit.SECONDS))
             }
-            if (backend.value == "EDCB" && invocation.arguments[2] == "GR") {
+            if (backendAtEntry == "EDCB" && invocation.arguments[2] == "GR") {
                 newOwnerPrefetch.countDown()
             }
             Unit
@@ -678,6 +681,8 @@ class EpgViewModelGenerationRegressionTest {
             release.countDown()
             withTimeout(10_000L) { obsolete.join() }
             assertTrue("old owner preload must be cancelled", obsolete.isCancelled)
+            assertEquals("old KonomiTV call must not satisfy the EDCB latch", 1L,
+                newOwnerPrefetch.count)
             assertEquals("GR", viewModel.selectedBroadcastingType.value)
             withTimeout(10_000L) {
                 while (viewModel.uiState !is EpgUiState.Success) kotlinx.coroutines.delay(10)
