@@ -600,7 +600,13 @@ class ChannelViewModelRegressionTest {
             it.callRealMethod()
         }.`when`(oldProgram).startTime
         val old = networkChannel("old-row").copy(programPresent = oldProgram)
-        val latest = networkChannel("new-row")
+        val newProgram = Mockito.spy(com.beeregg2001.komorebi.data.model.Program(
+            id = "new-epg", title = "new current show", description = "", detail = null,
+            startTime = now.minusMinutes(3).toString(),
+            endTime = now.plusMinutes(57).toString(), duration = 3600,
+            genres = null, videoResolution = null
+        ))
+        val latest = networkChannel("new-row").copy(programPresent = newProgram)
         val backend = MutableStateFlow("KONOMITV")
         val live = Mockito.mock(LiveProvider::class.java)
         Mockito.doAnswer {
@@ -616,14 +622,23 @@ class ChannelViewModelRegressionTest {
             testDispatcher.scheduler.runCurrent()
             assertTrue("production progress updater did not recalculate old row",
                 entered.await(15, TimeUnit.SECONDS))
+            val progressField = ChannelViewModel::class.java.getDeclaredField("progressUpdateJob")
+                .apply { isAccessible = true }
+            val oldProgressJob = progressField.get(vm) as Job
             backend.value = "EDCB"
             withTimeout(10_000L) {
                 vm.liveRows.first { it.flatMap { row -> row.channels }.any { it.channel.id == "new-row" } }
             }
             release.countDown()
-            withTimeout(10_000L) {
-                vm.liveRows.first { it.flatMap { row -> row.channels }.all { it.channel.id != "old-row" } }
-            }
+            withTimeout(10_000L) { oldProgressJob.join() }
+            assertTrue(oldProgressJob.isCancelled)
+            assertEquals("new-row", vm.liveRows.value.single().channels.single().channel.id)
+            val replacementJob = progressField.get(vm) as Job
+            assertNotSame(oldProgressJob, replacementJob)
+            assertTrue(replacementJob.isActive)
+            testDispatcher.scheduler.advanceTimeBy(15_010L)
+            testDispatcher.scheduler.runCurrent()
+            Mockito.verify(newProgram, Mockito.atLeast(2)).startTime
             assertEquals("new-row", vm.liveRows.value.single().channels.single().channel.id)
         } finally {
             release.countDown()
