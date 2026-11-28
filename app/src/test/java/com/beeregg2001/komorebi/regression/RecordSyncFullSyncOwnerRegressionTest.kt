@@ -578,4 +578,35 @@ class RecordSyncFullSyncOwnerRegressionTest {
         assertEquals(7, status.value.current)
     }
 
+
+    @Test
+    fun matchingOwnerIncompleteBuildDeletesOrphansWithoutPreFetchClear() = runBlocking {
+        prefs().edit().putString("backend", "EDCB").putBoolean("pending", false).commit()
+        db.syncMetaDao().upsert(
+            SyncMetaEntity(id = 1, lastSyncedPage = 0, lastSyncedAt = 99L,
+                isInitialBuildCompleted = false)
+        )
+        // Local row 44 must survive until orphan deletion, not an initial clearAll.
+        val reachedFetch = java.util.concurrent.CountDownLatch(1)
+        val releaseFetch = java.util.concurrent.CountDownLatch(1)
+        Mockito.doAnswer { invocation ->
+            if ((invocation.arguments[0] as Int) == 1) {
+                reachedFetch.countDown()
+                check(releaseFetch.await(15, java.util.concurrent.TimeUnit.SECONDS))
+                RecordedApiResponse(1, listOf(remoteRecord(55, "new owner row")))
+            } else RecordedApiResponse(1, emptyList())
+        }.`when`(provider).getRecordedPrograms(Mockito.anyInt(), Mockito.anyInt())
+        val sync = engine()
+        try {
+            val task = async(Dispatchers.IO) { sync.syncAllRecords(forceFullSync = false) }
+            assertTrue(reachedFetch.await(15, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals("no premature full-clear on matching owner", listOf(44),
+                db.recordedProgramDao().getAllIds())
+            releaseFetch.countDown()
+            kotlinx.coroutines.withTimeout(15_000L) { task.await() }
+            assertEquals(listOf(55), db.recordedProgramDao().getAllIds())
+            assertTrue(sync.recordCacheReady.value)
+        } finally { releaseFetch.countDown() }
+    }
+
 }
