@@ -149,7 +149,7 @@ jobs:
               "EpgSearchBackendRegressionTest": 8,
               "EpgStateRegressionTest": 3,
               "EpgCanvasOverlayUiRegressionTest": 6,
-              "EpgViewModelGenerationRegressionTest": 21,
+              "EpgViewModelGenerationRegressionTest": 22,
               "ExistingHomeNavigationRegressionTest": 4,
               "LastChannelRegressionTest": 6,
               "HomeViewModelRegressionTest": 3,
