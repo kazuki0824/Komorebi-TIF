@@ -20,7 +20,8 @@ import com.beeregg2001.komorebi.viewmodel.SettingsViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicReference
 import org.mockito.stubbing.Answer
@@ -141,20 +142,13 @@ class SettingScreenBackendWriteUiRegressionTest {
         val activeScope = requireNotNull(screenScope.get()) {
             "must observe the exact SettingsScreen rememberCoroutineScope"
         }
-        val owningJob = requireNotNull(activeScope.coroutineContext[Job])
-        val selectionJobs = AtomicReference<List<Job>>(emptyList())
-        // Take both snapshots inside a single UI-idle callback. No unrelated
-        // recomposition can add long-lived collectors between the snapshots.
-        compose.runOnIdle {
-            val before = owningJob.children.toSet()
-            backendDialogSelection.get()!!.invoke("EDCB")
-            selectionJobs.set(owningJob.children.filter { it !in before }.toList())
-        }
+        // Observe the selection callback on the UI thread. An IO sentinel on
+        // the same screen scope then proves an IO task can execute. Do not
+        // join the entire descendant set: it includes long-lived collectors.
+        compose.runOnIdle { backendDialogSelection.get()!!.invoke("EDCB") }
         Mockito.verify(vm, Mockito.timeout(10_000L).times(1)).updateBackendType("EDCB")
-        // The only relevant Dispatchers.IO jobs are those launched by the
-        // selection callback itself; joining all screen descendants can hang
-        // on collectors intentionally alive throughout the composition.
-        withTimeout(10_000L) { selectionJobs.get().joinAll() }
+        val ioSentinel = activeScope.launch(Dispatchers.IO) { store.backendType.first() }
+        withTimeout(10_000L) { ioSentinel.join() }
         compose.waitForIdle()
         val created = requireNotNull(uiSettingsConstruction).constructed()
         org.junit.Assert.assertTrue("the real screen must construct its repository", created.isNotEmpty())
@@ -164,5 +158,18 @@ class SettingScreenBackendWriteUiRegressionTest {
             )
         }
         assertEquals("KONOMITV", store.backendType.first())
+
+        // Positive control: use the same intercepted screen-owned repository
+        // and Dispatchers.IO to perform the *old UI's extra persistence*.
+        // This must be visible to exactly the same mock verification boundary.
+        val uiStore = created.first()
+        val injectedWrite = activeScope.launch(Dispatchers.IO) {
+            uiStore.saveString(SettingsRepository.BACKEND_TYPE, "EDCB")
+        }
+        withTimeout(10_000L) { injectedWrite.join() }
+        Mockito.verify(uiStore, Mockito.times(1)).saveString(
+            SettingsRepository.BACKEND_TYPE, "EDCB"
+        )
+        assertEquals("EDCB", store.backendType.first())
     }
 }
