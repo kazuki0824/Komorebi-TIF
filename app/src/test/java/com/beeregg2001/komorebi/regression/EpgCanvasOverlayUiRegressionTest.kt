@@ -261,18 +261,26 @@ class EpgCanvasOverlayUiRegressionTest {
         val error = drawRootBitmap()
         // Compare unaffected grid cells, not the spinner/error message in the middle.
         // A translucent Loading overlay would reveal stale program rectangles.
-        var differencesFromSuccess = 0
-        for (xFraction in listOf(0.22f, 0.45f, 0.78f)) {
-            for (yFraction in listOf(0.63f, 0.84f)) {
+        // First program column occupies roughly 4.7%-18.3% of screen
+        // (60dp time rail + one column of the 7-column schedule).
+        // Sample INSIDE that program column, not unrelated headers/lines.
+        var paintedProgramPixels = 0
+        for (xFraction in listOf(0.09f, 0.12f, 0.15f)) {
+            for (yFraction in listOf(0.63f, 0.72f, 0.81f)) {
                 val x = (loading.width * xFraction).toInt()
                 val y = (loading.height * yFraction).toInt()
-                if (original.getPixel(x, y) != error.getPixel(x, y)) differencesFromSuccess++
-                assertEquals("Loading must fully obscure stale Canvas at $x,$y",
-                    error.getPixel(x, y), loading.getPixel(x, y))
+                val old = original.getPixel(x, y)
+                val loadingBackground = loading.getPixel(x, y)
+                val errorBackground = error.getPixel(x, y)
+                if (old != errorBackground) {
+                    paintedProgramPixels++
+                    assertEquals("Loading must hide each painted Success cell at $x,$y",
+                        errorBackground, loadingBackground)
+                }
             }
         }
-        assertTrue("both Loading and Error must differ from Success where the old grid was painted",
-            differencesFromSuccess > 0)
+        assertTrue("Success fixture must actually paint program pixels inside the first grid column",
+            paintedProgramPixels > 0)
     }
 
 }
