@@ -414,8 +414,21 @@ class RecordSyncBackendTransitionRegressionTest {
         Mockito.`when`(settings.backendType).thenReturn(selectedBackend)
         val provider = Mockito.mock(RecordProvider::class.java)
         val actual = RecordSyncEngine(provider, db, settings, db.aiSeriesDictionaryDao(), context)
-        val mutex = RecordSyncEngine::class.java.getDeclaredField("syncMutex")
-            .apply { isAccessible = true }.get(actual) as Mutex
+        val lockField = RecordSyncEngine::class.java.getDeclaredField("syncMutex")
+            .apply { isAccessible = true }
+        val mutex = lockField.get(actual) as Mutex
+        val switchReachedLock = CompletableDeferred<Unit>()
+        val allowRealSwitchClear = CompletableDeferred<Unit>()
+        val lockCalls = java.util.concurrent.atomic.AtomicInteger()
+        lockField.set(actual, object : Mutex by mutex {
+            override suspend fun lock(owner: Any?) {
+                if (lockCalls.incrementAndGet() == 2) {
+                    switchReachedLock.complete(Unit)
+                    allowRealSwitchClear.await()
+                }
+                mutex.lock(owner)
+            }
+        })
         mutex.lock()
         try {
             val clear = async(start = CoroutineStart.UNDISPATCHED) { actual.clearDatabase() }
@@ -425,14 +438,22 @@ class RecordSyncBackendTransitionRegressionTest {
             }
             val flag = RecordSyncEngine::class.java.getDeclaredField("switchingBackend")
                 .apply { isAccessible = true }
-            withTimeout(10_000L) { while (!flag.getBoolean(actual)) delay(10) }
+            withTimeout(10_000L) { switchReachedLock.await() }
+            assertTrue(flag.getBoolean(actual))
             mutex.unlock()
-            withTimeout(15_000L) { clear.await(); switching.await() }
+            withTimeout(15_000L) { clear.await() }
+            assertEquals("queued clear must not wipe old recording before actual switch", listOf(19),
+                db.recordedProgramDao().getAllIds())
+            assertEquals("sync meta must remain unchanged until switch itself clears",
+                null, db.syncMetaDao().getSyncMeta())
+            allowRealSwitchClear.complete(Unit)
+            withTimeout(15_000L) { switching.await() }
             assertEquals("EDCB", selectedBackend.value)
             Mockito.verifyNoInteractions(provider)
             assertEquals("history", db.watchHistoryDao().getById(19)?.title)
             assertEquals("epg", db.epgCacheDao().getCache("KONOMITV_GR")?.dataJson)
         } finally {
+            allowRealSwitchClear.complete(Unit)
             if (mutex.isLocked) mutex.unlock()
         }
     }
