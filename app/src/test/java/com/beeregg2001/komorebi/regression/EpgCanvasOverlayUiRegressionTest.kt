@@ -39,12 +39,14 @@ import org.junit.runner.RunWith
 import org.mockito.Mockito
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import java.time.OffsetDateTime
 
 /** Exercises ModernEpgCanvasEngine_Smooth directly, not only its state engine. */
 @OptIn(ExperimentalTestApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w1280dp-h720dp")
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class EpgCanvasOverlayUiRegressionTest {
     @get:Rule val compose = createComposeRule()
     private val store = ViewModelStore()
@@ -249,6 +251,7 @@ class EpgCanvasOverlayUiRegressionTest {
         ))
         setContent(state)
         compose.waitForIdle()
+        val original = drawRootBitmap()
         compose.runOnIdle { state.value = EpgUiState.Loading }
         compose.waitForIdle()
         compose.onNode(hasProgressBarRangeInfo(ProgressBarRangeInfo.Indeterminate)).assertExists()
@@ -258,14 +261,18 @@ class EpgCanvasOverlayUiRegressionTest {
         val error = drawRootBitmap()
         // Compare unaffected grid cells, not the spinner/error message in the middle.
         // A translucent Loading overlay would reveal stale program rectangles.
+        var differencesFromSuccess = 0
         for (xFraction in listOf(0.22f, 0.45f, 0.78f)) {
             for (yFraction in listOf(0.63f, 0.84f)) {
                 val x = (loading.width * xFraction).toInt()
                 val y = (loading.height * yFraction).toInt()
+                if (original.getPixel(x, y) != error.getPixel(x, y)) differencesFromSuccess++
                 assertEquals("Loading must fully obscure stale Canvas at $x,$y",
                     error.getPixel(x, y), loading.getPixel(x, y))
             }
         }
+        assertTrue("both Loading and Error must differ from Success where the old grid was painted",
+            differencesFromSuccess > 0)
     }
 
 }
