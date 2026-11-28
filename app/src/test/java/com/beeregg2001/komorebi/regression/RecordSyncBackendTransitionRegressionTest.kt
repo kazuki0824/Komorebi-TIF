@@ -528,7 +528,8 @@ class RecordSyncBackendTransitionRegressionTest {
                 callbackEntered.get())
             assertEquals(listOf(19), db.recordedProgramDao().getAllIds())
             release.countDown()
-            withTimeout(15_000L) { oldSync.await(); switching.await() }
+            withTimeout(15_000L) { oldSync.join(); switching.await() }
+            assertTrue("active old sync must be cancelled before switching", oldSync.isCancelled)
             assertTrue(callbackEntered.get())
             assertEquals("EDCB", selectedBackend.value)
             assertTrue(db.recordedProgramDao().getAllIds().isEmpty())
