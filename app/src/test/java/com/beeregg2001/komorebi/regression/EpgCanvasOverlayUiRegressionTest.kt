@@ -257,6 +257,11 @@ class EpgCanvasOverlayUiRegressionTest {
         // A Success view without the real program is the independent oracle
         // for which pixels are ACTUALLY painted by the program, rather than
         // guessing vertical positions while the grid scrolls to current time.
+        // An empty channel still has size=1 and hits EpgState's date/type
+        // cache. First clear via zero channels, then rebuild a one-channel
+        // programless Success to preserve geometry without reusing old cells.
+        compose.runOnIdle { state.value = emptySuccess() }
+        compose.waitForIdle()
         compose.runOnIdle { state.value = success(emptyList()) }
         compose.waitForIdle()
         val withoutProgram = drawRootBitmap()
@@ -289,9 +294,14 @@ class EpgCanvasOverlayUiRegressionTest {
         compose.waitForIdle()
         val loadingAfterProgram = drawRootBitmap()
 
+        // Return to populated Success before directly entering Error.
+        compose.runOnIdle { state.value = success(listOf(program)) }
+        compose.waitForIdle()
         compose.runOnIdle { state.value = EpgUiState.Error("failed") }
         compose.waitForIdle()
         val errorAfterProgram = drawRootBitmap()
+        compose.runOnIdle { state.value = emptySuccess() }
+        compose.waitForIdle()
         compose.runOnIdle { state.value = success(emptyList()) }
         compose.waitForIdle()
         compose.runOnIdle { state.value = EpgUiState.Error("failed") }
