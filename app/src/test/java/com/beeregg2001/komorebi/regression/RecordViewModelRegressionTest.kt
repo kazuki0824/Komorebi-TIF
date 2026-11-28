@@ -695,19 +695,39 @@ class RecordViewModelRegressionTest {
     }
 
 
+    /**
+     * The production classification coroutine has no completion callback:
+     * it returns to the Flow collector's next suspension after deciding
+     * whether to publish. Await that actual return on its captured IO thread,
+     * rather than interpreting a mock getter's pre-return latch as completion.
+     * While owner-ready remains false, no replacement classifier can start.
+     */
+    private suspend fun awaitOldClassifierReturn(worker: Thread) {
+        withTimeout(10_000L) {
+            while (worker.stackTrace.any { frame ->
+                frame.className.startsWith(
+                    "com.beeregg2001.komorebi.viewmodel.RecordViewModel\$"
+                ) && frame.methodName == "invokeSuspend"
+            }) kotlinx.coroutines.delay(5L)
+        }
+    }
+
     @Test
     fun obsoleteRoomClassificationRemainsUnpublishedIndependentlyOfNewOwnerReload() = runBlocking {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         val returned = AtomicBoolean(false)
+        val readerThread = AtomicReference<Thread?>()
         val reachedPostQueryGuard = CountDownLatch(1)
         Mockito.doAnswer {
-            if (returned.get() && !cacheReady.value) reachedPostQueryGuard.countDown()
+            if (returned.get() && !cacheReady.value &&
+                Thread.currentThread() === readerThread.get()) reachedPostQueryGuard.countDown()
             cacheReady
         }.`when`(sync).recordCacheReady
         Mockito.doAnswer {
             entered.countDown()
             check(release.await(15, TimeUnit.SECONDS))
+            readerThread.set(Thread.currentThread())
             returned.set(true)
             listOf(SeriesProjection("Obsolete Room isolated", 2, 700, true, null, null, null, null))
         }.`when`(programDaoUnderTest).getGroupedSeries()
@@ -731,6 +751,7 @@ class RecordViewModelRegressionTest {
             release.countDown()
             assertTrue("old Room result must reach the real post-query ownership guard",
                 reachedPostQueryGuard.await(15, TimeUnit.SECONDS))
+            awaitOldClassifierReturn(requireNotNull(readerThread.get()))
             // Keep ready=false for the remainder; the guard cannot be made
             // stale by a test-induced restoration. No next-DAO requirement
             // prevents the nonpublication check from executing.
@@ -753,9 +774,11 @@ class RecordViewModelRegressionTest {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         val returned = AtomicBoolean(false)
+        val readerThread = AtomicReference<Thread?>()
         val reachedPostApiGuard = CountDownLatch(1)
         Mockito.doAnswer {
-            if (returned.get() && !cacheReady.value) reachedPostApiGuard.countDown()
+            if (returned.get() && !cacheReady.value &&
+                Thread.currentThread() === readerThread.get()) reachedPostApiGuard.countDown()
             cacheReady
         }.`when`(sync).recordCacheReady
         Mockito.doReturn(listOf(SeriesProjection("Old API metadata", 2, 700, true, null, null, null, null)))
@@ -765,6 +788,7 @@ class RecordViewModelRegressionTest {
         Mockito.doAnswer {
             entered.countDown()
             check(release.await(15, TimeUnit.SECONDS))
+            readerThread.set(Thread.currentThread())
             returned.set(true)
             listOf(com.beeregg2001.komorebi.data.model.EsSeriesListItem(
                 id = 701, title = "Obsolete EPGStation isolated",
@@ -790,6 +814,7 @@ class RecordViewModelRegressionTest {
             release.countDown()
             assertTrue("old API result must reach the real post-query ownership guard",
                 reachedPostApiGuard.await(15, TimeUnit.SECONDS))
+            awaitOldClassifierReturn(requireNotNull(readerThread.get()))
             assertFalse(cacheReady.value)
             assertTrue("old API classification must remain unpublished",
                 viewModel.groupedSeries.value.values.flatten().none {
