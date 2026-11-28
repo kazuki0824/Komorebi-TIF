@@ -70,6 +70,21 @@ android {
         // java.time などの Java 8+ API を Android 7.0(API 24)以降で利用する。
         isCoreLibraryDesugaringEnabled = true
     }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        // Robolectric resolves its SDK JAR at test runtime, outside Gradle's
+        // repository resolution. Avoid Maven Central's shared-runner 429s.
+        unitTests.all {
+            it.systemProperty(
+                "robolectric.dependency.repo.url",
+                "https://maven-central.storage-download.googleapis.com/maven2/"
+            )
+            it.systemProperty("robolectric.dependency.repo.id", "google-maven-central-mirror")
+        }
+    }
+    // Test-only font stubs: production font binaries are absent from this repo.
+    // Applied to the debug variant only; release resources remain unchanged.
+    sourceSets.getByName("debug").res.srcDir("src/test/fixtures/debug-res")
     buildFeatures {
         compose = true
         buildConfig = true // ★ BuildConfigクラスの生成を有効化
@@ -120,6 +135,17 @@ ksp {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+
+    // PR #3 regression suite (local JVM; no device required).
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.16.1")
+    testImplementation("org.mockito:mockito-core:5.12.0")
+    // Robolectric-hosted Compose semantics regression tests.
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.room:room-testing:2.7.0-alpha11")
 
     // 1. Compose BOM を最新に近いバージョンに更新 (ここが最重要)
     // 2023.10.01 だと Tv-Foundation 1.0.0-alpha11 と互換性がありません

@@ -1,0 +1,186 @@
+name: PR3 Robolectric Regression
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/pr3-robolectric-regression.yml'
+      - 'app/**'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'gradlew.bat'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  robolectric:
+    name: Android JVM regression (Robolectric)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enforce test-only PR scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/fix/tif-pr1-d-stack:refs/remotes/origin/fix/tif-pr1-d-stack
+          git diff --name-only origin/fix/tif-pr1-d-stack HEAD > /tmp/pr3-regression-changed.txt
+          test -s /tmp/pr3-regression-changed.txt
+          while IFS= read -r path; do
+            case "$path" in
+              app/src/test/*|app/build.gradle.kts|.github/workflows/*) ;;
+              *) echo "FAIL: disallowed production-file change: $path"; exit 1 ;;
+            esac
+          done < /tmp/pr3-regression-changed.txt
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify preinstalled Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME:-}"
+          test -x "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || test "${PIPESTATUS[1]:-0}" -eq 0
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-35" "build-tools;35.0.0" "cmake;3.30.5"
+          test -d "${ANDROID_HOME}/platforms/android-35"
+
+      - name: Run Robolectric regressions
+        id: regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          # Maven Central intermittently rate-limits the 150MB Robolectric native
+          # JAR on shared GitHub runners (HTTP 429). Use Google's documented
+          # Maven Central mirror ONLY for this CI test invocation, not production
+          # repository settings. Preserve Google Android and JitPack repositories.
+          cat > /tmp/pr3-maven-central-mirror.init.gradle <<'GRADLE'
+          gradle.settingsEvaluated { settings ->
+              settings.dependencyResolutionManagement.repositories.withType(
+                  org.gradle.api.artifacts.repositories.MavenArtifactRepository
+              ).all { repository ->
+                  if (repository.url.toString().startsWith("https://repo.maven.apache.org/maven2")) {
+                      repository.url = java.net.URI.create(
+                          "https://maven-central.storage-download.googleapis.com/maven2/"
+                      )
+                  }
+              }
+          }
+          GRADLE
+          # Retry only the known external KSP plugin-resolution outage.
+          # A test failure, compilation error, or assertion failure must never be retried as success.
+          for attempt in 1 2 3; do
+            set +e
+            ./gradlew --no-daemon --init-script /tmp/pr3-maven-central-mirror.init.gradle :app:testDebugUnitTest \
+              --tests 'com.beeregg2001.komorebi.regression.*' \
+              --stacktrace 2>&1 | tee "/tmp/pr3-gradle-attempt-${attempt}.log"
+            result=${PIPESTATUS[0]}
+            set -e
+            if [ "${result}" -eq 0 ]; then exit 0; fi
+            if ! grep -Eq "Plugin \\[id: 'com\\.google\\.devtools\\.ksp'.*was not found|Received status code 429 from server: Too Many Requests" "/tmp/pr3-gradle-attempt-${attempt}.log"; then
+              exit "${result}"
+            fi
+            if [ "${attempt}" -eq 3 ]; then exit "${result}"; fi
+            echo "External Gradle plugin/JAR repository unavailable (KSP or HTTP 429); retrying dependency resolution (attempt ${attempt})"
+            sleep 15
+          done
+
+      - name: Print detailed JUnit failures
+        if: failure()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import glob
+          import xml.etree.ElementTree as ET
+          for path in glob.glob("app/build/test-results/testDebugUnitTest/TEST-*.xml"):
+              root = ET.parse(path).getroot()
+              for case in root.findall(".//testcase"):
+                  for tag in ("failure", "error"):
+                      failed = case.find(tag)
+                      if failed is not None:
+                          print(f"FAIL {case.get('classname')}.{case.get('name')}: {failed.get('message')}")
+                          print((failed.text or "")[:6000])
+          PY
+
+      - name: Verify complete regression suite executed
+        if: ${{ !cancelled() && (steps.regressions.outcome == 'success' || steps.regressions.outcome == 'failure') }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import glob
+          import xml.etree.ElementTree as ET
+          paths = glob.glob("app/build/test-results/testDebugUnitTest/TEST-*.xml")
+          if not paths:
+              raise SystemExit("FAIL: no JUnit XML results produced")
+          cases = []
+          failures = 0
+          skipped = 0
+          for path in paths:
+              root = ET.parse(path).getroot()
+              cases.extend(root.findall(".//testcase"))
+              failures += sum(1 for case in root.findall(".//testcase") if case.find("failure") is not None or case.find("error") is not None)
+              skipped += sum(1 for case in root.findall(".//testcase") if case.find("skipped") is not None)
+          from collections import Counter
+          actual = Counter(case.attrib.get("classname", "").rsplit(".", 1)[-1] for case in cases)
+          expected = {
+              "BackendDataIsolationRegressionTest": 10,
+              "ChannelViewModelRegressionTest": 17,
+              "ChannelListOverlayUiRegressionTest": 2,
+              "DatabaseMigrationRegressionTest": 3,
+              "DtvProviderProxyRoutingRegressionTest": 7,
+              "SettingsBackendFailureRegressionTest": 10,
+              "SettingScreenBackendWriteUiRegressionTest": 1,
+              "EpgInFlightBackendRegressionTest": 10,
+              "EpgFileCacheRegressionTest": 10,
+              "EpgSearchBackendRegressionTest": 8,
+              "EpgStateRegressionTest": 3,
+              "EpgCanvasOverlayUiRegressionTest": 6,
+              "EpgViewModelGenerationRegressionTest": 22,
+              "ExistingHomeNavigationRegressionTest": 4,
+              "LastChannelRegressionTest": 6,
+              "HomeViewModelRegressionTest": 3,
+              "HomeHistoryRefreshSourceRegressionTest": 3,
+              "HomeLauncherHistoryUiRegressionTest": 20,
+              "HomeGenreBackendIsolationRegressionTest": 7,
+              "LiveContentEmptyStateUiRegressionTest": 1,
+              "MainRootDialogEpochUiRegressionTest": 1,
+              "MainRootScreenStateUiRegressionTest": 13,
+              "RecordCacheOwnershipRegressionTest": 6,
+              "RecordSyncBackendTransitionRegressionTest": 17,
+              "RecordSyncFullSyncOwnerRegressionTest": 19,
+              "RecordViewModelRegressionTest": 24,
+              "WatchHistoryRepositoryRegressionTest": 10,
+              "VideoPlaybackHistoryOwnershipRegressionTest": 2,
+              "VideoPlayerSessionBackendUiRegressionTest": 4,
+              "VideoTabSmbNavigationUiRegressionTest": 2,
+          }
+          print(f"PR3 regression cases: {len(cases)}; failed: {failures}; skipped: {skipped}")
+          print(f"Test class coverage: {dict(actual)}")
+          if actual != Counter(expected) or skipped:
+              raise SystemExit(f"FAIL: expected class coverage {expected}, got {dict(actual)}; failed={failures}; skipped={skipped}")
+          PY
+
+      - name: Upload JVM test evidence (including failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr3-robolectric-junit
+          path: |
+            app/build/test-results/testDebugUnitTest/**
+            app/build/reports/tests/testDebugUnitTest/**
+          if-no-files-found: warn
+          retention-days: 14
