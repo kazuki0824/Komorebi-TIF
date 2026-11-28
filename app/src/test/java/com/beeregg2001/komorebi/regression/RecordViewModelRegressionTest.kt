@@ -569,7 +569,7 @@ class RecordViewModelRegressionTest {
             check(releaseApi.await(15, TimeUnit.SECONDS))
             null
         }.`when`(seriesProvider).getSeriesList()
-        val emitted = java.util.concurrent.CopyOnWriteArrayList<Map<String, List<com.beeregg2001.komorebi.data.model.SeriesInfo>>>()
+        val emitted = java.util.concurrent.CopyOnWriteArrayList<Map<String, List<com.beeregg2001.komorebi.viewmodel.SeriesInfo>>>()
         // The production StateFlow is observed without replacing its publication logic.
         val subscription = launch(Dispatchers.Default) {
             viewModel.groupedSeries.collect { emitted.add(it) }
