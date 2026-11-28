@@ -21,6 +21,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicReference
@@ -34,6 +38,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -167,10 +172,15 @@ class SettingScreenBackendWriteUiRegressionTest {
             finally { captureSelectionScopes.set(false) }
         }
         Mockito.verify(vm, Mockito.timeout(10_000L).times(1)).updateBackendType("EDCB")
-        val selectionOnlyJobs = constructedSelectionScopes.flatMap { scope ->
-            scope.coroutineContext[Job]?.children?.toList() ?: emptyList()
+        // This same finite-job collection path is exercised below with a
+        // blocked positive-control write; it must not pass until that Job ends.
+        suspend fun joinCapturedSelectionJobs() {
+            val jobs = constructedSelectionScopes.flatMap { scope ->
+                scope.coroutineContext[Job]?.children?.toList() ?: emptyList()
+            }
+            withTimeout(10_000L) { jobs.joinAll() }
         }
-        withTimeout(10_000L) { selectionOnlyJobs.joinAll() }
+        joinCapturedSelectionJobs()
         compose.waitForIdle()
         val created = requireNotNull(uiSettingsConstruction).constructed()
         org.junit.Assert.assertTrue("the real screen must construct its repository", created.isNotEmpty())
@@ -186,17 +196,32 @@ class SettingScreenBackendWriteUiRegressionTest {
         // This must be visible to exactly the same mock verification boundary.
         val uiStore = created.first()
         val previouslyCaptured = constructedSelectionScopes.size
+        val injectedStarted = CompletableDeferred<Unit>()
+        val allowInjectedWrite = CompletableDeferred<Unit>()
         val injectedWrite = compose.runOnIdle {
             captureSelectionScopes.set(true)
             try {
                 CoroutineScope(Dispatchers.IO).launch {
+                    injectedStarted.complete(Unit)
+                    allowInjectedWrite.await()
                     uiStore.saveString(SettingsRepository.BACKEND_TYPE, "EDCB")
                 }
             } finally { captureSelectionScopes.set(false) }
         }
+        withTimeout(10_000L) { injectedStarted.await() }
         assertEquals("positive control must be captured by same scope factory",
             previouslyCaptured + 1, constructedSelectionScopes.size)
-        withTimeout(10_000L) { injectedWrite.join() }
+        val observer = async(Dispatchers.Default) { joinCapturedSelectionJobs() }
+        try {
+            // The exact same join path must remain pending while the captured
+            // UI-owned child cannot complete.
+            yield()
+            assertTrue("captured child must gate the verification", !observer.isCompleted)
+            allowInjectedWrite.complete(Unit)
+            withTimeout(10_000L) { observer.await() }
+        } finally {
+            allowInjectedWrite.complete(Unit)
+        }
         Mockito.verify(uiStore, Mockito.times(1)).saveString(
             SettingsRepository.BACKEND_TYPE, "EDCB"
         )
