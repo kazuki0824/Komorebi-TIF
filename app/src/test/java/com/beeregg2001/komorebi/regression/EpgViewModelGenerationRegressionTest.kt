@@ -456,7 +456,7 @@ class EpgViewModelGenerationRegressionTest {
     @Test
     fun initializedVmSwitchBeforeScheduledTenSecondPreloadInvalidatesPreviousEpg() = runBlocking {
         viewModel.viewModelScope.cancel()
-        val initialized = MutableStateFlow(true)
+        val initialized = MutableStateFlow(false)
         val settings = Mockito.mock(SettingsRepository::class.java)
         Mockito.`when`(settings.isInitialized).thenReturn(initialized)
         Mockito.`when`(settings.backendType).thenReturn(backend)
@@ -482,6 +482,10 @@ class EpgViewModelGenerationRegressionTest {
         viewModel = EpgViewModel(
             repository, live, settings, ApplicationProvider.getApplicationContext()
         )
+        // Construction must finish before the initialized flow can trigger real EPG work.
+        // Otherwise Unconfined Main can run the initial fetch before later properties
+        // (including timeParseCache) finish Kotlin class initialization.
+        initialized.value = true
         withTimeout(10_000L) {
             while (viewModel.uiState !is EpgUiState.Success)
                 kotlinx.coroutines.delay(10L)
