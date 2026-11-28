@@ -546,13 +546,31 @@ class RecordViewModelRegressionTest {
 
 
 
+    /** Make the production revocation collector's transition observable.
+     * Waiting for an initially empty flow is not evidence of revocation. */
+    private fun markPreviouslyPublishedGroups() {
+        val field = RecordViewModel::class.java.getDeclaredField("_groupedSeries")
+            .apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val output = field.get(viewModel) as MutableStateFlow<
+            Map<String, List<com.beeregg2001.komorebi.viewmodel.SeriesInfo>>
+        >
+        output.value = mapOf("previously-published" to emptyList())
+    }
+
     @Test
     fun nonemptyOldEpgstationApiResultCannotPublishAfterBackendChange() = runBlocking {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
-        Mockito.doReturn(listOf(SeriesProjection(
-            "New EDCB group", 1, 345, true, null, null, null, null
-        ))).`when`(programDaoUnderTest).getGroupedSeries()
+        val newDaoEntered = CountDownLatch(1)
+        val releaseNewDao = CountDownLatch(1)
+        Mockito.doAnswer {
+            if (ownerBackend.value == "EDCB") {
+                newDaoEntered.countDown()
+                check(releaseNewDao.await(15, TimeUnit.SECONDS))
+            }
+            listOf(SeriesProjection("New EDCB group", 1, 345, true, null, null, null, null))
+        }.`when`(programDaoUnderTest).getGroupedSeries()
         Mockito.doReturn(listOf(ChannelProjection("new-channel", "GR", "New EDCB channel")))
             .`when`(programDaoUnderTest).getDistinctChannels()
         Mockito.doAnswer {
@@ -570,16 +588,23 @@ class RecordViewModelRegressionTest {
             cacheReady.value = true
             syncState.value = SyncProgress(isSyncing = false)
             assertTrue(entered.await(15, TimeUnit.SECONDS))
+            markPreviouslyPublishedGroups()
             cacheReady.value = false
             ownerGeneration.value++
             ownerBackend.value = "EDCB"
             syncState.value = SyncProgress(isSyncing = true)
+            // Wait for real revocation, not the initial empty StateFlow.
+            withTimeout(10_000L) { viewModel.groupedSeries.first { it.isEmpty() } }
             release.countDown()
-            withTimeout(10_000L) {
-                viewModel.groupedSeries.first { it.isEmpty() }
-            }
-            syncState.value = SyncProgress(isSyncing = false)
             cacheReady.value = true
+            syncState.value = SyncProgress(isSyncing = false)
+            assertTrue("new DAO must be entered before we permit any new classification",
+                newDaoEntered.await(15, TimeUnit.SECONDS))
+            assertTrue("old API must not escape while replacement DAO is stopped",
+                viewModel.groupedSeries.value.values.flatten().none {
+                    it.displayTitle == "Old EPGStation API"
+                })
+            releaseNewDao.countDown()
             withTimeout(15_000L) {
                 viewModel.groupedSeries.first { groups ->
                     groups.values.flatten().any { it.displayTitle == "New EDCB group" }
@@ -591,6 +616,7 @@ class RecordViewModelRegressionTest {
                 } })
         } finally {
             release.countDown()
+            releaseNewDao.countDown()
             subscription.cancel()
         }
     }
@@ -622,13 +648,17 @@ class RecordViewModelRegressionTest {
             cacheReady.value = true
             syncState.value = SyncProgress(isSyncing = false)
             assertTrue(entered.await(15, TimeUnit.SECONDS))
+            markPreviouslyPublishedGroups()
             cacheReady.value = false
             ownerGeneration.value++
             ownerBackend.value = "EDCB"
             syncState.value = SyncProgress(isSyncing = true)
+            withTimeout(10_000L) { viewModel.groupedSeries.first { it.isEmpty() } }
             release.countDown()
-            syncState.value = SyncProgress(isSyncing = false)
+            // Force an observable obsolete result rejection while revoked.
+            // Only then allow the new owner to enter a distinct DAO call.
             cacheReady.value = true
+            syncState.value = SyncProgress(isSyncing = false)
             assertTrue("new owner must enter the DAO after the obsolete Room query has returned",
                 newRoomEntered.await(15, TimeUnit.SECONDS))
             assertTrue("obsolete Room result must not appear while new Room query is blocked",
