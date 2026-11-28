@@ -245,42 +245,69 @@ class EpgCanvasOverlayUiRegressionTest {
             duration = 3600, is_free = true, genres = null,
             video_type = null, audio_type = null, audio_sampling_rate = null
         )
-        val state = mutableStateOf<EpgUiState>(EpgUiState.Success(
-            data = listOf(EpgChannelWrapper(channel, listOf(program))),
+        fun success(programs: List<EpgProgram>) = EpgUiState.Success(
+            data = listOf(EpgChannelWrapper(channel, programs)),
             logoUrls = emptyList(), mirakurunIp = "", mirakurunPort = "", targetTime = now
-        ))
+        )
+        val state = mutableStateOf<EpgUiState>(success(listOf(program)))
         setContent(state)
         compose.waitForIdle()
-        val original = drawRootBitmap()
-        compose.runOnIdle { state.value = EpgUiState.Loading }
+        val populated = drawRootBitmap()
+
+        // A Success view without the real program is the independent oracle
+        // for which pixels are ACTUALLY painted by the program, rather than
+        // guessing vertical positions while the grid scrolls to current time.
+        compose.runOnIdle { state.value = success(emptyList()) }
         compose.waitForIdle()
-        compose.onNode(hasProgressBarRangeInfo(ProgressBarRangeInfo.Indeterminate)).assertExists()
-        val loading = drawRootBitmap()
-        compose.runOnIdle { state.value = EpgUiState.Error("failed") }
-        compose.waitForIdle()
-        val error = drawRootBitmap()
-        // Compare unaffected grid cells, not the spinner/error message in the middle.
-        // A translucent Loading overlay would reveal stale program rectangles.
-        // First program column occupies roughly 4.7%-18.3% of screen
-        // (60dp time rail + one column of the 7-column schedule).
-        // Sample INSIDE that program column, not unrelated headers/lines.
-        var paintedProgramPixels = 0
-        for (xFraction in listOf(0.09f, 0.12f, 0.15f)) {
-            for (yFraction in listOf(0.63f, 0.72f, 0.81f)) {
-                val x = (loading.width * xFraction).toInt()
-                val y = (loading.height * yFraction).toInt()
-                val old = original.getPixel(x, y)
-                val loadingBackground = loading.getPixel(x, y)
-                val errorBackground = error.getPixel(x, y)
-                if (old != errorBackground) {
-                    paintedProgramPixels++
-                    assertEquals("Loading must hide each painted Success cell at $x,$y",
-                        errorBackground, loadingBackground)
+        val withoutProgram = drawRootBitmap()
+        assertEquals(populated.width, withoutProgram.width)
+        assertEquals(populated.height, withoutProgram.height)
+
+        val programPixels = mutableListOf<Pair<Int, Int>>()
+        val firstColumnStart = (populated.width * 0.05f).toInt()
+        val firstColumnEnd = (populated.width * 0.19f).toInt()
+        for (y in (populated.height * 0.18f).toInt() until (populated.height * 0.95f).toInt() step 5) {
+            for (x in firstColumnStart until firstColumnEnd step 5) {
+                if (populated.getPixel(x, y) != withoutProgram.getPixel(x, y)) {
+                    programPixels.add(x to y)
                 }
             }
         }
-        assertTrue("Success fixture must actually paint program pixels inside the first grid column",
-            paintedProgramPixels > 0)
+        assertTrue(
+            "Success with the actual program must differ visibly from Success without it in the first column",
+            programPixels.size >= 10
+        )
+        // Use the same actual program-affected coordinates, never a guessed
+        // fraction of the image that may land in a filler 'no program' cell.
+        compose.runOnIdle { state.value = EpgUiState.Loading }
+        compose.waitForIdle()
+        compose.onNode(hasProgressBarRangeInfo(ProgressBarRangeInfo.Indeterminate)).assertExists()
+        val loadingAfterEmpty = drawRootBitmap()
+        compose.runOnIdle { state.value = success(listOf(program)) }
+        compose.waitForIdle()
+        compose.runOnIdle { state.value = EpgUiState.Loading }
+        compose.waitForIdle()
+        val loadingAfterProgram = drawRootBitmap()
+
+        compose.runOnIdle { state.value = EpgUiState.Error("failed") }
+        compose.waitForIdle()
+        val errorAfterProgram = drawRootBitmap()
+        compose.runOnIdle { state.value = success(emptyList()) }
+        compose.waitForIdle()
+        compose.runOnIdle { state.value = EpgUiState.Error("failed") }
+        compose.waitForIdle()
+        val errorAfterEmpty = drawRootBitmap()
+
+        for ((x, y) in programPixels) {
+            assertEquals(
+                "Loading must hide the program at verified program pixel $x,$y",
+                loadingAfterEmpty.getPixel(x, y), loadingAfterProgram.getPixel(x, y)
+            )
+            assertEquals(
+                "Error must hide the program at verified program pixel $x,$y",
+                errorAfterEmpty.getPixel(x, y), errorAfterProgram.getPixel(x, y)
+            )
+        }
     }
 
 }
