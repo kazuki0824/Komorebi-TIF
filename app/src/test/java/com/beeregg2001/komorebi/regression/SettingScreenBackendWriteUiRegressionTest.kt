@@ -53,6 +53,10 @@ class SettingScreenBackendWriteUiRegressionTest {
     private var dialogMock: MockedStatic<Any>? = null
     private var uiSettingsConstruction: MockedConstruction<SettingsRepository>? = null
     private var scopeMock: MockedStatic<Any>? = null
+    private var scopeFactoryMock: MockedStatic<Any>? = null
+    private val captureSelectionScopes = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val constructedSelectionScopes =
+        java.util.concurrent.CopyOnWriteArrayList<CoroutineScope>()
     private val screenScope = AtomicReference<CoroutineScope?>()
 
     @After
@@ -60,6 +64,7 @@ class SettingScreenBackendWriteUiRegressionTest {
         compose.runOnUiThread {
             dialogMock?.close(); dialogMock = null
             scopeMock?.close(); scopeMock = null
+            scopeFactoryMock?.close(); scopeFactoryMock = null
             uiSettingsConstruction?.close(); uiSettingsConstruction = null
         }
         store.saveString(SettingsRepository.BACKEND_TYPE, "KONOMITV")
@@ -139,16 +144,33 @@ class SettingScreenBackendWriteUiRegressionTest {
         )
         backendItem.performSemanticsAction(SemanticsActions.OnClick)
         compose.waitUntil(10_000L) { backendDialogSelection.get() != null }
-        val activeScope = requireNotNull(screenScope.get()) {
-            "must observe the exact SettingsScreen rememberCoroutineScope"
+        // Capture CoroutineScope(Dispatchers.IO) created synchronously by the
+        // actual selection callback (the legacy duplicate-write pattern).
+        // Unlike an unrelated IO sentinel, joining these finite child Jobs
+        // orders the assertion after the suspect UI persistence path.
+        compose.runOnUiThread {
+            @Suppress("UNCHECKED_CAST")
+            val type = Class.forName("kotlinx.coroutines.CoroutineScopeKt") as Class<Any>
+            scopeFactoryMock = Mockito.mockStatic(type, Answer { invocation ->
+                val value = invocation.callRealMethod()
+                if (captureSelectionScopes.get() &&
+                    invocation.method.name == "CoroutineScope" &&
+                    value is CoroutineScope) {
+                    constructedSelectionScopes.add(value)
+                }
+                value
+            })
         }
-        // Observe the selection callback on the UI thread. An IO sentinel on
-        // the same screen scope then proves an IO task can execute. Do not
-        // join the entire descendant set: it includes long-lived collectors.
-        compose.runOnIdle { backendDialogSelection.get()!!.invoke("EDCB") }
+        compose.runOnIdle {
+            captureSelectionScopes.set(true)
+            try { backendDialogSelection.get()!!.invoke("EDCB") }
+            finally { captureSelectionScopes.set(false) }
+        }
         Mockito.verify(vm, Mockito.timeout(10_000L).times(1)).updateBackendType("EDCB")
-        val ioSentinel = activeScope.launch(Dispatchers.IO) { store.backendType.first() }
-        withTimeout(10_000L) { ioSentinel.join() }
+        val selectionOnlyJobs = constructedSelectionScopes.flatMap { scope ->
+            scope.coroutineContext[Job]?.children?.toList() ?: emptyList()
+        }
+        withTimeout(10_000L) { selectionOnlyJobs.joinAll() }
         compose.waitForIdle()
         val created = requireNotNull(uiSettingsConstruction).constructed()
         org.junit.Assert.assertTrue("the real screen must construct its repository", created.isNotEmpty())
@@ -163,9 +185,17 @@ class SettingScreenBackendWriteUiRegressionTest {
         // and Dispatchers.IO to perform the *old UI's extra persistence*.
         // This must be visible to exactly the same mock verification boundary.
         val uiStore = created.first()
-        val injectedWrite = activeScope.launch(Dispatchers.IO) {
-            uiStore.saveString(SettingsRepository.BACKEND_TYPE, "EDCB")
+        val previouslyCaptured = constructedSelectionScopes.size
+        val injectedWrite = compose.runOnIdle {
+            captureSelectionScopes.set(true)
+            try {
+                CoroutineScope(Dispatchers.IO).launch {
+                    uiStore.saveString(SettingsRepository.BACKEND_TYPE, "EDCB")
+                }
+            } finally { captureSelectionScopes.set(false) }
         }
+        assertEquals("positive control must be captured by same scope factory",
+            previouslyCaptured + 1, constructedSelectionScopes.size)
         withTimeout(10_000L) { injectedWrite.join() }
         Mockito.verify(uiStore, Mockito.times(1)).saveString(
             SettingsRepository.BACKEND_TYPE, "EDCB"
