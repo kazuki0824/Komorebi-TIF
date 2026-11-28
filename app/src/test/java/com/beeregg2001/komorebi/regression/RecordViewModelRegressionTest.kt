@@ -694,6 +694,116 @@ class RecordViewModelRegressionTest {
         }
     }
 
+
+    @Test
+    fun obsoleteRoomClassificationRemainsUnpublishedIndependentlyOfNewOwnerReload() = runBlocking {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val returned = AtomicBoolean(false)
+        val reachedPostQueryGuard = CountDownLatch(1)
+        Mockito.doAnswer {
+            if (returned.get() && !cacheReady.value) reachedPostQueryGuard.countDown()
+            cacheReady
+        }.`when`(sync).recordCacheReady
+        Mockito.doAnswer {
+            entered.countDown()
+            check(release.await(15, TimeUnit.SECONDS))
+            returned.set(true)
+            listOf(SeriesProjection("Obsolete Room isolated", 2, 700, true, null, null, null, null))
+        }.`when`(programDaoUnderTest).getGroupedSeries()
+        Mockito.doReturn(listOf(ChannelProjection("old", "GR", "Old Room channel")))
+            .`when`(programDaoUnderTest).getDistinctChannels()
+        val allPublications = java.util.concurrent.CopyOnWriteArrayList<
+            Map<String, List<com.beeregg2001.komorebi.viewmodel.SeriesInfo>>
+        >()
+        val collector = launch(Dispatchers.Default) {
+            viewModel.groupedSeries.collect { allPublications.add(it) }
+        }
+        try {
+            cacheReady.value = true
+            syncState.value = SyncProgress(isSyncing = false)
+            assertTrue(entered.await(15, TimeUnit.SECONDS))
+            markPreviouslyPublishedGroups()
+            cacheReady.value = false
+            ownerGeneration.value++
+            ownerBackend.value = "EDCB"
+            withTimeout(10_000L) { viewModel.groupedSeries.first { it.isEmpty() } }
+            release.countDown()
+            assertTrue("old Room result must reach the real post-query ownership guard",
+                reachedPostQueryGuard.await(15, TimeUnit.SECONDS))
+            // Keep ready=false for the remainder; the guard cannot be made
+            // stale by a test-induced restoration. No next-DAO requirement
+            // prevents the nonpublication check from executing.
+            assertFalse(cacheReady.value)
+            assertTrue("old Room classification must remain unpublished",
+                viewModel.groupedSeries.value.values.flatten().none {
+                    it.displayTitle == "Obsolete Room isolated"
+                })
+            assertTrue(allPublications.none { groups ->
+                groups.values.flatten().any { it.displayTitle == "Obsolete Room isolated" }
+            })
+        } finally {
+            release.countDown()
+            collector.cancel()
+        }
+    }
+
+    @Test
+    fun obsoleteEpgStationClassificationRemainsUnpublishedIndependentlyOfNewOwnerReload() = runBlocking {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val returned = AtomicBoolean(false)
+        val reachedPostApiGuard = CountDownLatch(1)
+        Mockito.doAnswer {
+            if (returned.get() && !cacheReady.value) reachedPostApiGuard.countDown()
+            cacheReady
+        }.`when`(sync).recordCacheReady
+        Mockito.doReturn(listOf(SeriesProjection("Old API metadata", 2, 700, true, null, null, null, null)))
+            .`when`(programDaoUnderTest).getGroupedSeries()
+        Mockito.doReturn(listOf(ChannelProjection("old", "GR", "Old API channel")))
+            .`when`(programDaoUnderTest).getDistinctChannels()
+        Mockito.doAnswer {
+            entered.countDown()
+            check(release.await(15, TimeUnit.SECONDS))
+            returned.set(true)
+            listOf(com.beeregg2001.komorebi.data.model.EsSeriesListItem(
+                id = 701, title = "Obsolete EPGStation isolated",
+                normalizedTitle = "Obsolete EPGStation isolated", recordedCount = 2
+            ))
+        }.`when`(seriesProvider).getSeriesList()
+        val allPublications = java.util.concurrent.CopyOnWriteArrayList<
+            Map<String, List<com.beeregg2001.komorebi.viewmodel.SeriesInfo>>
+        >()
+        val collector = launch(Dispatchers.Default) {
+            viewModel.groupedSeries.collect { allPublications.add(it) }
+        }
+        try {
+            ownerBackend.value = "EPGSTATION"
+            cacheReady.value = true
+            syncState.value = SyncProgress(isSyncing = false)
+            assertTrue(entered.await(15, TimeUnit.SECONDS))
+            markPreviouslyPublishedGroups()
+            cacheReady.value = false
+            ownerGeneration.value++
+            ownerBackend.value = "EDCB"
+            withTimeout(10_000L) { viewModel.groupedSeries.first { it.isEmpty() } }
+            release.countDown()
+            assertTrue("old API result must reach the real post-query ownership guard",
+                reachedPostApiGuard.await(15, TimeUnit.SECONDS))
+            assertFalse(cacheReady.value)
+            assertTrue("old API classification must remain unpublished",
+                viewModel.groupedSeries.value.values.flatten().none {
+                    it.displayTitle == "Obsolete EPGStation isolated"
+                })
+            assertTrue(allPublications.none { groups ->
+                groups.values.flatten().any { it.displayTitle == "Obsolete EPGStation isolated" }
+            })
+        } finally {
+            release.countDown()
+            collector.cancel()
+        }
+    }
+
     @Test
     fun delayedOldEpgStationCategoriesNeverReappearAfterNewOwnerPublishesRoomCategories() = runBlocking {
         val old = SeriesProjection(
