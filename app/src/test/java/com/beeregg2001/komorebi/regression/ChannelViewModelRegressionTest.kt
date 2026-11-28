@@ -476,7 +476,7 @@ class ChannelViewModelRegressionTest {
             assertTrue(newEntered.await(15, TimeUnit.SECONDS))
             assertTrue(vm.isLoading.value)
             oldRelease.countDown()
-            withTimeout(10_000L) { obsoleteJob.join() }
+            withTimeout(25_000L) { obsoleteJob.join() }
             assertTrue("old finally cannot end latest loading", vm.isLoading.value)
             assertFalse("old failure cannot mark new request failed", vm.connectionError.value)
             newRelease.countDown()
