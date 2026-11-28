@@ -590,11 +590,16 @@ class ChannelViewModelRegressionTest {
             withTimeout(10_000L) {
                 vm.groupedChannels.first { it["GR"]?.singleOrNull()?.id == "explicit-latest" }
             }
+            // Observing published rows is NOT the end of fetchJob. Periodic
+            // fetch checks fetchJob.isActive; join it before advancing to the
+            // next tick or the tick may legitimately be skipped.
+            withTimeout(10_000L) { fetchJob(vm).join() }
             entered.get()!!.resume(
                 ChannelApiResponse(terrestrial = listOf(networkChannel("obsolete-poll")))
             )
-            // A second periodic invocation is only possible after the first
-            // requestId=null fetch has returned to the polling loop.
+            // Let the suspended original polling coroutine return to its
+            // scheduling loop before advancing virtual time.
+            testDispatcher.scheduler.runCurrent()
             testDispatcher.scheduler.advanceTimeBy(62_000L)
             testDispatcher.scheduler.runCurrent()
             withTimeout(10_000L) {
