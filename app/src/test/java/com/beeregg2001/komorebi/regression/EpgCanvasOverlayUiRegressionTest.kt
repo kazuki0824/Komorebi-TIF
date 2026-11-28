@@ -255,7 +255,7 @@ class EpgCanvasOverlayUiRegressionTest {
         val loading = drawRootBitmap()
         compose.runOnIdle { state.value = EpgUiState.Error("failed") }
         compose.waitForIdle()
-        val error = compose.onRoot().captureToImage().toPixelMap()
+        val error = drawRootBitmap()
         // Compare unaffected grid cells, not the spinner/error message in the middle.
         // A translucent Loading overlay would reveal stale program rectangles.
         for (xFraction in listOf(0.22f, 0.45f, 0.78f)) {
