@@ -552,48 +552,59 @@ class RecordSyncBackendTransitionRegressionTest {
             .apply { isAccessible = true }.get(actual) as CompletableDeferred<*>
         withTimeout(10_000L) { ready.await() }
         assertTrue(actual.recordCacheReady.value)
+
+        // There are two different lock-acquisition sites. Identify the actual
+        // smartSync outer check separately from the switch lock, not by order.
         val field = RecordSyncEngine::class.java.getDeclaredField("syncMutex")
             .apply { isAccessible = true }
         val raw = field.get(actual) as Mutex
-        val checked = CompletableDeferred<Unit>()
-        val switchAttempt = CompletableDeferred<Unit>()
-        val releaseSwitch = CompletableDeferred<Unit>()
-        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val smartOuterChecked = CountDownLatch(1)
+        val releaseSmartOuter = CountDownLatch(1)
+        val switchLockEntered = CompletableDeferred<Unit>()
+        val releaseSwitchLock = CompletableDeferred<Unit>()
+        val smartLockEntered = CompletableDeferred<Unit>()
+        val gateCalls = java.util.concurrent.atomic.AtomicInteger()
         field.set(actual, object : Mutex by raw {
             override val isLocked: Boolean
                 get() {
-                    // Race injection: smartSync observes an unlocked mutex,
-                    // then contends for it, proving the *inner* guard independently.
-                    checked.complete(Unit)
+                    smartOuterChecked.countDown()
+                    check(releaseSmartOuter.await(15, TimeUnit.SECONDS))
                     return false
                 }
+
             override suspend fun lock(owner: Any?) {
-                if (calls.incrementAndGet() == 2) {
-                    switchAttempt.complete(Unit)
-                    releaseSwitch.await()
+                when (gateCalls.incrementAndGet()) {
+                    1 -> {
+                        switchLockEntered.complete(Unit)
+                        releaseSwitchLock.await()
+                    }
+                    2 -> smartLockEntered.complete(Unit)
                 }
                 raw.lock(owner)
             }
         })
-        raw.lock()
         try {
             val smart = async(Dispatchers.IO) { actual.smartSync() }
-            withTimeout(10_000L) { checked.await() }
+            assertTrue("smartSync must pass its outer check", smartOuterChecked.await(15, TimeUnit.SECONDS))
             val switching = async(Dispatchers.IO) {
                 actual.switchBackend { selectedBackend.value = "EDCB" }
             }
-            withTimeout(10_000L) { switchAttempt.await() }
-            raw.unlock()
-            withTimeout(10_000L) { smart.await() }
-            assertEquals("smartSync must not read old Provider after switch begins", 0,
-                Mockito.mockingDetails(provider).invocations.size)
-            assertEquals("smartSync must not clear rows before legitimate switch", listOf(19),
+            withTimeout(15_000L) { switchLockEntered.await() }
+            val flag = RecordSyncEngine::class.java.getDeclaredField("switchingBackend")
+                .apply { isAccessible = true }
+            assertTrue(flag.getBoolean(actual))
+            releaseSmartOuter.countDown()
+            withTimeout(15_000L) { smartLockEntered.await() }
+            withTimeout(15_000L) { smart.await() }
+            Mockito.verifyNoInteractions(provider)
+            assertEquals("old recordings must survive until the real switch enters", listOf(19),
                 db.recordedProgramDao().getAllIds())
-            releaseSwitch.complete(Unit)
+            releaseSwitchLock.complete(Unit)
             withTimeout(15_000L) { switching.await() }
+            assertEquals("EDCB", selectedBackend.value)
         } finally {
-            releaseSwitch.complete(Unit)
-            if (raw.isLocked) raw.unlock()
+            releaseSmartOuter.countDown()
+            releaseSwitchLock.complete(Unit)
         }
     }
 
