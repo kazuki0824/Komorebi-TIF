@@ -450,7 +450,12 @@ class ChannelViewModelRegressionTest {
         Mockito.doReturn(ChannelApiResponse()).`when`(live).getChannels()
         val backend = MutableStateFlow("KONOMITV")
         val vm = viewModel(live, backend)
+        // The constructor's immediate request belongs to pollingJob, not
+        // fetchJob. Cancel AND join that exact Job before replacing responses.
+        val initialPolling = ChannelViewModel::class.java.getDeclaredField("pollingJob")
+            .apply { isAccessible = true }.get(vm) as? Job
         vm.stopPolling()
+        if (initialPolling != null) withTimeout(10_000L) { initialPolling.join() }
         awaitObservedBackend(vm, "KONOMITV")
         val initialFetch = ChannelViewModel::class.java.getDeclaredField("fetchJob")
             .apply { isAccessible = true }.get(vm) as? Job
