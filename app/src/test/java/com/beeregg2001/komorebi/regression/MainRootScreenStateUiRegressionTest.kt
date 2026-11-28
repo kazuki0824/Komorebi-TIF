@@ -60,6 +60,8 @@ class MainRootScreenStateUiRegressionTest {
     private val exposedEpoch = AtomicReference<MutableIntState?>()
     private val dialogEpoch = AtomicReference<MutableIntState?>()
     private val smbProgram = AtomicReference<RecordedProgram?>()
+    private val smbRenderedItem = AtomicReference<SmbItem?>()
+    private val smbRenderCalls = java.util.concurrent.atomic.AtomicInteger(0)
     private val liveSelect = AtomicReference<((Channel) -> Unit)?>(null)
 
     @Before
@@ -176,6 +178,8 @@ class MainRootScreenStateUiRegressionTest {
         intercept("com.beeregg2001.komorebi.ui.video.smb.player.SmbVlcPlayerScreenKt") {
             if (it.method.name == "SmbVlcPlayerScreen") {
                 smbProgram.set(it.arguments[0] as RecordedProgram)
+                smbRenderedItem.set(it.arguments[1] as SmbItem)
+                smbRenderCalls.incrementAndGet()
                 null
             } else it.callRealMethod()
         }
@@ -333,8 +337,16 @@ class MainRootScreenStateUiRegressionTest {
         render()
         compose.waitUntil(10_000L) { smbProgram.get()?.title == "first.mkv" }
         assertEquals(java.time.Instant.ofEpochMilli(125000L).toString(), smbProgram.get()?.startTime)
+        val firstCalls = smbRenderCalls.get()
         compose.runOnIdle { state.selectedSmbItem = second }
-        compose.waitUntil(10_000L) { smbProgram.get()?.title == "next.ts" }
+        compose.runOnIdle {
+            assertSame("state must contain the user's second selection", second, state.selectedSmbItem)
+        }
+        compose.waitUntil(10_000L) { smbRenderCalls.get() > firstCalls }
+        assertEquals("recomposed player must receive the second SMB item", second.path,
+            smbRenderedItem.get()?.path)
+        assertEquals("player model must be reconstructed for new item", "next.ts",
+            smbProgram.get()?.title)
         val model = requireNotNull(smbProgram.get())
         assertEquals(second.path.hashCode(), model.id)
         assertEquals(second.path, model.recordedVideo.filePath)
