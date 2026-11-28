@@ -485,4 +485,53 @@ class RecordSyncBackendTransitionRegressionTest {
         }
     }
 
+
+    @Test
+    fun backendSettingCallbackWaitsForActiveRecordedSyncJobToExit() = runBlocking {
+        seedIndependentData()
+        db.syncMetaDao().upsert(
+            SyncMetaEntity(id = 1, lastSyncedPage = 0, lastSyncedAt = 20L,
+                isInitialBuildCompleted = true)
+        )
+        assertTrue(context.getSharedPreferences("record_cache_backend_owner", Context.MODE_PRIVATE)
+            .edit().putString("backend", "KONOMITV").putBoolean("pending", false).commit())
+        val provider = Mockito.mock(RecordProvider::class.java)
+        val settings = Mockito.mock(SettingsRepository::class.java)
+        Mockito.`when`(settings.backendType).thenReturn(selectedBackend)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        Mockito.doAnswer {
+            entered.countDown()
+            check(release.await(15, java.util.concurrent.TimeUnit.SECONDS))
+            com.beeregg2001.komorebi.data.model.RecordedApiResponse(
+                total = 0, recordedPrograms = emptyList()
+            )
+        }.`when`(provider).getRecordedPrograms(Mockito.anyInt(), Mockito.anyInt())
+        val actual = RecordSyncEngine(provider, db, settings, db.aiSeriesDictionaryDao(), context)
+        val callbackEntered = java.util.concurrent.atomic.AtomicBoolean(false)
+        try {
+            val oldSync = async(Dispatchers.IO) {
+                runCatching { actual.syncAllRecords(forceFullSync = false) }
+            }
+            assertTrue("normal sync must reach actual Provider", entered.await(15, java.util.concurrent.TimeUnit.SECONDS))
+            val switching = async(Dispatchers.Default) {
+                actual.switchBackend {
+                    callbackEntered.set(true)
+                    selectedBackend.value = "EDCB"
+                }
+            }
+            val flag = RecordSyncEngine::class.java.getDeclaredField("switchingBackend")
+                .apply { isAccessible = true }
+            withTimeout(10_000L) { while (!flag.getBoolean(actual)) delay(10) }
+            assertFalse("settings must not be written before old Provider sync has exited",
+                callbackEntered.get())
+            assertEquals(listOf(19), db.recordedProgramDao().getAllIds())
+            release.countDown()
+            withTimeout(15_000L) { oldSync.await(); switching.await() }
+            assertTrue(callbackEntered.get())
+            assertEquals("EDCB", selectedBackend.value)
+            assertTrue(db.recordedProgramDao().getAllIds().isEmpty())
+        } finally { release.countDown() }
+    }
+
 }
