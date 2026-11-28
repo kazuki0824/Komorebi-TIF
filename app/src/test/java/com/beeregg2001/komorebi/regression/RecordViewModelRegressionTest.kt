@@ -584,6 +584,12 @@ class RecordViewModelRegressionTest {
             ownerBackend.value = "EDCB"
             syncState.value = SyncProgress(isSyncing = true)
             releaseApi.countDown()
+            // Allow the suspended EPGStation classification to finish while the
+            // owner is revoked. Then publish a distinct new-owner ready event.
+            withTimeout(10_000L) {
+                while (viewModel.isSeriesLoading.value) kotlinx.coroutines.delay(10L)
+            }
+            kotlinx.coroutines.delay(100L)
             syncState.value = SyncProgress(isSyncing = false)
             cacheReady.value = true
             withTimeout(15_000L) {
