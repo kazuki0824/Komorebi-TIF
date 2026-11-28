@@ -608,7 +608,29 @@ class RecordSyncFullSyncOwnerRegressionTest {
                 RecordedApiResponse(1, listOf(remoteRecord(55, "new owner row")))
             } else RecordedApiResponse(1, emptyList())
         }.`when`(provider).getRecordedPrograms(Mockito.anyInt(), Mockito.anyInt())
-        val sync = engine()
+        // Robolectric's default ActivityManager reports a low-memory device,
+        // where orphan deletion is intentionally disabled. Force only this
+        // test's system service to advertise a normal-RAM profile, so the
+        // actual orphan-deletion branch is reached without modifying production.
+        val activityManager = Mockito.mock(android.app.ActivityManager::class.java)
+        Mockito.`when`(activityManager.isLowRamDevice).thenReturn(false)
+        Mockito.`when`(activityManager.memoryClass).thenReturn(4096)
+        Mockito.doAnswer { invocation ->
+            (invocation.arguments[0] as android.app.ActivityManager.MemoryInfo).totalMem =
+                8L * 1024L * 1024L * 1024L
+            null
+        }.`when`(activityManager).getMemoryInfo(
+            Mockito.any(android.app.ActivityManager.MemoryInfo::class.java)
+                ?: android.app.ActivityManager.MemoryInfo()
+        )
+        val normalMemoryContext = object : ContextWrapper(context) {
+            override fun getSystemService(name: String): Any? =
+                if (name == Context.ACTIVITY_SERVICE) activityManager
+                else super.getSystemService(name)
+        }
+        val sync = RecordSyncEngine(
+            provider, db, settings, db.aiSeriesDictionaryDao(), normalMemoryContext
+        ).also { engines.add(it) }
         try {
             val task = async(Dispatchers.IO) { sync.syncAllRecords(forceFullSync = false) }
             assertTrue(reachedFetch.await(15, java.util.concurrent.TimeUnit.SECONDS))
