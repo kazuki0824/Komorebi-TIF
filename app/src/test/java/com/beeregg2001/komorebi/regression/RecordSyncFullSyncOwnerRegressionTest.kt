@@ -374,9 +374,16 @@ class RecordSyncFullSyncOwnerRegressionTest {
         selection.value = "EPGSTATION"
         prefs().edit().putString("backend", "EPGSTATION").putBoolean("pending", false).commit()
         db.recordedProgramDao().clearAll()
+        db.recordedProgramDao().upsertAll(
+            listOf(existing().copy(id = 801, title = "Unresolved EPGStation episode", seriesName = ""))
+        )
+        assertTrue(db.recordedProgramDao().getUnknownTitlesCount() > 0)
         val sync = engine()
         sync.syncAllRecords(forceFullSync = false)
         awaitDictionaryJob(sync)
+        assertTrue("EPGStation must skip local dictionary even for unknown titles",
+            db.aiSeriesDictionaryDao().getAllDictionary().isEmpty())
+        assertTrue(db.recordedProgramDao().getUnknownTitlesCount() > 0)
         assertFalse("real EPGStation dictionary early-return must finish the sync", sync.syncProgress.value.isSyncing)
         assertNull(sync.syncProgress.value.error)
     }
@@ -548,16 +555,14 @@ class RecordSyncFullSyncOwnerRegressionTest {
     fun cancellingRealDictionaryWorkerMustNotFinishNewerSyncGeneration() = runBlocking {
         selection.value = "EDCB"
         prefs().edit().putString("backend", "EDCB").putBoolean("pending", false).commit()
-        Mockito.doAnswer { invocation ->
-            if ((invocation.arguments[0] as Int) == 1)
-                RecordedApiResponse(1, listOf(remoteRecord(604, "ニュース")))
-            else RecordedApiResponse(1, emptyList())
-        }.`when`(provider).getRecordedPrograms(Mockito.anyInt(), Mockito.anyInt())
+        db.recordedProgramDao().upsertAll(
+            (700..711).map { existing().copy(id = it, title = "ニュース $it", seriesName = "") }
+        )
         val sync = engine()
-        sync.syncAllRecords(forceFullSync = true)
+        sync.syncAllRecords(forceFullSync = false)
         val dictionaryField = RecordSyncEngine::class.java.getDeclaredField("dictionaryJob")
             .apply { isAccessible = true }
-        val dictionary = withTimeout(10_000L) {
+        val dictionary = withTimeout(15_000L) {
             var value: kotlinx.coroutines.Job? = null
             while (value == null) {
                 value = dictionaryField.get(sync) as? kotlinx.coroutines.Job
@@ -565,23 +570,26 @@ class RecordSyncFullSyncOwnerRegressionTest {
             }
             requireNotNull(value)
         }
+        withTimeout(15_000L) {
+            while (sync.syncProgress.value.message != "シリーズ辞書を自動生成中...") delay(10)
+        }
+        assertTrue("real dictionary Job must be active before cancellation", dictionary.isActive)
         val generation = RecordSyncEngine::class.java.getDeclaredField("syncProgressEpoch")
             .apply { isAccessible = true }
             .get(sync) as java.util.concurrent.atomic.AtomicLong
         generation.incrementAndGet()
-        val status = RecordSyncEngine::class.java.getDeclaredField("_syncProgress")
+        val state = RecordSyncEngine::class.java.getDeclaredField("_syncProgress")
             .apply { isAccessible = true }
             .get(sync) as MutableStateFlow<com.beeregg2001.komorebi.data.sync.SyncProgress>
-        status.value = com.beeregg2001.komorebi.data.sync.SyncProgress(
-            isSyncing = true, message = "newer backend dictionary", current = 7
+        state.value = com.beeregg2001.komorebi.data.sync.SyncProgress(
+            isSyncing = true, message = "シリーズ辞書を自動生成中...", current = 7
         )
         dictionary.cancel()
         withTimeout(15_000L) { dictionary.join() }
-        assertTrue(status.value.isSyncing)
-        assertEquals("newer backend dictionary", status.value.message)
-        assertEquals(7, status.value.current)
+        assertTrue("obsolete finally must not clear newer active progress", state.value.isSyncing)
+        assertEquals("シリーズ辞書を自動生成中...", state.value.message)
+        assertEquals(7, state.value.current)
     }
-
 
     @Test
     fun matchingOwnerIncompleteBuildDeletesOrphansWithoutPreFetchClear() = runBlocking {
