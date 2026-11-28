@@ -250,6 +250,10 @@ class EpgFileCacheRegressionTest {
             end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "GR"
         )
         assertStoredPrograms("KONOMITV_GR", konomiPrograms)
+        assertEquals(
+            konomiPrograms.single().programs.single(),
+            reopened.searchFuturePrograms(query = "Konomi news").single().program
+        )
         assertTrue(reopened.searchFuturePrograms(query = "Expired old show").isEmpty())
     }
 
