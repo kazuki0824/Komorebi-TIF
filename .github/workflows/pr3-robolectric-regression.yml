@@ -162,7 +162,7 @@ jobs:
               "RecordCacheOwnershipRegressionTest": 6,
               "RecordSyncBackendTransitionRegressionTest": 17,
               "RecordSyncFullSyncOwnerRegressionTest": 19,
-              "RecordViewModelRegressionTest": 20,
+              "RecordViewModelRegressionTest": 22,
               "WatchHistoryRepositoryRegressionTest": 10,
               "VideoPlaybackHistoryOwnershipRegressionTest": 2,
               "VideoPlayerSessionBackendUiRegressionTest": 4,
