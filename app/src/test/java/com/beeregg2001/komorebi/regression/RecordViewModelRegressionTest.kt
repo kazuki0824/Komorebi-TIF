@@ -487,7 +487,9 @@ class RecordViewModelRegressionTest {
             playbackPosition = 0.0, channelId = null, channelType = null,
             channelName = null, genres = null
         )
+        val pagingQueries = java.util.concurrent.atomic.AtomicInteger()
         Mockito.doAnswer {
+            pagingQueries.incrementAndGet()
             object : PagingSource<Int, RecordedProgramEntity>() {
                 override suspend fun load(params: LoadParams<Int>): LoadResult<Int, RecordedProgramEntity> =
                     LoadResult.Page(data = listOf(ownedRow), prevKey = null, nextKey = null)
@@ -515,6 +517,9 @@ class RecordViewModelRegressionTest {
         }
         try {
             assertEquals(0, differ.itemCount)
+            dispatcher.scheduler.advanceTimeBy(70L)
+            dispatcher.scheduler.runCurrent()
+            assertEquals("unowned cache may not create DAO paging query after the delay", 0, pagingQueries.get())
             cacheReady.value = true
             dispatcher.scheduler.advanceTimeBy(60L)
             dispatcher.scheduler.runCurrent()
@@ -523,13 +528,17 @@ class RecordViewModelRegressionTest {
                     kotlinx.coroutines.delay(20)
             }
             assertEquals(listOf(88), differ.snapshot().items.map { it.id })
+            val queriesWhileReady = pagingQueries.get()
+            assertTrue(queriesWhileReady > 0)
             cacheReady.value = false
             withTimeout(15_000L) {
                 while (differ.snapshot().items.isNotEmpty())
                     kotlinx.coroutines.delay(20)
             }
+            dispatcher.scheduler.advanceTimeBy(70L)
+            dispatcher.scheduler.runCurrent()
             assertTrue(differ.snapshot().items.isEmpty())
-            Mockito.verify(programDaoUnderTest, Mockito.atLeastOnce()).getAll_DateDesc()
+            assertEquals("revoked owner may not reload old DAO rows", queriesWhileReady, pagingQueries.get())
         } finally {
             subscription.cancel()
         }
