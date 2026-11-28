@@ -319,6 +319,7 @@ class SettingsBackendFailureRegressionTest {
             viewModel.updateBackendType("EDCB")
             Mockito.verify(sync, Mockito.timeout(10_000L).times(1))
                 .launchSyncAllRecords(forceFullSync = true)
+            Mockito.verify(brokenLoader, Mockito.atLeastOnce()).memoryCache
             Mockito.verify(realProvider, Mockito.timeout(10_000L).atLeastOnce()).getStreamQualities()
             assertEquals("EDCB", selectedBackend.value)
         } finally {
