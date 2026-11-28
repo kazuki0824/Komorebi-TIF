@@ -653,6 +653,9 @@ class ChannelViewModelRegressionTest {
             val replacementJob = progressField.get(vm) as Job
             assertNotSame(oldProgressJob, replacementJob)
             assertTrue(replacementJob.isActive)
+            // Separate the initial build's parsing from the subsequent
+            // periodic update. Any read below is therefore from the new tick.
+            Mockito.clearInvocations(newProgram)
             testDispatcher.scheduler.advanceTimeBy(15_010L)
             testDispatcher.scheduler.runCurrent()
             Mockito.verify(newProgram, Mockito.atLeastOnce()).startTime
