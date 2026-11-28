@@ -381,6 +381,7 @@ class RecordSyncBackendTransitionRegressionTest {
             val switching = async(Dispatchers.Default) {
                 runCatching {
                     actual.switchBackend {
+                        assertTrue("settings callback must enter only after old dictionary Job fully completes", worker.isCompleted)
                         callbackEntered.set(true)
                         throw IllegalStateException("injected setting failure")
                     }
