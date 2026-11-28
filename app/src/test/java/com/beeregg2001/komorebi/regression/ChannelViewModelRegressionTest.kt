@@ -690,4 +690,45 @@ class ChannelViewModelRegressionTest {
         }
     }
 
+
+    @Test
+    fun periodicTickDoesNotStartSecondRequestWhileExplicitFetchIsSuspended(): Unit = runBlocking {
+        val live = Mockito.mock(LiveProvider::class.java)
+        Mockito.doReturn(ChannelApiResponse()).`when`(live).getChannels()
+        val vm = viewModel(live, MutableStateFlow("EDCB"))
+        vm.stopPolling()
+        val fetchedAt = ChannelViewModel::class.java.getDeclaredField("lastFetchedTimeMillis")
+            .apply { isAccessible = true }
+        fetchedAt.setLong(vm, System.currentTimeMillis())
+        val pending = AtomicReference<Continuation<ChannelApiResponse>?>()
+        val count = AtomicInteger()
+        Mockito.doAnswer { invocation ->
+            count.incrementAndGet()
+            @Suppress("UNCHECKED_CAST")
+            pending.set(invocation.rawArguments.last() as Continuation<ChannelApiResponse>)
+            COROUTINE_SUSPENDED
+        }.`when`(live).getChannels()
+        try {
+            vm.fetchChannels(force = true)
+            withTimeout(10_000L) {
+                while (pending.get() == null) kotlinx.coroutines.delay(10L)
+            }
+            val job = fetchJob(vm)
+            assertTrue(job.isActive)
+            vm.startPolling()
+            testDispatcher.scheduler.advanceTimeBy(62_000L)
+            testDispatcher.scheduler.runCurrent()
+            assertEquals("periodic request must not overtake active explicit request", 1, count.get())
+            pending.get()!!.resume(
+                ChannelApiResponse(terrestrial = listOf(networkChannel("explicit-owner")))
+            )
+            withTimeout(10_000L) { job.join() }
+            assertEquals("explicit-owner", vm.groupedChannels.value["GR"]?.single()?.id)
+            assertFalse(vm.isLoading.value)
+        } finally {
+            vm.stopPolling()
+            vm.viewModelScope.cancel()
+        }
+    }
+
 }
