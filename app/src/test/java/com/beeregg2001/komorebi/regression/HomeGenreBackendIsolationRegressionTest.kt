@@ -51,6 +51,7 @@ class HomeGenreBackendIsolationRegressionTest {
     private lateinit var backend: MutableStateFlow<String>
     private lateinit var vm: HomeViewModel
     private lateinit var epg: EpgRepository
+    private lateinit var live: LiveProvider
     private lateinit var entered: CountDownLatch
     private lateinit var release: CountDownLatch
     private lateinit var program: EpgProgram
@@ -112,7 +113,7 @@ class HomeGenreBackendIsolationRegressionTest {
         val updater = Mockito.mock(AppUpdater::class.java)
         Mockito.`when`(updater.updateState)
             .thenReturn(MutableStateFlow<UpdateState>(UpdateState.Idle))
-        val live = Mockito.mock(LiveProvider::class.java)
+        live = Mockito.mock(LiveProvider::class.java)
         runBlocking { Mockito.doReturn("baseball-logo").`when`(live).getChannelLogoUrl("channel-1") }
         vm = HomeViewModel(
             live,
@@ -268,6 +269,38 @@ class HomeGenreBackendIsolationRegressionTest {
         }
         assertTrue(vm.genrePickupPrograms.value.none { it.first.id == "own-program" })
         assertTrue(vm.genrePickupPrograms.value.all { it.first.id == "new-edcb-program" })
+    }
+
+
+    @Test
+    fun oldBackendDateRecalculationFinishingAfterSwitchCannotRestoreBaseballCards() = runBlocking {
+        baseballTomorrow()
+        withTimeout(10_000L) { vm.favoriteBaseballTeams.first { "巨人" in it } }
+        val seeded = startAndGetJob()
+        assertTrue(entered.await(15, TimeUnit.SECONDS))
+        release.countDown()
+        withTimeout(15_000L) { seeded.join() }
+        val logoEntered = CountDownLatch(1)
+        val logoRelease = CountDownLatch(1)
+        Mockito.doAnswer {
+            logoEntered.countDown()
+            check(logoRelease.await(15, TimeUnit.SECONDS))
+            "obsolete-logo"
+        }.`when`(live).getChannelLogoUrl("channel-1")
+        try {
+            vm.updateBaseballDateOffset(1)
+            val field = HomeViewModel::class.java.getDeclaredField("baseballDateJob")
+                .apply { isAccessible = true }
+            val obsolete = field.get(vm) as Job
+            assertTrue("old date calculation must reach network logo", logoEntered.await(15, TimeUnit.SECONDS))
+            backend.value = "EDCB"
+            withTimeout(10_000L) { vm.favoriteBaseballGames.first { it.isEmpty() } }
+            logoRelease.countDown()
+            withTimeout(10_000L) { obsolete.join() }
+            assertTrue(obsolete.isCancelled)
+            assertTrue("late old date must not restore baseball cards",
+                vm.favoriteBaseballGames.value.isEmpty())
+        } finally { logoRelease.countDown() }
     }
 
 }
