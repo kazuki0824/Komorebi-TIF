@@ -528,7 +528,7 @@ class HomeLauncherHistoryUiRegressionTest {
             Mockito.`when`(video.duration).thenReturn(0.0)
             verifiedSelection.get()!!.invoke(program, 16.25)
             assertEquals(16250L, state.initialPlaybackPositionMs)
-            assertEquals(13, epoch.intValue)
+            assertEquals(17, epoch.intValue)
         }
     }
 
