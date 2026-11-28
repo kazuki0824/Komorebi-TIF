@@ -519,6 +519,13 @@ class ChannelViewModelRegressionTest {
         withTimeout(10_000L) {
             vm.groupedChannels.first { it["GR"]?.singleOrNull()?.id == "old-visible" }
         }
+        withTimeout(10_000L) {
+            vm.liveRows.first { rows ->
+                rows.flatMap { it.channels }.any { it.channel.id == "old-visible" }
+            }
+        }
+        assertTrue("old channel must be visibly published before revocation",
+            vm.liveRows.value.flatMap { it.channels }.any { it.channel.id == "old-visible" })
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
         Mockito.doAnswer {
@@ -597,13 +604,17 @@ class ChannelViewModelRegressionTest {
             entered.get()!!.resume(
                 ChannelApiResponse(terrestrial = listOf(networkChannel("obsolete-poll")))
             )
-            // Let the suspended original polling coroutine return to its
-            // scheduling loop before advancing virtual time.
-            testDispatcher.scheduler.runCurrent()
-            testDispatcher.scheduler.advanceTimeBy(62_000L)
-            testDispatcher.scheduler.runCurrent()
-            withTimeout(10_000L) {
-                while (nextPeriodic.get() == null) kotlinx.coroutines.delay(10L)
+            // The old periodic fetch returns through Dispatchers.Default,
+            // which is NOT owned by this virtual scheduler. A single jump of
+            // 62 seconds can happen before the polling loop registers its
+            // next delay. Advance in bounded intervals and yield to Default
+            // until the real second periodic call has entered the provider.
+            withTimeout(15_000L) {
+                while (nextPeriodic.get() == null) {
+                    testDispatcher.scheduler.advanceTimeBy(10_000L)
+                    testDispatcher.scheduler.runCurrent()
+                    kotlinx.coroutines.delay(10L)
+                }
             }
             assertEquals("stale first periodic response must not overwrite explicit result",
                 "explicit-latest", vm.groupedChannels.value["GR"]?.single()?.id)
