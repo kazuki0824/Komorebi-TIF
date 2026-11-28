@@ -578,9 +578,11 @@ class HomeLauncherHistoryUiRegressionTest {
         )
         render()
         compose.waitUntil(10_000L) { historySelection.get() != null }
+        val shownBefore = ShadowToast.shownToastCount()
         compose.runOnIdle { historySelection.get()!!.invoke(owned.value.second.single()) }
         Mockito.verify(records, Mockito.timeout(10_000L).times(1)).clearHistoryResumeError()
         assertEquals("The recording is unavailable", ShadowToast.getTextOfLatestToast())
+        assertEquals("one current failure should show exactly one Toast",shownBefore + 1, ShadowToast.shownToastCount())
         assertNull(resumed.get())
         assertNull(selectedProgramAfterClick.get())
         assertNull(reason.value)
