@@ -35,6 +35,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
@@ -564,6 +567,13 @@ class RecordViewModelRegressionTest {
         val release = CountDownLatch(1)
         val newDaoEntered = CountDownLatch(1)
         val releaseNewDao = CountDownLatch(1)
+        val oldApiReturned = AtomicBoolean(false)
+        val oldGuardCheckedReadyFalse = CountDownLatch(1)
+        Mockito.doAnswer {
+            if (oldApiReturned.get() && !cacheReady.value)
+                oldGuardCheckedReadyFalse.countDown()
+            cacheReady
+        }.`when`(sync).recordCacheReady
         Mockito.doAnswer {
             if (ownerBackend.value == "EDCB") {
                 newDaoEntered.countDown()
@@ -576,6 +586,7 @@ class RecordViewModelRegressionTest {
         Mockito.doAnswer {
             entered.countDown()
             check(release.await(15, TimeUnit.SECONDS))
+            oldApiReturned.set(true)
             listOf(com.beeregg2001.komorebi.data.model.EsSeriesListItem(
                 id = 201, title = "Old EPGStation API", normalizedTitle = "Old EPGStation API",
                 recordedCount = 1
@@ -598,6 +609,11 @@ class RecordViewModelRegressionTest {
             // Wait for real revocation, not the initial empty StateFlow.
             withTimeout(10_000L) { viewModel.groupedSeries.first { it.isEmpty() } }
             release.countDown()
+            assertTrue("obsolete API result must reach the production ready=false guard",
+                oldGuardCheckedReadyFalse.await(15, TimeUnit.SECONDS))
+            // Give the resumed classification collector a turn to process its
+            // queued false while ready is still revoked (no clock sleeps).
+            withContext(Dispatchers.IO) { yield() }
             cacheReady.value = true
             assertTrue("new DAO must be entered only after classification observed ready=false",
                 newDaoEntered.await(15, TimeUnit.SECONDS))
@@ -628,11 +644,19 @@ class RecordViewModelRegressionTest {
         val release = CountDownLatch(1)
         val newRoomEntered = CountDownLatch(1)
         val releaseNewRoom = CountDownLatch(1)
+        val oldRoomReturned = AtomicBoolean(false)
+        val oldGuardCheckedReadyFalse = CountDownLatch(1)
+        Mockito.doAnswer {
+            if (oldRoomReturned.get() && !cacheReady.value)
+                oldGuardCheckedReadyFalse.countDown()
+            cacheReady
+        }.`when`(sync).recordCacheReady
         val calls = java.util.concurrent.atomic.AtomicInteger()
         Mockito.doAnswer {
             if (calls.incrementAndGet() == 1) {
                 entered.countDown()
                 check(release.await(15, TimeUnit.SECONDS))
+                oldRoomReturned.set(true)
                 listOf(SeriesProjection("Obsolete Room group", 1, 456, true, null, null, null, null))
             } else {
                 newRoomEntered.countDown()
@@ -657,8 +681,11 @@ class RecordViewModelRegressionTest {
             // shouldLoad=false, otherwise the subsequent true is suppressed.
             withTimeout(10_000L) { viewModel.groupedSeries.first { it.isEmpty() } }
             release.countDown()
-            // Force an observable obsolete result rejection while revoked.
-            // Only then allow the new owner to enter a distinct DAO call.
+            assertTrue("obsolete Room result must reach the production ready=false guard",
+                oldGuardCheckedReadyFalse.await(15, TimeUnit.SECONDS))
+            // Keep the only false source active through the old request's
+            // completion. The following DAO reload proves false was consumed.
+            withContext(Dispatchers.IO) { yield() }
             cacheReady.value = true
             assertTrue("new owner DAO proves classification observed ready=false before true",
                 newRoomEntered.await(15, TimeUnit.SECONDS))
