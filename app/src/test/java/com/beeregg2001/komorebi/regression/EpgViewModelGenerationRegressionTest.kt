@@ -647,10 +647,14 @@ class EpgViewModelGenerationRegressionTest {
             )
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
+        val newOwnerPrefetch = CountDownLatch(1)
         Mockito.doAnswer { invocation ->
             if (backend.value == "KONOMITV" && invocation.arguments[2] == "GR") {
                 entered.countDown()
                 check(release.await(15, TimeUnit.SECONDS))
+            }
+            if (backend.value == "EDCB" && invocation.arguments[2] == "GR") {
+                newOwnerPrefetch.countDown()
             }
             Unit
         }.`when`(repository).fetchAndCacheEpgDataSilently(
@@ -678,6 +682,12 @@ class EpgViewModelGenerationRegressionTest {
             withTimeout(10_000L) {
                 while (viewModel.uiState !is EpgUiState.Success) kotlinx.coroutines.delay(10)
             }
+            // Ensure a fresh reservation is scheduled for EDCB instead of only
+            // proving cancellation of the former KONOMITV task.
+            mainDispatcher.scheduler.advanceTimeBy(10_010L)
+            mainDispatcher.scheduler.runCurrent()
+            assertTrue("new owner's ten-second silent GR preload must actually fire",
+                newOwnerPrefetch.await(15, TimeUnit.SECONDS))
         } finally { release.countDown() }
     }
 
