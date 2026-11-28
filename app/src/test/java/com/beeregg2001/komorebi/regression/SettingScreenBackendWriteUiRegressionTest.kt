@@ -18,6 +18,10 @@ import com.beeregg2001.komorebi.util.UpdateState
 import com.beeregg2001.komorebi.viewmodel.ChannelViewModel
 import com.beeregg2001.komorebi.viewmodel.SettingsViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicReference
 import org.mockito.stubbing.Answer
 import org.mockito.MockedStatic
@@ -47,11 +51,14 @@ class SettingScreenBackendWriteUiRegressionTest {
     private val backendDialogSelection = AtomicReference<((String) -> Unit)?>(null)
     private var dialogMock: MockedStatic<Any>? = null
     private var uiSettingsConstruction: MockedConstruction<SettingsRepository>? = null
+    private var scopeMock: MockedStatic<Any>? = null
+    private val screenScope = AtomicReference<CoroutineScope?>()
 
     @After
     fun clean() = runBlocking {
         compose.runOnUiThread {
             dialogMock?.close(); dialogMock = null
+            scopeMock?.close(); scopeMock = null
             uiSettingsConstruction?.close(); uiSettingsConstruction = null
         }
         store.saveString(SettingsRepository.BACKEND_TYPE, "KONOMITV")
@@ -90,6 +97,23 @@ class SettingScreenBackendWriteUiRegressionTest {
                 } else invocation.callRealMethod()
             })
         }
+        // Capture the exact rememberCoroutineScope() owned by SettingsScreen.
+        // Jobs launched on Dispatchers.IO are still its children and can be joined.
+        compose.runOnUiThread {
+            @Suppress("UNCHECKED_CAST")
+            val effects = Class.forName("androidx.compose.runtime.EffectsKt") as Class<Any>
+            scopeMock = Mockito.mockStatic(effects, Answer { invocation ->
+                val value = invocation.callRealMethod()
+                if (invocation.method.name == "rememberCoroutineScope" &&
+                    value is CoroutineScope &&
+                    Thread.currentThread().stackTrace.any {
+                        it.className.contains("SettingScreenKt") && it.methodName == "SettingsScreen"
+                    }) {
+                    screenScope.compareAndSet(null, value)
+                }
+                value
+            })
+        }
         // Intercept SettingsRepository constructed inside the real screen.
         // Delegate all production reads to the real store, but count any independent UI writes.
         compose.runOnUiThread {
@@ -113,10 +137,17 @@ class SettingScreenBackendWriteUiRegressionTest {
         )
         backendItem.performSemanticsAction(SemanticsActions.OnClick)
         compose.waitUntil(10_000L) { backendDialogSelection.get() != null }
+        val activeScope = requireNotNull(screenScope.get()) {
+            "must observe the exact SettingsScreen rememberCoroutineScope"
+        }
+        val owningJob = requireNotNull(activeScope.coroutineContext[Job])
+        val before = owningJob.children.toSet()
         compose.runOnIdle { backendDialogSelection.get()!!.invoke("EDCB") }
         Mockito.verify(vm, Mockito.timeout(10_000L).times(1)).updateBackendType("EDCB")
-        // No arbitrary 650-ms observation window: verify the actual Repository
-        // instance constructed by the screen never receives a second backend write.
+        // Unlike Compose waitForIdle, this joins the actual child jobs launched by
+        // the SettingsScreen scope, including Dispatchers.IO background writes.
+        val launched = owningJob.children.filter { it !in before }.toList()
+        withTimeout(10_000L) { launched.joinAll() }
         compose.waitForIdle()
         val created = requireNotNull(uiSettingsConstruction).constructed()
         org.junit.Assert.assertTrue("the real screen must construct its repository", created.isNotEmpty())
