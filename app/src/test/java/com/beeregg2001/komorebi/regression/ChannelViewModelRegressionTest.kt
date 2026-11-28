@@ -530,6 +530,10 @@ class ChannelViewModelRegressionTest {
             backend.value = "EDCB"
             assertTrue(started.await(15, TimeUnit.SECONDS))
             assertTrue(vm.groupedChannels.value.isEmpty())
+            // liveRows is a derived StateFlow; its publication is asynchronous
+            // to the backend observer. Await disappearance while the new
+            // provider is still blocked, without relaxing the assertion.
+            withTimeout(10_000L) { vm.liveRows.first { it.isEmpty() } }
             assertTrue(vm.liveRows.value.isEmpty())
             assertTrue(vm.isLoading.value)
             release.countDown()
