@@ -5,6 +5,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.onNode
 import androidx.compose.ui.test.hasProgressBarRangeInfo
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
@@ -206,6 +208,51 @@ class EpgCanvasOverlayUiRegressionTest {
             "Loading must clear the focused program, not merely hide old drawing",
             before, selections.get()
         )
+    }
+
+
+    @Test
+    fun opaqueLoadingBackgroundMatchesErrorBackgroundOverPopulatedCanvas() {
+        val now = OffsetDateTime.now()
+        val channel = EpgChannel(
+            id = "GR_OPAQUE", display_channel_id = "GR_OPAQUE",
+            network_id = 1, service_id = 2, transport_stream_id = 3,
+            remocon_id = 1, channel_number = "101", type = "GR",
+            name = "Opaque check", jikkyo_force = null,
+            is_subchannel = false, is_radiochannel = false, is_watchable = true
+        )
+        val program = EpgProgram(
+            id = "OPAQUE_PROGRAM", channel_id = channel.id,
+            network_id = 1, service_id = 2, event_id = 301,
+            title = "Previously rendered show", description = "old",
+            detail = null, start_time = now.minusMinutes(15).toString(),
+            end_time = now.plusMinutes(45).toString(),
+            duration = 3600, is_free = true, genres = null,
+            video_type = null, audio_type = null, audio_sampling_rate = null
+        )
+        val state = mutableStateOf<EpgUiState>(EpgUiState.Success(
+            data = listOf(EpgChannelWrapper(channel, listOf(program))),
+            logoUrls = emptyList(), mirakurunIp = "", mirakurunPort = "", targetTime = now
+        ))
+        setContent(state)
+        compose.waitForIdle()
+        compose.runOnIdle { state.value = EpgUiState.Loading }
+        compose.waitForIdle()
+        compose.onNode(hasProgressBarRangeInfo(ProgressBarRangeInfo.Indeterminate)).assertExists()
+        val loading = compose.onRoot().captureToImage().toPixelMap()
+        compose.runOnIdle { state.value = EpgUiState.Error("failed") }
+        compose.waitForIdle()
+        val error = compose.onRoot().captureToImage().toPixelMap()
+        // Compare unaffected grid cells, not the spinner/error message in the middle.
+        // A translucent Loading overlay would reveal stale program rectangles.
+        for (xFraction in listOf(0.22f, 0.45f, 0.78f)) {
+            for (yFraction in listOf(0.63f, 0.84f)) {
+                val x = (loading.width * xFraction).toInt()
+                val y = (loading.height * yFraction).toInt()
+                assertEquals("Loading must fully obscure stale Canvas at $x,$y",
+                    error[x, y], loading[x, y])
+            }
+        }
     }
 
 }
