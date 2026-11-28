@@ -339,7 +339,7 @@ class EpgInFlightBackendRegressionTest {
             release.countDown()
             withTimeout(15_000L) { collector.join() }
             assertEquals(cached, memory["KONOMITV_GR"])
-            assertTrue(observed.isEmpty)
+            assertTrue(observed.tryReceive().isFailure)
             Mockito.verify(provider, Mockito.times(1)).getEpgProgramsForBackend(
                 "KONOMITV", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
                 end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "GR"
