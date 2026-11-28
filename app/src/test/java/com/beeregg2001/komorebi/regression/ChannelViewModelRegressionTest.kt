@@ -445,6 +445,18 @@ class ChannelViewModelRegressionTest {
     fun obsoleteFetchFinallyCannotClearLoadingWhileNewBackendFetchIsStillPending() = runBlocking {
         Dispatchers.setMain(Dispatchers.Default)
         val live = Mockito.mock(LiveProvider::class.java)
+        // Complete constructor-time polling before installing old/new request
+        // latches; otherwise startup may consume the first mocked response.
+        Mockito.doReturn(ChannelApiResponse()).`when`(live).getChannels()
+        val backend = MutableStateFlow("KONOMITV")
+        val vm = viewModel(live, backend)
+        vm.stopPolling()
+        awaitObservedBackend(vm, "KONOMITV")
+        val initialFetch = ChannelViewModel::class.java.getDeclaredField("fetchJob")
+            .apply { isAccessible = true }.get(vm) as? Job
+        if (initialFetch != null) withTimeout(10_000L) { initialFetch.join() }
+        Mockito.clearInvocations(live)
+
         val oldEntered = CountDownLatch(1)
         val oldRelease = CountDownLatch(1)
         val newEntered = CountDownLatch(1)
@@ -464,10 +476,6 @@ class ChannelViewModelRegressionTest {
                 }
             }
         }.`when`(live).getChannels()
-        val backend = MutableStateFlow("KONOMITV")
-        val vm = viewModel(live, backend)
-        vm.stopPolling()
-        awaitObservedBackend(vm, "KONOMITV")
         try {
             vm.fetchChannels(force = true)
             val obsoleteJob = fetchJob(vm)
