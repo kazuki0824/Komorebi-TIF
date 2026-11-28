@@ -361,6 +361,7 @@ class RecordSyncBackendTransitionRegressionTest {
         val workerReady = CompletableDeferred<Unit>()
         val workerCancelled = CompletableDeferred<Unit>()
         val allowWorkerExit = CompletableDeferred<Unit>()
+        val callbackEntered = java.util.concurrent.atomic.AtomicBoolean(false)
         val scope = CoroutineScope(Dispatchers.Default + Job())
         val worker = scope.launch {
             workerReady.complete(Unit)
@@ -378,15 +379,22 @@ class RecordSyncBackendTransitionRegressionTest {
         try {
             val switching = async(Dispatchers.Default) {
                 runCatching {
-                    actual.switchBackend { throw IllegalStateException("injected setting failure") }
+                    actual.switchBackend {
+                        callbackEntered.set(true)
+                        throw IllegalStateException("injected setting failure")
+                    }
                 }.exceptionOrNull()
             }
             withTimeout(10_000L) { workerCancelled.await() }
             assertEquals(listOf(19), db.recordedProgramDao().getAllIds())
             assertFalse("dictionary is cancelled but must not finish until released", worker.isCompleted)
+            assertFalse("settings must not be written while old dictionary job is still finishing",
+                callbackEntered.get())
             allowWorkerExit.complete(Unit)
             val error = withTimeout(15_000L) { switching.await() }
             assertTrue(error is IllegalStateException)
+            assertTrue("settings callback must run only after dictionary job has exited",
+                callbackEntered.get())
             assertEquals(listOf(19), db.recordedProgramDao().getAllIds())
             assertTrue("published ready state must be restored after failed setting save",
                 actual.recordCacheReady.value)
